@@ -20,15 +20,91 @@
 // account. A record that fails is not installed; the contact is then
 // installed from its account bundle alone, which is what a host that
 // predates the record sends.
+//
+// Since 44.4 the ceremony is pairing v3 (§10.2, ADR 0033 §3), on both sides,
+// and nothing older: [NewDeviceLink] is this device's side of it. The new
+// device draws its sealing key before the ceremony — the commitment, the
+// opening and the digits all carry its hash `sk`, and the root signs this
+// device's `pqdc` over it — and [installEnrollment] keeps the key and the
+// `pqdc` that verifies for it.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import 'archive.dart' show BackupArchive;
+import 'sealing_keys.dart' show ownPqdcKey, sealSeedKey;
 import 'vault.dart';
+
+/// The new device's side of linking (PROTOCOL §10.2, 44.4): this device's
+/// sealing key, and the ceremony's initiator — the pairing code the screen
+/// shows, this device's keys, and the ML-KEM key the ceremony decapsulates
+/// with once.
+///
+/// The sealing key is drawn here, before the ceremony, because the ceremony
+/// binds it: the commitment, the opening and the digits carry `sk`, its hash,
+/// and the root signs this device's `pqdc` over that hash. It is the
+/// device's key for its life ([installEnrollment] keeps it), and the same
+/// for every attempt. The initiator is not: once its KEM key has
+/// decapsulated (§10.2 rule 5) it is spent, and the next attempt is a new
+/// ceremony under a new code, the spent initiator dropped with its key.
+/// Until then an attempt that heard nothing is tried again on the same code,
+/// as the person may already have typed it on the other device.
+class NewDeviceLink {
+  NewDeviceLink._(this.sealingKey, this._v3, this._v2);
+
+  /// This device's sealing key (ADR 0033 §1).
+  final SealingKey sealingKey;
+
+  PairingInitiatorV3? _v3;
+  final PairingInitiatorV2? _v2;
+
+  /// A new device's side of a link, with its sealing key drawn.
+  static Future<NewDeviceLink> create() async {
+    final key = SealingKey.generate();
+    return NewDeviceLink._(
+        key, await PairingInitiatorV3.create(sealKey: key.ek), null);
+  }
+
+  /// Test seam: the new device as a build from before 44.4 is one — it runs
+  /// pairing v2 (§10.1), whose ceremony carries no sealing key and no
+  /// `pqdc`. What a host of this build makes of it is the case it models.
+  @visibleForTesting
+  static Future<NewDeviceLink> createAsVersion2() async => NewDeviceLink._(
+      SealingKey.generate(), null, await PairingInitiatorV2.create());
+
+  /// The pairing code to show, for the person to enter on the other device.
+  String get code => (_v3?.code ?? _v2!.code).text;
+
+  /// Runs one attempt over [relayUrl]: the enrolment, or null when the person
+  /// said the digits differ. Throws what the ceremony throws — among them
+  /// [PairingNoAnswer] when nothing answered, most likely an existing device
+  /// on an older version (§10.2 rule 6). Afterwards [code] is a new one if
+  /// this attempt's KEM key was spent.
+  Future<PairingResult?> run({
+    required String relayUrl,
+    required Future<bool> Function(String sas) confirm,
+    Duration timeout = const Duration(seconds: 40),
+  }) async {
+    final v2 = _v2;
+    if (v2 != null) {
+      return RelayPairing.runNewDeviceV2(
+          relayUrl: relayUrl, n: v2, confirm: confirm, timeout: timeout);
+    }
+    final n = _v3!;
+    try {
+      return await RelayPairing.runNewDeviceV3(
+          relayUrl: relayUrl, n: n, confirm: confirm, timeout: timeout);
+    } finally {
+      if (n.opened) {
+        _v3 = await PairingInitiatorV3.create(sealKey: sealingKey.ek);
+      }
+    }
+  }
+}
 
 /// The per-contact `kv` families an enrolment carries (§10 `cstate`): the
 /// three post-quantum records (ADR 0027, 26.3), the contact's device list,
@@ -50,7 +126,18 @@ const String rootBundleKey = 'root_bundle';
 /// that linked it and every contact — into [vault], a fresh vault on the new
 /// device, before its `ChatService` starts. The relay address is not stored
 /// here: the screen that asked the user about it stores it (`setRelayUrl`).
-Future<void> installEnrollment(Vault vault, PairingResult result) async {
+///
+/// [sealingKey] is the key the ceremony ran with ([NewDeviceLink]): kept as
+/// this device's (`seal_seed`), so its first start draws none, and the
+/// enrolment's `pqdc` is checked against it (§10.2 rule 7). One that
+/// verifies, under the account's ML-DSA key the enrolment carries, for the
+/// account, this device's two keys and this key, is held (`pqdc`); one that
+/// does not is refused, and nothing else with it: the account, the
+/// certificate and the contacts are each checked on their own, and this
+/// device then asks its root for its `pqdc` over self-sync, as a device
+/// linked before 44.4 does (§9, `dir:"pqdc"`).
+Future<void> installEnrollment(Vault vault, PairingResult result,
+    {SealingKey? sealingKey}) async {
   final acct = result.account;
   final data = result.data;
   await vault.kvPut(
@@ -58,6 +145,12 @@ Future<void> installEnrollment(Vault vault, PairingResult result) async {
       jsonEncode(
           {'edSeed': b64(acct.deviceEdSeed), 'xSeed': b64(acct.deviceXSeed)}));
   await vault.kvPut('account', jsonEncode(acct.toJson()));
+  if (sealingKey != null) {
+    await vault.kvPut(sealSeedKey, b64(sealingKey.seed));
+    if (enrolmentAttestsMe(data, acct, sealingKey)) {
+      await vault.kvPut(ownPqdcKey, b64(data.pqdc!));
+    }
+  }
   await vault.kvPut('display_name', data.displayName ?? 'Me');
   // Remember the device that linked us, so our messages mirror back to it.
   await vault.kvPut('my_devices', jsonEncode([data.hostDeviceCert.toJson()]),
@@ -118,6 +211,28 @@ Future<void> installEnrollment(Vault vault, PairingResult result) async {
       await vault.kvPut(key, e.value, sensitive: !Vault.mayBePlain(key));
     }
   }
+}
+
+/// Whether the enrolment [data] carries a `pqdc` that is the account's
+/// attestation of [key] as the sealing key of [me], this device (§18.11):
+/// it verifies under the account's ML-DSA key the enrolment carries
+/// (`pqpub`), over the account key, this device's two keys as its
+/// certificate names them, and [key]. The root signed it over `sk`, the hash
+/// the digits covered; checking it with the key itself is FIPS 203 §7.2's
+/// check of the key too. False when either is absent: an enrolment from a
+/// host with no ML-DSA key carries neither.
+bool enrolmentAttestsMe(
+    EnrollmentData data, AccountIdentity me, SealingKey key) {
+  final pqdc = data.pqdc;
+  final ml = data.accountMlPub;
+  if (pqdc == null || ml == null) return false;
+  return deviceAttestationValid(
+      accountMlPub: ml,
+      accountEdPub: data.accountEdPub,
+      deviceEdPub: me.deviceEdPub,
+      deviceXPub: me.deviceXPub,
+      sealEk: key.ek,
+      pqdc: pqdc);
 }
 
 /// Whether [root] is the bundle of the device [hostCert] certifies as the

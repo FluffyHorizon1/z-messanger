@@ -1839,7 +1839,13 @@ is specified here unchanged, because its vectors are frozen (§14) and a device
 that has not been updated still runs it. It has two weaknesses, and a current
 client will not perform it: see §10.1.
 
-### 10.1 Pairing v2 (current)
+### 10.1 Pairing v2
+
+*Superseded by §10.2 from 44.4.* What shipped from 2.8.5 through 4.7.2, and
+is specified here unchanged, because its vectors are frozen (§14) and a
+device that has not been updated still runs it. A client from 44.4 performs
+it on neither side: as an existing device it recognises a v2 new device by
+its first frame and answers nothing (§10.2 rule 6).
 
 Same code, same rendezvous idea, same enrollment payload; a commitment round
 in front, and a wider SAS over more of what is being agreed. Nothing in §10
@@ -1922,9 +1928,11 @@ Vectors: [`vectors/pair-v2/`](vectors/pair-v2/). §10's remain untouched.
 
 ### 10.2 Pairing v3 (`adr/0033` §3)
 
-*The protocol library builds this ceremony (44.1: `pairing.dart`,
-`pairing_relay.dart`); nothing runs it before 44.4, and until then a current
-client pairs by §10.1.*
+*Built in the protocol library in 44.1 (`pairing.dart`,
+`pairing_relay.dart`). From 44.4 the reference client links a device by this
+ceremony on both sides and by nothing older (`ChatService.hostDeviceLink`;
+`NewDeviceLink` and `installEnrollment` in `app/lib/core/enrollment.dart`),
+so linking needs both devices on 44.4 or later.*
 
 §10.1's four frames, hybrid with ML‑KEM‑768 (§17) and bound to the code. A
 recording of a v2 rendezvous yields the whole enrollment — every contact's
@@ -2006,11 +2014,16 @@ addition:
    decision 4), whose long‑term sealing key meets whatever ciphertexts anyone
    addresses to it: a key drawn for one interactive ceremony and decapsulated
    once gives whoever chose its ciphertext a single measurement of a key that
-   never decapsulates again.
+   never decapsulates again. The reference client's new device, once a
+   reply has opened its key, makes its next attempt a new ceremony — a new
+   KEM key, new device keys and a new code, which its screen then shows —
+   and drops the spent one; an attempt that heard no reply is tried again
+   on the same code.
 6. **Versions.** v3 transacts only on its own mailboxes. A v3 existing device
-   holds the v2 and v1 mailboxes open and recognises an older new device by
-   its first frame there — `commit-v2` or `hello` — and says which version it
-   heard so the app can say which device to update; it answers neither. A v3
+   holds the v2 and v1 mailboxes open until the first frame arrives, and
+   recognises an older new device by its first frame there — `commit-v2` or
+   `hello` — and says which version it heard so the app can say which
+   device to update; it answers neither. A v3
    new device facing an older existing device hears nothing, since that
    device listens where v2 or v1 speaks, and says the other device may be
    older. There is no fallback in either direction (§10.1 rule 4).
@@ -2020,15 +2033,28 @@ addition:
    the root's attestation of the new device (`adr/0033` §1), over the account
    key and the `ded`, `dx` and `sk` that the opening revealed and the digits
    covered; pairing carries it as bytes, and whoever installs the enrollment
-   checks it. It is absent from a host that sent none.
+   checks it. It is absent from a host that sent none. The reference client's
+   root signs it once the digits are confirmed, over `sk`
+   (`signDeviceAttestationFromHash`, §18.11). Its new device draws its
+   sealing key before the ceremony — the commitment binds its hash — and
+   keeps it for its life; installing, it checks `pqdc` as §18.11 checks one,
+   under the enrollment's `pqpub`, over `acct`, its own `ded` and `dx` and
+   that key. One that verifies it keeps as its own `pqdc`. One that does not
+   is refused, as ADR 0033 §2 refuses an attestation that fails — the
+   attestation, not the link: the account, the certificate and the contacts
+   are each checked on their own (§10) — and the device then asks its root
+   for its `pqdc` over self‑sync, as a device linked before 44.4 does (§9,
+   `dir:"pqdc"`).
 
 Frames stay unpadded attributed sends, as v2's are. As the library builds them
-(the payload the relay carries): `commit-v3` 1 656 bytes, `reply-v3` 1 530,
-`open-v3` 246 for a twelve‑character id, and `enroll-v3` v2's with `pqdc`'s
-3 309 bytes more before encoding. So the relay can tell a v3 pairing from a
-v2 one, whose `commit-v2` and `reply-v2` are 68 and 70 bytes, as it can tell
-a version‑3 connect ceremony (§20.9, R24); the register row that says so
-comes with 44.4, which runs the ceremony.
+(the payload the relay carries), and measured on the wire between two clients
+of 44.4 (`app/test/pairing_pq_test.dart` 2): `commit-v3` 1 656 bytes,
+`reply-v3` 1 530, `open-v3` 246 for the reference client's twelve‑character
+id, and `enroll-v3` v2's with `pqdc`'s 3 309 bytes more before encoding —
+4 422 more in the sealed enrollment, where it is the last member, base64 in
+JSON. So the relay can tell a v3 pairing from a v2 one, whose `commit-v2` and
+`reply-v2` are 68 and 70 bytes, as it can tell a version‑3 connect ceremony
+(§20.9, R24): R57 says so.
 
 **Acknowledgement.** Each side of a ceremony, v2 or v3, acknowledges every
 frame it reads — `recv` with the frame's `id` and its sender (§12.5), as an

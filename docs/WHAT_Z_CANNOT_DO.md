@@ -339,8 +339,9 @@ ciphertext addressed to a hash, in memory, deleted on delivery and within
 seventy‑two hours regardless.** A
 recording made today of a conversation's messages after its first round trip
 does not become readable when quantum computers arrive — the opening exchange,
-contact requests, the CONNECT ceremony, linking a device and the sealed outer
-layer of each envelope are classical, and so, today, are the channels to
+contact requests, the CONNECT ceremony and the sealed outer
+layer of each envelope are classical, as linking a device was until pairing
+v3 (44.4), and so, today, are the channels to
 linked devices — yours and your contacts' — if their first key offer is lost
 (`THREAT_MODEL.md`, "The quantum layer's edges"). Who belongs to your account
 cannot be forged unnoticed, now or later, without breaking two independent

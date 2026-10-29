@@ -494,8 +494,17 @@ class AppLocalizationsEs extends AppLocalizations {
   String get linkCancelled => 'Vinculación cancelada.';
 
   @override
-  String get linkPeerTooOld =>
-      'El otro dispositivo tiene una versión anterior de Z. Actualízalo y vuelve a emparejar: esta versión no recurrirá al emparejamiento anterior.';
+  String linkNewDeviceOlder(int version) {
+    return 'El dispositivo que estás añadiendo usa una versión anterior de Z: pidió vincularse con la versión $version del emparejamiento, que esta versión ya no responde. Actualiza Z en ese dispositivo y vuelve a vincularlo.';
+  }
+
+  @override
+  String get linkHostMayBeOlder =>
+      'Tu otro dispositivo no respondió. Puede que use una versión anterior de Z, que no puede vincularse con esta: actualiza Z en el dispositivo desde el que vinculas y vuelve a empezar. Si ya está actualizado, comprueba que allí se introdujo el código de este dispositivo.';
+
+  @override
+  String get linkNewCode =>
+      'Este dispositivo muestra ahora un código nuevo: introdúcelo en tu otro dispositivo para intentarlo de nuevo.';
 
   @override
   String linkFailed(String error) {

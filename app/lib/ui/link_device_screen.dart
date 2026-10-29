@@ -8,6 +8,7 @@ import 'package:z_protocol/z_protocol.dart';
 import '../core/chat_service.dart';
 import '../core/enrollment.dart';
 import '../core/relay_url.dart';
+import '../l10n/pairing_text.dart';
 import 'relay_warning.dart';
 import '../core/vault.dart';
 import 'theme.dart';
@@ -88,9 +89,11 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
             : l.linkCancelled;
       });
     } catch (e) {
+      // A new device on an older version is recognised by the ceremony it
+      // speaks, and the words say to update it (§10.2 rule 6).
       setState(() {
         _busy = false;
-        _status = l.linkFailed('$e');
+        _status = hostLinkFailureText(l, e);
       });
     }
   }
@@ -168,58 +171,62 @@ class NewDeviceLinkScreen extends StatefulWidget {
 
 class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
   final _server = TextEditingController(text: defaultRelayUrl);
-  PairingInitiatorV2? _initiator;
+  NewDeviceLink? _link;
   bool _busy = false;
   bool _showDev = false;
   String? _error;
 
+  /// The last attempt spent its code, and the one now shown is new.
+  bool _newCode = false;
+
   @override
   void initState() {
     super.initState();
-    PairingInitiatorV2.create().then((n) => setState(() => _initiator = n));
+    NewDeviceLink.create().then((n) {
+      if (mounted) setState(() => _link = n);
+    });
   }
 
   Future<void> _start() async {
     final l = AppLocalizations.of(context);
-    final n = _initiator;
+    final n = _link;
     if (n == null) return;
     final url = normalizeRelayUrl(_server.text);
     if (!await confirmInsecureRelay(context, url)) return;
     if (!mounted) return;
+    final code = n.code;
     setState(() {
       _busy = true;
       _error = null;
+      _newCode = false;
     });
     try {
-      final result = await RelayPairing.runNewDeviceV2(
+      // Pairing v3 (§10.2), and nothing older: an existing device on an
+      // older version listens where its own ceremony speaks and hears
+      // nothing from this one, and this one says it may be older.
+      final result = await n.run(
         relayUrl: url,
-        n: n,
         confirm: (sas) => confirmSasDialog(context, sas),
       );
       if (result == null) {
         setState(() {
           _busy = false;
           _error = l.linkCancelled;
+          _newCode = n.code != code;
         });
         return;
       }
       await setRelayUrl(widget.vault, url, acceptedInsecure: true);
-      // The account, the device that linked us and every contact as the
-      // phone holds them (§10; `enrollment.dart`).
-      await installEnrollment(widget.vault, result);
+      // The account, the device that linked us, every contact as the phone
+      // holds them, this device's sealing key and the `pqdc` that verifies
+      // for it (§10, §10.2; `enrollment.dart`).
+      await installEnrollment(widget.vault, result, sealingKey: n.sealingKey);
       await widget.onDone();
-    } on PairingAbort {
-      // The other device speaks the older ceremony, whose safety code can be
-      // guessed at (§10.1). Say so and stop: falling back would hand back
-      // exactly the assurance v2 exists to replace.
-      setState(() {
-        _busy = false;
-        _error = l.linkPeerTooOld;
-      });
     } catch (e) {
       setState(() {
         _busy = false;
-        _error = l.linkFailed('$e');
+        _error = newDeviceLinkFailureText(l, e);
+        _newCode = n.code != code;
       });
     }
   }
@@ -227,7 +234,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
-    final code = _initiator?.code.text;
+    final code = _link?.code;
     return Scaffold(
       appBar: AppBar(title: Text(l.linkToAccount)),
       body: ListView(
@@ -286,13 +293,19 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
               padding: const EdgeInsets.only(bottom: 14),
               child: Text(_error!, style: TextStyle(color: context.z.danger)),
             ),
+          if (_newCode)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Text(l.linkNewCode,
+                  style: TextStyle(color: context.z.textSecondary)),
+            ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: context.z.accent,
               foregroundColor: context.z.onAccent,
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
-            onPressed: (_busy || _initiator == null) ? null : _start,
+            onPressed: (_busy || _link == null) ? null : _start,
             child: _busy
                 ? const SizedBox(
                     width: 20,

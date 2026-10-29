@@ -156,10 +156,14 @@ a third-party implementation that shares no code with this project.
 
 **Not covered.** The opening `hello`, the key offer itself, and anything sent
 before the offer is answered (R5). Nor anything that never enters the
-ratchet: contact requests, the connect ceremony, the enrolment a newly
-linked device receives (which carries the contact list), and the sealed
+ratchet: contact requests, the connect ceremony and the sealed
 outer layer that says who sent an envelope are X25519 only
-(`THREAT_MODEL.md`, "The quantum layer's edges"). ML-KEM in pure Dart is
+(`THREAT_MODEL.md`, "The quantum layer's edges"). The enrolment a newly
+linked device receives, which carries the contact list, is the exception
+since phase 44.4: pairing v3 (`PROTOCOL.md` §10.2) mixes an ML-KEM-768
+secret into its channel key and its digits, so a recording of a link made
+since then is no use to a future quantum adversary, and one made before it
+is. ML-KEM in pure Dart is
 best-effort constant-time; a timing leak there reduces security to v1, never
 below it (R43).
 

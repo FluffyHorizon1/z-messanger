@@ -186,9 +186,7 @@ class RelayPairing {
         // Nothing answered where a v2 device would. The likeliest reason by
         // far is that the other device is older: it is listening on the v1
         // mailbox, which this one deliberately does not speak on.
-        throw const PairingAbort(
-            'the other device did not answer — it may be running an older '
-            'version of Z, which cannot pair with this one until it is updated');
+        throw const PairingNoAnswer();
       }
       final (open, session) = await n.open(reply);
       await box.client.send(
@@ -278,7 +276,9 @@ class RelayPairing {
   ///
   /// Only on v3's mailboxes. Hearing nothing there most likely means an older
   /// existing device, listening where v2 or v1 speak, which this one does
-  /// not: there is no fallback.
+  /// not: there is no fallback, and the wait ends in [PairingNoAnswer]. The
+  /// first reply is the one it answers (§10.2 rule 5): [n] decapsulates once
+  /// and opens no second ceremony.
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
@@ -298,9 +298,7 @@ class RelayPairing {
       try {
         reply = await _awaitFrame(box, 'reply-v3', timeout);
       } on TimeoutException {
-        throw const PairingAbort(
-            'the other device did not answer — it may be running an older '
-            'version of Z, which cannot pair with this one until it is updated');
+        throw const PairingNoAnswer();
       }
       final (open, session) = await n.open(reply);
       await box.client.send(

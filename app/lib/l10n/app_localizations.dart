@@ -890,11 +890,23 @@ abstract class AppLocalizations {
   /// **'Link cancelled.'**
   String get linkCancelled;
 
-  /// Shown when the peer speaks the v1 pairing ceremony. The load-bearing clause is the refusal to fall back: the older ceremony's safety code can be guessed at, so detecting an old peer must not turn into completing the old ceremony.
+  /// On the existing device (Settings → Linked devices → Link a device), when the new device speaks an older pairing ceremony. {version} is the pairing version it spoke, 1 or 2. Linking needs both devices on this version or later, and there is no fallback to the older ceremony, so the person must be told which device to update: the one being added.
   ///
   /// In en, this message translates to:
-  /// **'The other device is running an older version of Z. Update it, then pair again — this version will not fall back to the older pairing.'**
-  String get linkPeerTooOld;
+  /// **'The device you are adding is running an older version of Z: it asked to link with pairing version {version}, which this version no longer answers. Update Z on that device, then link it again.'**
+  String linkNewDeviceOlder(int version);
+
+  /// On the new device, when nothing answered. The likeliest cause is that the device it is linking from runs an older version, which listens where an older pairing ceremony speaks; this version never falls back to it. Says which device to update — the one the person is linking from — and the other likely cause, a code not yet entered there.
+  ///
+  /// In en, this message translates to:
+  /// **'Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device\'s code was entered there.'**
+  String get linkHostMayBeOlder;
+
+  /// On the new device, after an attempt that got as far as the other device's answer. Each attempt past that point is spent and the next one needs a new code, which the screen now shows; the person must enter the new one, not the old.
+  ///
+  /// In en, this message translates to:
+  /// **'This device now shows a new code: enter it on your other device to try again.'**
+  String get linkNewCode;
 
   /// Pairing failed; {error} is the underlying message.
   ///

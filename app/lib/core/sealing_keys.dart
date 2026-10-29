@@ -10,10 +10,14 @@
 // nothing uses any of them yet. What it keeps, all of it sealed in the vault:
 //
 //   * `seal_seed` — this device's own seed, drawn once at the first start of
-//     this build and carried in the archive ([SealingKeyBackup]);
+//     this build — or, on a device linked by pairing v3 (44.4), by the link
+//     screen before the ceremony, which binds it — and carried in the archive
+//     ([SealingKeyBackup]);
 //   * `pqdc` — this device's own attestation: the root signs its own, a
-//     linked device is given one by its root over self-sync (§9,
-//     `dir:"pqdc"`); in the archive beside the seed;
+//     device linked by pairing v3 is given one in its enrolment (§10.2), and
+//     a device linked before that, or whose enrolment's did not verify, is
+//     given one by its root over self-sync (§9, `dir:"pqdc"`); in the archive
+//     beside the seed;
 //   * `cseal_<rid>` — one [SealRecord] per contact: each of their devices'
 //     sealing key and `pqdc` as announced, whether that device has said it
 //     holds this one's (`pqs:1`) and when this one last announced its own to

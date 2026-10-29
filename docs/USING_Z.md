@@ -430,6 +430,13 @@ Link a second device from Settings → Linked devices. Both screens show a short
 code; they have to match. If they do not, stop — something is on the wire
 between them.
 
+**Both devices need this version of Z or later.** Linking changed in this
+version, and neither device falls back to the way older versions link. If
+the other device is older, the screen says which one to update: your phone
+says to update the device you are adding, and a new device that hears nothing
+from an older phone says to update the device you are linking from. Update
+it, then link again.
+
 A linked device is a full peer, not a mirror. It has its own keys and its own
 encrypted sessions, and your contacts see all of them. History from before the
 link is copied across. What you do on one — edit or delete a message, react,
@@ -437,18 +444,18 @@ set a disappearing timer, read a chat — shows on the others, and your
 contacts see it as yours, whichever device it came from.
 The link itself goes through the relay — two
 throwaway mailboxes the code derives, everything in them end-to-end
-encrypted — and the matching code on both screens is what shows nobody is in
-between.
+encrypted, and since this version post-quantum too, so a recording of it
+will not open even to a future quantum computer — and the matching code on
+both screens is what shows nobody is in between. Nothing of it stays at the
+relay once the link is done; until this version all of it stayed for three
+days.
 
 A newly linked device knows your contacts as your phone does: each one shows
 the same safety number, the same tick if you verified them, the same
 post-quantum state, and their other devices — your phone hands all of it over
 in the link the matching code protects. Until this version a laptop started
 every contact unverified, showed a different number for anyone you had added
-from *their* laptop, and could not reach that person's other devices. Linked
-from a phone on an older version, the new device gets what that version
-sends: every contact under the right account and number, unverified, with
-their post-quantum keys arriving as they next write to it.
+from *their* laptop, and could not reach that person's other devices.
 
 Contact requests belong to your account, not to a device: one sent to your
 phone shows on your laptop too, and accepting, declining or blocking it on

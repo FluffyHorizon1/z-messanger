@@ -11,22 +11,32 @@ lands.
 **Built:** 44.2 — the relay treats `zs2.` as sealed (PROTOCOL §12.1); 44.9 —
 the introduction key in the protocol library, `sk` in contact codes and the
 relay client's frames, with their vectors (§8.3, `vectors/intro-key/`);
-44.10 — the relay keeps introduction keys (§12.7). Nothing a client sends has
-changed: no client seals `zs2.` before 44.7, which waits for constant‑time
-ML‑KEM upstream, and none publishes, fetches or emits an introduction key or
-`sk` before 44.11–44.12. 44.1 is built in the protocol library, with its
-vectors: the sealing key, `pqdc` and `zs2.` (PROTOCOL §8.2, §18.11;
-`vectors/sealed-v2/`, `v3/device_attestation.json`) — no `zs2.` before 44.7 —
+44.10 — the relay keeps introduction keys (§12.7). None of the three changes
+what a client sends: no client seals `zs2.` before 44.7, which waits for
+constant‑time ML‑KEM upstream, and none publishes, fetches or emits an
+introduction key, or puts `sk` in a code, before 44.11–44.12 (pairing v3's
+opening carries the new device's `sk` from 44.4, to the device linking it).
+44.1 is built in the protocol library, with its vectors: the sealing key,
+`pqdc` and `zs2.` (PROTOCOL §8.2, §18.11; `vectors/sealed-v2/`,
+`v3/device_attestation.json`) — no `zs2.` before 44.7 —
 and pairing v3 and CONNECT v3 (§10.2, §20.9; `vectors/pair-v3/`,
-`connect/invite_v3.json`) — neither runs before 44.4 and 44.6, and
+`connect/invite_v3.json`) — CONNECT v3 runs nowhere before 44.6, and
 `connectInviteVersion` stays 2. 44.3 is built: every device draws its sealing
 key at its first start and keeps it for its life, in the vault and the
 archive; the root signs its own `pqdc` and an earlier‑linked device's over
 self‑sync (§9, `dir:"pqdc"`); every device announces its key in `pqseal` to
 every device it has a session with — never beside `pqct` — keeps the keys
 announced to it, stamps `pqs:1` back, and carries its `pqdc` in its `pqid`.
-Nothing uses any of it before 44.5 and 44.7. The rest of the build plan below
-is not built.
+Nothing uses any of it before 44.5 and 44.7. 44.4 is built: the app links a
+device by pairing v3 on both sides and by nothing older — an existing device
+recognises an older new device by its first frame, says which version it
+heard and answers nothing, and a new device that hears nothing says the
+other may be older — so linking needs both devices on 44.4 or later; the
+new device draws its sealing key before the ceremony, the root signs its
+`pqdc` once the digits are confirmed, and the new device keeps it only once
+it verifies; and every frame of the ceremony is acknowledged as it is read,
+so none outlives it on the relay. The rest of the build plan below is not
+built.
 **Decides:** for each surface the 3 October analysis (§4.3) found classical —
 pairing enrolment, CONNECT, the sealed outer layer, contact requests, the
 device a scanned code names, session authentication — what becomes hybrid, on
@@ -372,7 +382,7 @@ failing test on the base where it can be expressed, and a mutation check.
 | 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | **built**; nothing emits |
 | 44.2 | The relay treats `zs2.` as sealed | — | **built**; deploy before 44.7 |
 | 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, uses none; the `pqid` once more to contacts that already held the key built and held until 44.5 (4.7.1) |
-| 44.4 | Pairing v3 | 44.1, 44.3 | planned; highest value, so land it first |
+| 44.4 | Pairing v3 | 44.1, 44.3 | **built**; the app links by v3 on both sides, by nothing older and with no fallback, says which device to update when the other is older, carries the new device's `pqdc` (refused, not the link, when it does not verify), and acknowledges every frame, so the ceremony leaves nothing on the relay |
 | 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3; turns on 44.3's `pqid` once more, paced and owed per contact device (4.7.1 records it per contact, which a device from before 44.3 spends), so contacts from before 44.3 hold each device's `pqdc` |
 | 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | planned |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |

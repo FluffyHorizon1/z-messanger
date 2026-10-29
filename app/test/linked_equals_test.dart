@@ -17,7 +17,8 @@
 // restore lost the 26.3 and ADR 0027 records.
 //
 // Everything here runs real `ChatService`s through a real relay, and a
-// device is linked by the real ceremony (§10.1) over it.
+// device is linked by the real ceremony over it: pairing v3 (§10.2) since
+// 44.4, as the link screen runs it (`NewDeviceLink`).
 //
 // Criteria, each a test below:
 //   1. a laptop linked after the phone added its contacts — one verified by
@@ -33,8 +34,11 @@
 //      contact's account key and certificate, talks to them, and learns its
 //      root's bundle from the next list the root sends it, so its requests
 //      are the account's;
-//   3. a new root still links a device that predates it (one that reads
-//      only what it always read), and that device talks to its contacts;
+//   3. what a new root sends still installs from `contacts` alone, as a
+//      device that reads only what it always read installs it, and that
+//      device talks to its contacts — the enrolment's own compatibility,
+//      since from 44.4 no device that old can run the ceremony at all
+//      (`pairing_pq_test.dart` 3);
 //   4. two first callers of `pqIdentity()` at once get one key — the one
 //      the vault keeps, and the one the contact code commits to; and since
 //      44.3 a fresh root makes it at its first start, once, to sign its own
@@ -97,14 +101,15 @@ typedef Person = ({
 });
 
 typedef Installer = Future<void> Function(
-    Vault vault, PairingResult result, String relayUrl);
+    Vault vault, PairingResult result, String relayUrl, SealingKey key);
 
 /// What a device of the build before this one did with an enrolment — the
 /// body of `NewDeviceLinkScreen._start` at e751133, as it stood: a routing
 /// id, the scanned device's keys and a name for each contact, and nothing
-/// else. It reads only the members it always read.
-Future<void> installAsE751133(
-    Vault vault, PairingResult result, String relayUrl) async {
+/// else. It reads only the members it always read, and keeps no sealing key
+/// (its first start draws one).
+Future<void> installAsE751133(Vault vault, PairingResult result,
+    String relayUrl, SealingKey key) async {
   final acct = result.account;
   await vault.kvPut(
       'identity',
@@ -139,11 +144,12 @@ Future<void> installAsE751133(
 }
 
 /// How a device of THIS build installs an enrolment: the relay address as
-/// the link screen stores it, then the enrolment.
-Future<void> newDeviceInstall(
-    Vault vault, PairingResult result, String relayUrl) async {
+/// the link screen stores it, then the enrolment with the sealing key the
+/// ceremony ran with.
+Future<void> newDeviceInstall(Vault vault, PairingResult result,
+    String relayUrl, SealingKey key) async {
   await setRelayUrl(vault, relayUrl, acceptedInsecure: true);
-  await installEnrollment(vault, result);
+  await installEnrollment(vault, result, sealingKey: key);
 }
 
 void main() {
@@ -321,20 +327,21 @@ void main() {
   }
 
   /// [phone] links a new device by the real ceremony over the relay
-  /// (§10.1): the new device shows its code, the phone hosts the link, both
+  /// (§10.2): the new device shows its code, the phone hosts the link, both
   /// people say the digits match, and the new device installs what it was
   /// sent with [install] and starts.
   Future<Person> link(Person phone, String name, {Installer? install}) async {
-    final n = await PairingInitiatorV2.create();
+    final n = await NewDeviceLink.create();
     final hosted =
-        phone.svc.hostDeviceLink(n.code.text, confirmSas: (_) async => true);
-    final result = await RelayPairing.runNewDeviceV2(
-        relayUrl: relayUrl(), n: n, confirm: (_) async => true);
+        phone.svc.hostDeviceLink(n.code, confirmSas: (_) async => true);
+    final result =
+        await n.run(relayUrl: relayUrl(), confirm: (_) async => true);
     expect(result, isNotNull, reason: 'the new device was enrolled');
     expect(await hosted, isTrue, reason: 'the phone linked it');
     final dir = await tempDir(name);
     final vault = await Vault.open(rootOverride: dir);
-    await (install ?? newDeviceInstall)(vault, result!, relayUrl());
+    await (install ?? newDeviceInstall)(
+        vault, result!, relayUrl(), n.sealingKey);
     final x = await boot(dir, name, vault: vault);
     await connected([x]);
     return x;
@@ -554,8 +561,8 @@ void main() {
   });
 
   test(
-      '3. a new root still links a device that reads only what it always '
-      'read, and it talks', () async {
+      '3. what a new root sends still installs from contacts alone, and the '
+      'device talks', () async {
     final alice = await person('Alice3');
     final dave = await person('Dave3');
     await pairUp(alice, dave);

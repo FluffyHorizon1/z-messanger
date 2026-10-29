@@ -488,8 +488,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get linkCancelled => 'Link cancelled.';
 
   @override
-  String get linkPeerTooOld =>
-      'The other device is running an older version of Z. Update it, then pair again — this version will not fall back to the older pairing.';
+  String linkNewDeviceOlder(int version) {
+    return 'The device you are adding is running an older version of Z: it asked to link with pairing version $version, which this version no longer answers. Update Z on that device, then link it again.';
+  }
+
+  @override
+  String get linkHostMayBeOlder =>
+      'Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device\'s code was entered there.';
+
+  @override
+  String get linkNewCode =>
+      'This device now shows a new code: enter it on your other device to try again.';
 
   @override
   String linkFailed(String error) {

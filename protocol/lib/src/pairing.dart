@@ -343,12 +343,25 @@ class PairingAbort implements Exception {
 /// A v3 existing device heard the new device speak an older ceremony
 /// (§10.2): [version] is the one it spoke, 1 or 2. Recognised so that the app
 /// can say which device to update; never answered, because detecting an old
-/// peer must not turn into completing the old ceremony.
+/// peer must not turn into completing the old ceremony. A v2 existing device
+/// that hears a v1 `hello` says the same, with [version] 1.
 class PairingPeerOutdated extends PairingAbort {
   final int version;
   const PairingPeerOutdated(this.version)
       : super('the other device is running an older version of Z: update '
             'it, then pair again');
+}
+
+/// A new device heard nothing where its existing device would answer
+/// (§10.2 rule 6). The likeliest reason by far is an existing device on an
+/// older version, listening where an older ceremony speaks, which this one
+/// never does — so the app says the other device may be older, and which one
+/// to update. Never a reason to fall back.
+class PairingNoAnswer extends PairingAbort {
+  const PairingNoAnswer()
+      : super('the other device did not answer — it may be running an older '
+            'version of Z, which cannot pair with this one until it is '
+            'updated');
 }
 
 /// A rendezvous frame's fixed-width field: a string that decodes to exactly
@@ -750,7 +763,9 @@ bool _eq(Uint8List a, Uint8List b) {
 // encapsulation after seeing everything, and grind encapsulations until the
 // eight digits came out at a value already read aloud.
 //
-// Nothing in the app runs this before 44.4: v2 above is what it pairs with.
+// The app pairs with this from 44.4, on both sides, and with nothing older.
+// v2 and v1 above are what builds before it run; they stay, with their
+// frozen vectors, and a v3 existing device recognises their first frames.
 // ---------------------------------------------------------------------------
 
 /// X25519 for v3, refusing an all-zero output (RFC 7748 §6.1), as §20.3
@@ -996,6 +1011,12 @@ class PairingInitiatorV3 {
   final Uint8List sealKeyHash;
 
   bool _opened = false;
+
+  /// Whether [open] has run: this initiator's KEM key has decapsulated the
+  /// one ciphertext it ever will (§10.2 rule 5), and it can take part in no
+  /// other ceremony. A new device that tries again draws a new initiator and
+  /// drops this one, its KEM key with it.
+  bool get opened => _opened;
 
   PairingInitiatorV3._(
       this.code,

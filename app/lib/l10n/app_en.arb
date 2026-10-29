@@ -636,9 +636,22 @@
   "@linkCancelled": {
     "description": "The pairing was abandoned, by either side."
   },
-  "linkPeerTooOld": "The other device is running an older version of Z. Update it, then pair again \u2014 this version will not fall back to the older pairing.",
-  "@linkPeerTooOld": {
-    "description": "Shown when the peer speaks the v1 pairing ceremony. The load-bearing clause is the refusal to fall back: the older ceremony's safety code can be guessed at, so detecting an old peer must not turn into completing the old ceremony."
+  "linkNewDeviceOlder": "The device you are adding is running an older version of Z: it asked to link with pairing version {version}, which this version no longer answers. Update Z on that device, then link it again.",
+  "@linkNewDeviceOlder": {
+    "description": "On the existing device (Settings \u2192 Linked devices \u2192 Link a device), when the new device speaks an older pairing ceremony. {version} is the pairing version it spoke, 1 or 2. Linking needs both devices on this version or later, and there is no fallback to the older ceremony, so the person must be told which device to update: the one being added.",
+    "placeholders": {
+      "version": {
+        "type": "int"
+      }
+    }
+  },
+  "linkHostMayBeOlder": "Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device's code was entered there.",
+  "@linkHostMayBeOlder": {
+    "description": "On the new device, when nothing answered. The likeliest cause is that the device it is linking from runs an older version, which listens where an older pairing ceremony speaks; this version never falls back to it. Says which device to update \u2014 the one the person is linking from \u2014 and the other likely cause, a code not yet entered there."
+  },
+  "linkNewCode": "This device now shows a new code: enter it on your other device to try again.",
+  "@linkNewCode": {
+    "description": "On the new device, after an attempt that got as far as the other device's answer. Each attempt past that point is spent and the next one needs a new code, which the screen now shows; the person must enter the new one, not the old."
   },
   "linkFailed": "Link failed: {error}",
   "@linkFailed": {

@@ -708,9 +708,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc._holdsRoot = account.holdsAccountRoot;
     svc._myBindingSig = await identity.bindingSignature();
     // 44.3: this device's sealing key — drawn here, once, at the first start
-    // of this build, whether the account is new, the device just enrolled or
-    // the build just installed over an older one — its attestation, and the
-    // keys other devices have announced to it. Before anything can send.
+    // of this build, whether the account is new or the build just installed
+    // over an older one; a device linked by pairing v3 brings the one its
+    // ceremony bound (44.4) — its attestation, and the keys other devices
+    // have announced to it. Before anything can send.
     await svc._loadSealingKeys();
     await svc._loadConversations();
     await svc._computeUnread();
@@ -3965,13 +3966,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// This device's sealing key, its `pqdc`, and what is held of every other
   /// device's — from the vault, at start. The key is drawn here when the
   /// vault holds none: at the first start of this build on a new account,
-  /// on a device just enrolled (`installEnrollment` writes the vault before
-  /// this service starts) and on one updated from an older build. Once, for
-  /// the device's life: it is never drawn again while the seed is held, and
-  /// a restore brings the seed back ([SealingKeyBackup]). A build from
-  /// before 44.3 that restored an archive made by this one kept the seed
-  /// unread among the records it writes back; it is taken from there before
-  /// any new one is drawn.
+  /// and on one updated from an older build. A device linked by pairing v3
+  /// (44.4) holds one already: the link screen drew it before the ceremony,
+  /// which binds it, and `installEnrollment` writes it to the vault before
+  /// this service starts. Once, for the device's life: it is never drawn
+  /// again while the seed is held, and a restore brings the seed back
+  /// ([SealingKeyBackup]). A build from before 44.3 that restored an archive
+  /// made by this one kept the seed unread among the records it writes back;
+  /// it is taken from there before any new one is drawn.
   Future<void> _loadSealingKeys() async {
     if (debugBuildBeforeSealingKeys) return;
     try {
@@ -4025,9 +4027,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// under the account's ML-DSA key for this device and this sealing key —
   /// one that does not (an archive's from another device, a key drawn since)
   /// is dropped and never carried — or, on the root, which alone holds the
-  /// account's ML-DSA seed, its own, signed now. A linked device's comes
-  /// from its root over self-sync ([_applyOwnPqdc]), asked for by the
-  /// `pqseal` it announces there ([_owesPqSeal]).
+  /// account's ML-DSA seed, its own, signed now. A device linked by pairing
+  /// v3 brings its own in its enrolment, kept only once it verified
+  /// (`installEnrollment`, 44.4); any other linked device's — one linked
+  /// before 44.4, or one whose enrolment's did not verify — comes from its
+  /// root over self-sync ([_applyOwnPqdc]), asked for by the `pqseal` it
+  /// announces there ([_owesPqSeal]).
   Future<void> _loadOwnPqdc() async {
     final key = _sealingKey;
     if (key == null) return;
@@ -4300,8 +4305,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// the certificate `my_devices` holds for that routing id, the set every
   /// list this root signs is made from, whose `ded` and `dx` are what it
   /// signs over. A device it does not name gets none, whichever channel it
-  /// spoke on. Pairing v3 (44.4) will carry a new device's in its
-  /// enrolment; every device linked before it is attested this way. At most
+  /// spoke on. Pairing v3 (44.4) carries a new device's in its enrolment
+  /// ([_attestLinkedDevice]); every device linked before it is attested this
+  /// way, and so is one whose enrolment's did not verify. A device that
+  /// holds one announces its key all the same, and is answered all the
+  /// same: nothing here tells an ask from an announcement. At most
   /// [_maxPqNudges] answers to one device a run.
   Future<void> _answerPqdcAsk(String deviceRid, Uint8List ek) async {
     if (!_holdsRoot || debugBuildBeforeSealingKeys) return;
@@ -8662,6 +8670,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// `hostbundle`), which a linked device sends its requests as (§8.1). A
   /// new device used to keep a routing id, the scanned device's keys and a
   /// name, and showed every contact differently from the phone (P1-5).
+  ///
+  /// 44.4: by pairing v3 (§10.2, ADR 0033 §3), and nothing older. The
+  /// enrolment is hybrid with ML-KEM-768, never carries the account root,
+  /// and carries the new device's `pqdc`, which this root signs once the
+  /// digits are confirmed ([_attestLinkedDevice]). A new device on an older
+  /// version speaks a ceremony this one only listens for: it is recognised
+  /// by its first frame and answered with nothing — [PairingPeerOutdated],
+  /// naming the version it spoke, so the screen can say to update that
+  /// device.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -8671,24 +8688,80 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // while the phone handed out hybrid ones (§18).
     final acct = await accountIdentity();
     final myMl = await pqAccountPublic();
+    final me = myMl == null ? acct : acct.withAccountMlPub(myMl);
     final bundles = contactsAsBundles();
     final asBefore = debugEnrollAsBefore;
-    final linked = await RelayPairing.runExistingDeviceV2(
-      relayUrl: transport.serverUrl,
-      code: PairingCode.parse(code),
-      me: myMl == null ? acct : acct.withAccountMlPub(myMl),
-      contacts: bundles,
-      includeAccountRoot: false, // the new device cannot enroll further devices
-      displayName: displayName,
-      contactState: asBefore ? null : await _enrollmentStateWithin(bundles),
-      hostBundle:
-          asBefore || !acct.holdsAccountRoot ? null : await identity.bundle(),
-      confirm: confirmSas,
-    );
+    final contactState =
+        asBefore ? null : await _enrollmentStateWithin(bundles);
+    final hostBundle =
+        asBefore || !acct.holdsAccountRoot ? null : await identity.bundle();
+    final linked = debugPairAsVersion2
+        ? await RelayPairing.runExistingDeviceV2(
+            relayUrl: transport.serverUrl,
+            code: PairingCode.parse(code),
+            me: me,
+            contacts: bundles,
+            includeAccountRoot: false,
+            displayName: displayName,
+            contactState: contactState,
+            hostBundle: hostBundle,
+            confirm: confirmSas,
+            timeout: linkTimeout,
+          )
+        : await RelayPairing.runExistingDeviceV3(
+            relayUrl: transport.serverUrl,
+            code: PairingCode.parse(code),
+            me: me,
+            contacts: bundles,
+            displayName: displayName,
+            contactState: contactState,
+            hostBundle: hostBundle,
+            attest: _attestLinkedDevice,
+            confirm: confirmSas,
+            timeout: linkTimeout,
+          );
     if (linked == null) return false;
     await addMyDevice(linked, awaitProof: true);
     return true;
   }
+
+  /// How long [hostDeviceLink] waits for each of the new device's frames:
+  /// forty seconds, as long as the new device waits for each of this one's.
+  /// Tests shorten it.
+  @visibleForTesting
+  Duration linkTimeout = const Duration(seconds: 40);
+
+  /// 44.4 (§10.2 rule 7, ADR 0033 §1): the `pqdc` of the device [session]
+  /// is linking — the account's ML-DSA signature over the account key and
+  /// the `ded`, `dx` and `sk` its opening revealed and the digits both
+  /// screens showed covered, made over `sk` because this root holds the hash
+  /// of the new device's sealing key and not yet the key. Asked for by the
+  /// ceremony once the digits are confirmed, and sealed into the enrolment.
+  /// Null on a device that holds no ML-DSA seed — never a root, the one
+  /// device that links — and the enrolment then carries none.
+  Future<Uint8List?> _attestLinkedDevice(PairingSessionV3 session) async {
+    final made = debugLinkAttestation;
+    if (made != null) return made(session);
+    final pq = await pqIdentity();
+    if (pq == null) return null;
+    return signDeviceAttestationFromHash(
+        accountKey: pq,
+        deviceEdPub: session.peerDeviceEdPub!,
+        deviceXPub: session.peerDeviceXPub!,
+        sk: session.peerSealKeyHash!);
+  }
+
+  /// Test seam: the `pqdc` [hostDeviceLink] seals into the enrolment, in
+  /// place of the one this root signs — one that does not verify is what a
+  /// new device must refuse (§10.2 rule 7).
+  @visibleForTesting
+  Future<Uint8List?> Function(PairingSessionV3 session)? debugLinkAttestation;
+
+  /// Test seam: link as a build from before 44.4 does — pairing v2 (§10.1),
+  /// with no `pqdc` in the enrolment. What a new device of this build makes
+  /// of an existing device on an older version is the case it models.
+  @visibleForTesting
+  bool debugPairAsVersion2 = false;
 
   /// Test seam: link as a build from before phase 33 does — no `cstate`, no
   /// `hostbundle` (§10). What a new device of this build makes of an
