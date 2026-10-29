@@ -473,11 +473,14 @@ void main() {
     await t.pump(const Duration(milliseconds: 350));
   }
 
-  /// Unmount, and let the screen's own work finish against a live vault.
+  /// Unmount once the screen's own work is done: the safety number it works
+  /// out as it opens is on it, the spinner gone — the one thing it starts
+  /// that runs on against the vault — so nothing of it is left running.
   Future<void> leave(WidgetTester t) async {
+    await settleUntil(
+        t, () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        what: 'the safety number worked out, on the screen');
     await t.pumpWidget(const SizedBox());
-    await t.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 300)));
   }
 
   test(
@@ -984,12 +987,16 @@ void main() {
             w is SelectableText && (w.data?.startsWith('9') ?? false)),
         findsOneWidget,
         reason: 'and the code on the card says so');
-    // The round the tab runs behind the button meets a refused socket; let
-    // it finish, in real time and on the fake clock, so nothing is left in
-    // flight.
-    await t.runAsync(() => Future<void>.delayed(const Duration(seconds: 1)));
-    await t.pump(const Duration(seconds: 20));
-    await t.pump(const Duration(seconds: 20));
+    // The round the tab runs behind the button meets a refused socket, and
+    // the card says so once that round is over: nothing of it is left in
+    // flight when the tab goes.
+    await settleUntil(
+        t,
+        () => find
+            .textContaining('Could not reach the relay')
+            .evaluate()
+            .isNotEmpty,
+        what: "the button's round over, its failure on the card");
     await t.pumpWidget(const SizedBox());
 
     // In lib/, the seam is set nowhere, and the version-3 inviter is reached
