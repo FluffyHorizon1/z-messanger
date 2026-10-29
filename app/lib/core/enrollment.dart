@@ -160,30 +160,57 @@ const String rootBundleKey = 'root_bundle';
 /// certificate and the contacts are each checked on their own, and this
 /// device then asks its root for its `pqdc` over self-sync, as a device
 /// linked before 44.4 does (§9, `dir:"pqdc"`).
+///
+/// All of it is one transaction, and `identity` its last write: a vault
+/// that holds an identity is a device that is set up, and its next start
+/// opens the account rather than onboarding (`main.dart`). Every row used to
+/// be written on its own, the identity first, so an install that failed
+/// part-way — storage full, a write the vault refused — left a vault that
+/// started as a linked device, with the account and not all of its
+/// contacts, on an account that never listed it. It now leaves nothing of
+/// the account: the link screen says it could not install, and the next
+/// attempt starts again on a vault with no identity.
 Future<void> installEnrollment(Vault vault, PairingResult result,
     {SealingKey? sealingKey}) async {
   final acct = result.account;
   final data = result.data;
-  await vault.kvPut(
-      'identity',
-      jsonEncode(
-          {'edSeed': b64(acct.deviceEdSeed), 'xSeed': b64(acct.deviceXSeed)}));
-  await vault.kvPut('account', jsonEncode(acct.toJson()));
-  if (sealingKey != null) {
-    await vault.kvPut(sealSeedKey, b64(sealingKey.seed));
-    if (enrolmentAttestsMe(data, acct, sealingKey)) {
-      await vault.kvPut(ownPqdcKey, b64(data.pqdc!));
+  // Nothing inside reaches for `vault.db`, which waits for this transaction:
+  // every write goes through `txn`, and what is worked out between them —
+  // sealing, checking each record — reads nothing from the vault.
+  await vault.db.transaction((txn) async {
+    await vault.kvPut('account', jsonEncode(acct.toJson()), txn: txn);
+    if (sealingKey != null) {
+      await vault.kvPut(sealSeedKey, b64(sealingKey.seed), txn: txn);
+      if (enrolmentAttestsMe(data, acct, sealingKey)) {
+        await vault.kvPut(ownPqdcKey, b64(data.pqdc!), txn: txn);
+      }
     }
-  }
-  await vault.kvPut('display_name', data.displayName ?? 'Me');
-  // Remember the device that linked us, so our messages mirror back to it.
-  await vault.kvPut('my_devices', jsonEncode([data.hostDeviceCert.toJson()]),
-      sensitive: false);
-  final root = data.hostBundle;
-  if (root != null &&
-      await isRootBundle(root, data.accountEdPub, data.hostDeviceCert)) {
-    await vault.kvPut(rootBundleKey, jsonEncode(root.toJson()));
-  }
+    await vault.kvPut('display_name', data.displayName ?? 'Me', txn: txn);
+    // Remember the device that linked us, so our messages mirror back to it.
+    await vault.kvPut(
+        'my_devices', jsonEncode([data.hostDeviceCert.toJson()]),
+        sensitive: false, txn: txn);
+    final root = data.hostBundle;
+    if (root != null &&
+        await isRootBundle(root, data.accountEdPub, data.hostDeviceCert)) {
+      await vault.kvPut(rootBundleKey, jsonEncode(root.toJson()), txn: txn);
+    }
+    await _installContacts(vault, txn, data);
+    await vault.kvPut(
+        'identity',
+        jsonEncode({
+          'edSeed': b64(acct.deviceEdSeed),
+          'xSeed': b64(acct.deviceXSeed)
+        }),
+        txn: txn);
+  });
+}
+
+/// [installEnrollment]'s contacts, each as the phone holds it when its
+/// record checks out and from its account bundle alone when not, written
+/// through [txn].
+Future<void> _installContacts(
+    Vault vault, DatabaseExecutor txn, EnrollmentData data) async {
   final state = <String, Map<String, Object?>>{
     for (final r in data.contactState ?? const <Map<String, Object?>>[])
       r['rid'] as String: r
@@ -199,7 +226,7 @@ Future<void> installEnrollment(Vault vault, PairingResult result,
     final full = record == null
         ? null
         : await _fromRecord(record, rid, b, dev, fromBundle, now);
-    await vault.db.insert(
+    await txn.insert(
         'contacts',
         {
           'rid': rid,
@@ -232,7 +259,8 @@ Future<void> installEnrollment(Vault vault, PairingResult result,
         conflictAlgorithm: ConflictAlgorithm.replace);
     for (final e in (full?.kv ?? const <String, String>{}).entries) {
       final key = '${e.key}$rid';
-      await vault.kvPut(key, e.value, sensitive: !Vault.mayBePlain(key));
+      await vault.kvPut(key, e.value,
+          sensitive: !Vault.mayBePlain(key), txn: txn);
     }
   }
 }

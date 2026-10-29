@@ -72,8 +72,9 @@
 //      it could not open or install the account, in English and Spanish;
 //  14. nor is one the laptop cannot install: the link screen installs the
 //      enrolment into the vault before the ceremony acknowledges it, and an
-//      install that fails leaves the laptop unlisted, its screen saying so
-//      in both languages;
+//      install that fails part-way leaves the laptop unlisted, its screen
+//      saying so in both languages, and nothing of the account in its vault
+//      — no identity for its next start to take as set up;
 //  15. a phone whose person confirms first, and a laptop whose person
 //      confirms after the phone stopped waiting: each screen says why the
 //      link stopped, nothing is linked, and the relay keeps the receipt for
@@ -1343,8 +1344,14 @@ void main() {
     final hosted = alice.svc
         .hostDeviceLink(n.code, confirmSas: (_) async => true)
         .then<Object?>((r) => r, onError: (Object e) => e);
-    // The link screen installs the enrolment as the ceremony's last step;
-    // here the vault refuses the write.
+    // The link screen installs the enrolment as the ceremony's last step,
+    // as here; and here the laptop's vault refuses a write part-way through
+    // it — the row for the device that linked it, which comes after the
+    // account and before the contacts.
+    final vault = await Vault.open(rootOverride: await tempDir('Alice14-l'));
+    await vault.db.execute('CREATE TRIGGER refuse BEFORE INSERT ON kv '
+        "WHEN NEW.k = 'p:my_devices' "
+        "BEGIN SELECT RAISE(ABORT, 'the vault refused the write'); END");
     var installing = false;
     final laptop = await n
         .run(
@@ -1354,7 +1361,8 @@ void main() {
           margin: const Duration(seconds: 1),
           install: (result) async {
             installing = true;
-            throw const FileSystemException('the vault refused the write');
+            await setRelayUrl(vault, relayUrl(), acceptedInsecure: true);
+            await installEnrollment(vault, result, sealingKey: n.sealingKey);
           },
         )
         .then<Object?>((r) => r, onError: (Object e) => e);
@@ -1362,6 +1370,13 @@ void main() {
         'be installed');
     expect('$laptop', contains('the vault refused the write'),
         reason: 'what stopped it was the install');
+    // Nothing of the account is left in the vault, the identity above all:
+    // a vault that holds one starts as a device that is set up. (Compared
+    // with null rather than shown: it is a device's seeds.)
+    expect(await vault.kvGet('identity') == null, isTrue,
+        reason: 'no identity for its next start to take as set up');
+    expect(await vault.kvGet('account') == null, isTrue,
+        reason: 'nor the account, written before the refused row');
     expect(laptopScreen(laptop), laptopInstallFailed,
         reason: "the laptop's screen says it could not install the account, "
             'in words, not in the error that stopped it');

@@ -2130,8 +2130,10 @@ runners are left as they were.
 **Linked on the enrollment's acknowledgement (v3).** The new device takes
 `enroll-v3` to be acknowledged later, and acknowledges it only once it has
 opened the enrollment and installed it — the reference client installs it
-into its vault first — so the relay's `delivered` for it says that the new
-device holds its account. The existing device links the new device on that
+into its vault first, in one transaction whose last write is the device's
+identity, so that an install that fails part‑way leaves nothing a later
+start would take for a device that is set up — so the relay's `delivered`
+for it says that the new device holds its account. The existing device links the new device on that
 report alone: it waits for it as long as the new device can take, and with
 none it links nothing, as for a new device that stopped waiting or could
 not open or install what it was sent. The new device waits for the
