@@ -2030,6 +2030,26 @@ v2 one, whose `commit-v2` and `reply-v2` are 68 and 70 bytes, as it can tell
 a version‑3 connect ceremony (§20.9, R24); the register row that says so
 comes with 44.4, which runs the ceremony.
 
+**Acknowledgement.** Each side of a ceremony, v2 or v3, acknowledges every
+frame it reads — `recv` with the frame's `id` and its sender (§12.5), as an
+ordinary envelope is acknowledged — as soon as it takes it, since a ceremony
+keeps nothing past its run and a frame read is as kept as it will be; and a
+frame that arrived and was not taken (a copy a reconnect flushed again, a
+kind it was not waiting for) is acknowledged when that side closes the
+mailbox. An existing device acknowledges the first frame of an older new
+device it recognises (§10.1 rule 4, rule 6 above) and sends nothing else
+for it: the relay drops the frame, and the older device is answered with
+nothing. The existing device keeps its connection after sending its
+enrollment until the relay's `delivered` for it arrives — at most ten
+seconds — so that the receipt for the new device's acknowledgement (§12.5
+item 3) is handed to it, not queued for a mailbox nobody reads again. So a
+finished ceremony leaves nothing on the relay. Until 2026‑10‑28 neither side
+acknowledged any frame: all four stayed queued until `QUEUE_TTL_HOURS` (72),
+the enrollment among them — 10 479 bytes of the relay's store for an account
+with one contact, measured through the app at 4.7.2. A frame sent to a side
+that never reads it — the other device gone, or never there — still waits
+out the queue's lifetime, as any envelope does.
+
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.
 

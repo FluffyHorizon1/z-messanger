@@ -196,4 +196,236 @@ void main() {
         reason: 'no safety string was ever shown: detect, do not transact');
     await oldFut;
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a v2 host whose relay refuses its second connection closes the first',
+      () async {
+    // A front before the relay that refuses the second connection it is
+    // asked to upgrade, and holds each client socket it accepted until that
+    // socket closes. It passes the Host header through, so the relay checks
+    // each authentication as it would without the front.
+    final front = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final open = <WebSocket>{};
+    var asked = 0;
+    front.listen((req) async {
+      asked++;
+      if (asked == 2) {
+        req.response.statusCode = HttpStatus.serviceUnavailable;
+        await req.response.close();
+        return;
+      }
+      final down = await WebSocketTransformer.upgrade(req);
+      open.add(down);
+      final up = await WebSocket.connect('ws://127.0.0.1:$port',
+          headers: {'host': req.headers.value('host') ?? ''});
+      void gone() {
+        open.remove(down);
+        up.close();
+      }
+
+      down.listen(up.add, onDone: gone, onError: (Object _) => gone());
+      up.listen(down.add,
+          onDone: () => down.close(), onError: (Object _) => down.close());
+    });
+    try {
+      var shown = false;
+      await expectLater(
+          RelayPairing.runExistingDeviceV2(
+            relayUrl: 'ws://127.0.0.1:${front.port}',
+            code: PairingCode.generate(),
+            me: await AccountIdentity.generate(),
+            contacts: const [],
+            includeAccountRoot: false,
+            confirm: (s) async {
+              shown = true;
+              return true;
+            },
+          ),
+          throwsA(isA<WebSocketException>()),
+          reason: 'the second connection is refused');
+      expect(asked, 2, reason: 'one connection made, the second refused');
+      expect(shown, isFalse);
+      await waitUntil(() => open.isEmpty,
+          what: 'the connection the host had made to close');
+    } finally {
+      await front.close(force: true);
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  // Every frame a ceremony reads is acknowledged, as an ordinary envelope
+  // is (§12.5), and the existing device stays until the relay reports the
+  // enrolment acknowledged, so nothing of a finished ceremony is left on the
+  // relay — not a frame, not a receipt. Until 44.4 neither side acknowledged
+  // anything, and each ceremony's four frames, the whole enrolment among
+  // them, stayed in relay RAM for QUEUE_TTL_HOURS (72). Read from the
+  // relay's own gauges, on a relay of the group's own: z_queued_envelopes
+  // and z_store_bytes, each before the ceremony and once both sides are
+  // done.
+  group('acknowledgements', () {
+    late Process ackRelay;
+    late int ackPort;
+    late String url;
+    const token = 'z-pairtest-metrics';
+
+    setUpAll(() async {
+      final serverDir =
+          '${Directory.current.parent.path}${Platform.pathSeparator}server';
+      final portProbe =
+          await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      ackPort = portProbe.port;
+      await portProbe.close();
+      ackRelay = await Process.start('node', ['server.js'],
+          workingDirectory: serverDir,
+          environment: {
+            'PORT': '$ackPort',
+            'LOG_LEVEL': 'silent',
+            'METRICS_TOKEN': token,
+          });
+      ackRelay.stderr
+          .transform(utf8.decoder)
+          .listen((s) => print('[relay-err] ${s.trimRight()}'));
+      url = 'ws://127.0.0.1:$ackPort';
+      for (var i = 0; i < 50; i++) {
+        try {
+          final res = await (await HttpClient()
+                  .getUrl(Uri.parse('http://127.0.0.1:$ackPort/health')))
+              .close();
+          await res.drain<void>();
+          if (res.statusCode == 200) return;
+        } catch (_) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+      }
+      fail('relay did not start');
+    });
+
+    tearDownAll(() => ackRelay.kill());
+
+    /// What the relay holds: (envelopes queued, bytes they are charged at).
+    Future<(int, int)> held() async {
+      final req = await HttpClient()
+          .getUrl(Uri.parse('http://127.0.0.1:$ackPort/metrics'));
+      req.headers.set('authorization', 'Bearer $token');
+      final res = await req.close();
+      final body = await res.transform(utf8.decoder).join();
+      expect(res.statusCode, 200, reason: '/metrics with the test token');
+      int gauge(String name) => int.parse(RegExp('^$name (\\d+)\$',
+              multiLine: true)
+          .firstMatch(body)!
+          .group(1)!);
+      return (gauge('z_queued_envelopes'), gauge('z_store_bytes'));
+    }
+
+    /// Waits until the relay holds again what it held at [before]; fails
+    /// with what it holds instead.
+    Future<void> heldAgain((int, int) before, String what) async {
+      var now = await held();
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (now != before && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        now = await held();
+      }
+      print('$what: the relay held $before before and $now after '
+          '(envelopes, bytes)');
+      expect(now, before,
+          reason: '$what leaves nothing on the relay: '
+              '${now.$1 - before.$1} envelopes, ${now.$2 - before.$2} bytes '
+              'more than before');
+    }
+
+    test('a v3 ceremony leaves nothing on the relay', () async {
+      final before = await held();
+      final phone = await AccountIdentity.generate();
+      final carol = await AccountIdentity.generate();
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final results = await Future.wait([
+        RelayPairing.runNewDeviceV3(
+            relayUrl: url, n: desktop, confirm: (s) async => true),
+        RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: phone,
+          contacts: [carol.toAccountBundle(displayName: 'Carol')],
+          displayName: 'Alice',
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+        ),
+      ]);
+      expect(results[0], isNotNull, reason: 'the new device was enrolled');
+      expect(results[1], isNotNull, reason: 'the host linked it');
+      await heldAgain(before, 'a v3 ceremony');
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('a v2 ceremony leaves nothing on the relay', () async {
+      final before = await held();
+      final phone = await AccountIdentity.generate();
+      final carol = await AccountIdentity.generate();
+      final code = PairingCode.generate();
+      final results = await Future.wait([
+        RelayPairing.runNewDeviceV2(
+            relayUrl: url,
+            n: await PairingInitiatorV2.create(code: code),
+            confirm: (s) async => true),
+        RelayPairing.runExistingDeviceV2(
+          relayUrl: url,
+          code: code,
+          me: phone,
+          contacts: [carol.toAccountBundle(displayName: 'Carol')],
+          includeAccountRoot: false,
+          displayName: 'Alice',
+          confirm: (s) async => true,
+        ),
+      ]);
+      expect(results[0], isNotNull, reason: 'the new device was enrolled');
+      expect(results[1], isNotNull, reason: 'the host linked it');
+      await heldAgain(before, 'a v2 ceremony');
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('a v3 host that hears an older device leaves nothing of it',
+        () async {
+      for (final version in [2, 1]) {
+        final before = await held();
+        final code = PairingCode.generate();
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 20),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final old = version == 2
+            ? RelayPairing.runNewDeviceV2(
+                relayUrl: url,
+                n: await PairingInitiatorV2.create(code: code),
+                confirm: (s) async => true,
+                timeout: const Duration(seconds: 4),
+              ).then<Object?>((r) => r, onError: (Object e) => e)
+            : RelayPairing.runNewDevice(
+                relayUrl: url,
+                n: await PairingInitiator.create(code: code),
+                confirm: (s) async => true,
+                timeout: const Duration(seconds: 4),
+              ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(await host, isA<PairingAbort>(),
+            reason: 'the host recognised the version-$version device');
+        expect(await old, isNot(isA<PairingResult>()));
+        await heldAgain(
+            before, 'a v3 host recognising a version-$version device');
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+  });
+}
+
+/// Polls [done] until it holds, failing with [what] after [timeout]: a wait
+/// on something observable, never a sleep standing in for one.
+Future<void> waitUntil(bool Function() done,
+    {required String what,
+    Duration timeout = const Duration(seconds: 15)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!done()) {
+    if (DateTime.now().isAfter(deadline)) fail('timed out waiting for $what');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
 }

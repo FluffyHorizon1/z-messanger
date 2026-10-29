@@ -19,6 +19,15 @@ import 'util.dart';
 /// user to confirm it, then the existing device seals the enrollment blob to
 /// the new device. The relay only ever sees opaque, single-use traffic between
 /// two ephemeral mailboxes.
+///
+/// v2 and v3 acknowledge every frame they read, as an ordinary envelope is
+/// acknowledged (§12.5): the relay holds a frame until its recipient says it
+/// has it, and a ceremony that never said so left its four frames — the
+/// whole enrolment among them — on the relay for `QUEUE_TTL_HOURS`. The
+/// existing device keeps its connection until the relay reports the new
+/// device's acknowledgement of the enrolment, so that the relay's receipt
+/// for it is handed over rather than queued at a mailbox nobody reads again.
+/// The v1 runners are left as builds before v2 ran them.
 
 const String _relayCtx = 'z-pair-relay:';
 // v2 (§10.1) derives its throwaway mailboxes from a different context, so a
@@ -28,6 +37,13 @@ const String _relayCtx = 'z-pair-relay:';
 const String _relayCtxV2 = 'z-pair-relay-v2:';
 // v3 (§10.2) the same way again: v3 transacts only on its own mailboxes.
 const String _relayCtxV3 = 'z-pair-relay-v3:';
+
+/// The longest an existing device waits, once its enrolment is sent, for the
+/// relay to report that the new device acknowledged it. The new device
+/// acknowledges the moment it reads the frame, so the report comes back
+/// within a poll or two; a new device that is gone never acknowledges, and
+/// the wait ends here rather than at the ceremony's timeout.
+const Duration _enrolmentReceiptWait = Duration(seconds: 10);
 
 /// One completed enrollment on the new device.
 class PairingResult {
@@ -154,20 +170,18 @@ class RelayPairing {
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
   }) async {
-    final client =
-        await RelayClient.connect(relayUrl, await relayIdentityV2(n.code, 'i'));
-    final inbox = <RelayInbound>[];
-    final sub = client.messages.listen(inbox.add);
+    final box =
+        await _Mailbox.open(relayUrl, await relayIdentityV2(n.code, 'i'));
     try {
       final rMailbox = await (await relayIdentityV2(n.code, 'r')).routingId();
-      await client.send(
+      await box.client.send(
           to: rMailbox,
           id: 'z-pair-commit',
           payload: jsonEncode({'k': 'commit-v2', ...await n.commit()}));
 
       final Map<String, Object?> reply;
       try {
-        reply = await _awaitKind(inbox, 'reply-v2', timeout);
+        reply = await _awaitFrame(box, 'reply-v2', timeout);
       } on TimeoutException {
         // Nothing answered where a v2 device would. The likeliest reason by
         // far is that the other device is older: it is listening on the v1
@@ -177,20 +191,19 @@ class RelayPairing {
             'version of Z, which cannot pair with this one until it is updated');
       }
       final (open, session) = await n.open(reply);
-      await client.send(
+      await box.client.send(
           to: rMailbox,
           id: 'z-pair-open',
           payload: jsonEncode({'k': 'open-v2', ...open}));
 
       if (!await confirm(session.sas)) return null;
 
-      final env = await _awaitKind(inbox, 'enroll-v2', timeout);
+      final env = await _awaitFrame(box, 'enroll-v2', timeout);
       final data = await session.openEnrollment(unb64(env['blob'] as String));
       final account = await n.installFromData(data);
       return PairingResult(account, data);
     } finally {
-      await sub.cancel();
-      await client.close();
+      await box.close();
     }
   }
 
@@ -200,8 +213,9 @@ class RelayPairing {
   /// It also holds its **v1** mailbox open, and never answers there. That is
   /// the one direction in which an old peer is detectable: a v1 new device
   /// speaks first, so its `hello` arrives and can be recognised for what it
-  /// is. Detect, do not transact — completing a v1 ceremony here would hand
-  /// back exactly the assurance v2 exists to replace.
+  /// is — [PairingPeerOutdated], version 1. Detect, do not transact —
+  /// completing a v1 ceremony here would hand back exactly the assurance v2
+  /// exists to replace.
   ///
   /// [contactState] and [hostBundle] are the enrolment's optional members
   /// (§10, phase 33), sealed with the rest when given.
@@ -217,25 +231,26 @@ class RelayPairing {
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
   }) async {
-    final client =
-        await RelayClient.connect(relayUrl, await relayIdentityV2(code, 'r'));
-    final legacy =
-        await RelayClient.connect(relayUrl, await relayIdentity(code, 'r'));
-    final inbox = <RelayInbound>[];
-    final legacyInbox = <RelayInbound>[];
-    final sub = client.messages.listen(inbox.add);
-    final legacySub = legacy.messages.listen(legacyInbox.add);
+    // Both connections are made inside the try, one after the other, so a
+    // relay that refuses the second still has the first closed. They used
+    // to be made before it: a refused second connection threw past the
+    // `finally`, and the first stayed open, pinging every 25 s, as a mailbox
+    // nobody read, for as long as the app ran.
+    _Mailbox? box, v1;
     try {
+      box = await _Mailbox.open(relayUrl, await relayIdentityV2(code, 'r'));
+      v1 = await _Mailbox.open(relayUrl, await relayIdentity(code, 'r'));
       final iMailbox = await (await relayIdentityV2(code, 'i')).routingId();
-      final commit = await _awaitKind(inbox, 'commit-v2', timeout,
-          alsoWatch: legacyInbox, abortOnKind: 'hello');
+      final commit = await _awaitCommit(box, 'commit-v2', timeout, v1: v1);
+      await v1.close();
+      v1 = null;
       final (reply, pending) = await PairingResponderV2.reply(commit);
-      await client.send(
+      await box.client.send(
           to: iMailbox,
           id: 'z-pair-reply',
           payload: jsonEncode({'k': 'reply-v2', ...reply}));
 
-      final open = await _awaitKind(inbox, 'open-v2', timeout);
+      final open = await _awaitFrame(box, 'open-v2', timeout);
       final session = await pending.accept(open);
 
       if (!await confirm(session.sas)) return null;
@@ -247,16 +262,14 @@ class RelayPairing {
           displayName: displayName,
           contactState: contactState,
           hostBundle: hostBundle);
-      await client.send(
+      await _sendEnrolment(box,
           to: iMailbox,
-          id: 'z-pair-enroll',
-          payload: jsonEncode({'k': 'enroll-v2', 'blob': b64(sealed)}));
+          payload: jsonEncode({'k': 'enroll-v2', 'blob': b64(sealed)}),
+          timeout: timeout);
       return newDeviceCert;
     } finally {
-      await sub.cancel();
-      await legacySub.cancel();
-      await client.close();
-      await legacy.close();
+      await box?.close();
+      await v1?.close();
     }
   }
 
@@ -272,40 +285,37 @@ class RelayPairing {
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
   }) async {
-    final client =
-        await RelayClient.connect(relayUrl, await relayIdentityV3(n.code, 'i'));
-    final inbox = <RelayInbound>[];
-    final sub = client.messages.listen(inbox.add);
+    final box =
+        await _Mailbox.open(relayUrl, await relayIdentityV3(n.code, 'i'));
     try {
       final rMailbox = await (await relayIdentityV3(n.code, 'r')).routingId();
-      await client.send(
+      await box.client.send(
           to: rMailbox,
           id: 'z-pair-commit',
           payload: jsonEncode({'k': 'commit-v3', ...await n.commit()}));
 
       final Map<String, Object?> reply;
       try {
-        reply = await _awaitKind(inbox, 'reply-v3', timeout);
+        reply = await _awaitFrame(box, 'reply-v3', timeout);
       } on TimeoutException {
         throw const PairingAbort(
             'the other device did not answer — it may be running an older '
             'version of Z, which cannot pair with this one until it is updated');
       }
       final (open, session) = await n.open(reply);
-      await client.send(
+      await box.client.send(
           to: rMailbox,
           id: 'z-pair-open',
           payload: jsonEncode({'k': 'open-v3', ...open}));
 
       if (!await confirm(session.sas)) return null;
 
-      final env = await _awaitKind(inbox, 'enroll-v3', timeout);
+      final env = await _awaitFrame(box, 'enroll-v3', timeout);
       final data = await session.openEnrollment(unb64(env['blob'] as String));
       final account = await n.installFromData(data);
       return PairingResult(account, data);
     } finally {
-      await sub.cancel();
-      await client.close();
+      await box.close();
     }
   }
 
@@ -317,7 +327,8 @@ class RelayPairing {
   /// arrives, and never answers on either: an older new device speaks first,
   /// so its `commit-v2` or `hello` arrives and is recognised —
   /// [PairingPeerOutdated], naming the version, so the person can be told
-  /// which device to update. Detect, do not transact.
+  /// which device to update. Detect, do not transact: the older frame is
+  /// acknowledged, so the relay drops it, and answered with nothing.
   ///
   /// [attest] is asked, once the digits are confirmed, for the new device's
   /// `pqdc` (ADR 0033 §1) — the root's signature over what the session says
@@ -340,31 +351,27 @@ class RelayPairing {
     // a relay that refuses the second or the third still has the ones
     // before it closed: nothing is left open, pinging, as a mailbox nobody
     // reads.
-    RelayClient? client, v2, v1;
-    StreamSubscription<RelayInbound>? sub, v2Sub, v1Sub;
+    _Mailbox? box, v2, v1;
     try {
-      client =
-          await RelayClient.connect(relayUrl, await relayIdentityV3(code, 'r'));
-      v2 =
-          await RelayClient.connect(relayUrl, await relayIdentityV2(code, 'r'));
-      v1 = await RelayClient.connect(relayUrl, await relayIdentity(code, 'r'));
-      final inbox = <RelayInbound>[];
-      final v2Inbox = <RelayInbound>[];
-      final v1Inbox = <RelayInbound>[];
-      sub = client.messages.listen(inbox.add);
-      v2Sub = v2.messages.listen(v2Inbox.add);
-      v1Sub = v1.messages.listen(v1Inbox.add);
+      box = await _Mailbox.open(relayUrl, await relayIdentityV3(code, 'r'));
+      v2 = await _Mailbox.open(relayUrl, await relayIdentityV2(code, 'r'));
+      v1 = await _Mailbox.open(relayUrl, await relayIdentity(code, 'r'));
       final iMailbox = await (await relayIdentityV3(code, 'i')).routingId();
       final commit =
-          await _awaitV3Commit(inbox, timeout, v2: v2Inbox, v1: v1Inbox);
+          await _awaitCommit(box, 'commit-v3', timeout, v2: v2, v1: v1);
+      // The older mailboxes were held for the first frame alone.
+      await v2.close();
+      v2 = null;
+      await v1.close();
+      v1 = null;
       final (reply, pending) =
           await PairingResponderV3.reply(commit, code: code);
-      await client.send(
+      await box.client.send(
           to: iMailbox,
           id: 'z-pair-reply',
           payload: jsonEncode({'k': 'reply-v3', ...reply}));
 
-      final open = await _awaitKind(inbox, 'open-v3', timeout);
+      final open = await _awaitFrame(box, 'open-v3', timeout);
       final session = await pending.accept(open);
 
       if (!await confirm(session.sas)) return null;
@@ -376,58 +383,87 @@ class RelayPairing {
           contactState: contactState,
           hostBundle: hostBundle,
           pqdc: attest == null ? null : await attest(session));
-      await client.send(
+      await _sendEnrolment(box,
           to: iMailbox,
-          id: 'z-pair-enroll',
-          payload: jsonEncode({'k': 'enroll-v3', 'blob': b64(sealed)}));
+          payload: jsonEncode({'k': 'enroll-v3', 'blob': b64(sealed)}),
+          timeout: timeout);
       return newDeviceCert;
     } finally {
-      await sub?.cancel();
-      await v2Sub?.cancel();
-      await v1Sub?.cancel();
-      await client?.close();
+      await box?.close();
       await v2?.close();
       await v1?.close();
     }
   }
 
-  /// [_awaitKind] for v3's first frame, with both older ceremonies' first
-  /// frames watched for — only read, never answered: a `commit-v2` on the v2
-  /// mailbox, or a `hello` on the v1 one, ends the wait with
-  /// [PairingPeerOutdated] naming the version.
-  static Future<Map<String, Object?>> _awaitV3Commit(
-      List<RelayInbound> inbox, Duration timeout,
-      {required List<RelayInbound> v2, required List<RelayInbound> v1}) async {
+  /// [_awaitFrame] for a ceremony's first frame, of [kind] on [box], with the
+  /// older ceremonies' first frames watched for on their own mailboxes —
+  /// only read, never answered: a `commit-v2` on [v2], or a `hello` on [v1],
+  /// ends the wait with [PairingPeerOutdated] naming the version.
+  static Future<Map<String, Object?>> _awaitCommit(
+      _Mailbox box, String kind, Duration timeout,
+      {_Mailbox? v2, _Mailbox? v1}) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
-      final found = _take(inbox, 'commit-v3');
+      final found = box.take(kind);
       if (found != null) return found;
-      if (_take(v2, 'commit-v2') != null) throw const PairingPeerOutdated(2);
-      if (_take(v1, 'hello') != null) throw const PairingPeerOutdated(1);
+      if (v2 != null && v2.take('commit-v2') != null) {
+        throw const PairingPeerOutdated(2);
+      }
+      if (v1 != null && v1.take('hello') != null) {
+        throw const PairingPeerOutdated(1);
+      }
       if (DateTime.now().isAfter(deadline)) {
-        throw TimeoutException('pairing: no "commit-v3" frame arrived', timeout);
+        throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
       }
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
   }
 
-  /// Waits for a frame of [kind]. [alsoWatch] is a second inbox that is only
-  /// ever read, never answered: a frame of [abortOnKind] there ends the wait
-  /// with a [PairingAbort] naming the version problem.
+  /// Waits for a frame of [kind] on [box], taking — and so acknowledging —
+  /// the first that arrives.
+  static Future<Map<String, Object?>> _awaitFrame(
+      _Mailbox box, String kind, Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      final found = box.take(kind);
+      if (found != null) return found;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+  }
+
+  /// The existing device's last frame: the enrolment, sent, and then the
+  /// connection held — while it is open, for at most [_enrolmentReceiptWait]
+  /// or [timeout], whichever is shorter — until the relay reports that the
+  /// new device acknowledged it. The relay's receipt for that acknowledgement
+  /// is then handed to this side as it is made, instead of being queued for a
+  /// mailbox nobody reads again. Returns either way: this side's part is
+  /// done once the relay holds the enrolment.
+  static Future<void> _sendEnrolment(_Mailbox box,
+      {required String to,
+      required String payload,
+      required Duration timeout}) async {
+    const id = 'z-pair-enroll';
+    await box.client.send(to: to, id: id, payload: payload);
+    final wait =
+        timeout < _enrolmentReceiptWait ? timeout : _enrolmentReceiptWait;
+    final deadline = DateTime.now().add(wait);
+    while (!box.acknowledged(id) &&
+        box.client.isOpen &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+  }
+
+  /// Waits for a frame of [kind] (the v1 ceremony's runners).
   static Future<Map<String, Object?>> _awaitKind(
-      List<RelayInbound> inbox, String kind, Duration timeout,
-      {List<RelayInbound>? alsoWatch, String? abortOnKind}) async {
+      List<RelayInbound> inbox, String kind, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
       final found = _take(inbox, kind);
       if (found != null) return found;
-      if (alsoWatch != null && abortOnKind != null) {
-        if (_take(alsoWatch, abortOnKind) != null) {
-          throw const PairingAbort(
-              'the other device is running an older version of Z: update it, '
-              'then pair again');
-        }
-      }
       if (DateTime.now().isAfter(deadline)) {
         throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
       }
@@ -449,5 +485,74 @@ class RelayPairing {
       }
     }
     return null;
+  }
+}
+
+/// One of a ceremony's mailboxes, as one side holds it (v2 and v3): the
+/// connection, the frames that have arrived and not been taken, and which of
+/// this side's own frames the relay has reported acknowledged.
+///
+/// A frame is acknowledged the moment it is taken — read, and never to be
+/// read again — as an ordinary envelope is once it is stored (`recv` with
+/// its id and sender, §12.5), and whatever arrived and was never taken is
+/// acknowledged when the mailbox closes: a copy a reconnect flushed again, a
+/// frame of a kind this side was not waiting for. Nothing of a ceremony is
+/// left on the relay for `QUEUE_TTL_HOURS` by the side that read it.
+class _Mailbox {
+  final RelayClient client;
+  final _inbox = <RelayInbound>[];
+  final _acknowledged = <String>{};
+  late final StreamSubscription<RelayInbound> _frames;
+  late final StreamSubscription<DeliveredReceipt> _receipts;
+
+  _Mailbox._(this.client) {
+    _frames = client.messages.listen(_inbox.add);
+    _receipts = client.delivered.listen((r) => _acknowledged.add(r.id));
+  }
+
+  static Future<_Mailbox> open(String relayUrl, ZIdentity who) async =>
+      _Mailbox._(await RelayClient.connect(relayUrl, who));
+
+  /// The first frame of [kind] that has arrived, acknowledged and taken out;
+  /// null while none has. Frames of other kinds are left where they are.
+  Map<String, Object?>? take(String kind) {
+    for (var i = 0; i < _inbox.length; i++) {
+      final Object? j;
+      try {
+        j = jsonDecode(_inbox[i].payload);
+      } catch (_) {
+        continue;
+      }
+      if (j is Map && j['k'] == kind) {
+        _ack(_inbox.removeAt(i));
+        return j.cast<String, Object?>();
+      }
+    }
+    return null;
+  }
+
+  /// Whether the relay has reported that the frame this side sent as [id]
+  /// was acknowledged by the mailbox it went to.
+  bool acknowledged(String id) => _acknowledged.contains(id);
+
+  void _ack(RelayInbound frame) {
+    try {
+      client.ackReceived(id: frame.id, from: frame.from);
+    } catch (_) {
+      // The connection has gone, or is going: the relay keeps the frame and
+      // flushes it again to the next connection to this mailbox, as for any
+      // envelope.
+    }
+  }
+
+  /// Acknowledges whatever arrived and was not taken, then closes.
+  Future<void> close() async {
+    for (final frame in _inbox) {
+      _ack(frame);
+    }
+    _inbox.clear();
+    await _frames.cancel();
+    await _receipts.cancel();
+    await client.close();
   }
 }
