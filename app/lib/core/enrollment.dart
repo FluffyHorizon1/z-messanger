@@ -83,7 +83,8 @@ class NewDeviceLink {
   /// said the digits differ. Throws what the ceremony throws — among them
   /// [PairingNoAnswer] when nothing answered, most likely an existing device
   /// on an older version (§10.2 rule 6). Afterwards [code] is a new one if
-  /// this attempt's KEM key was spent.
+  /// this attempt's KEM key was spent, or if someone else holding the code
+  /// took its mailbox over ([PairingTakenOver]).
   ///
   /// [install], when given, keeps the enrolment — the link screen installs
   /// it into this device's vault ([installEnrollment]) — before the ceremony
@@ -107,6 +108,7 @@ class NewDeviceLink {
       return result;
     }
     final n = _v3!;
+    var known = false;
     try {
       return await RelayPairing.runNewDeviceV3(
           relayUrl: relayUrl,
@@ -115,8 +117,13 @@ class NewDeviceLink {
           timeout: timeout,
           margin: margin,
           install: install);
+    } on PairingTakenOver {
+      // Someone else holds this code: another connection logged in as its
+      // mailbox. The next attempt is a new ceremony whatever was spent.
+      known = true;
+      rethrow;
     } finally {
-      if (n.opened) {
+      if (n.opened || known) {
         _v3 = await PairingInitiatorV3.create(sealKey: sealingKey.ek);
       }
     }

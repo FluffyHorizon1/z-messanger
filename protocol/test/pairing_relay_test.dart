@@ -703,6 +703,121 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // A wait ends at once when its connection closes, and says that is why.
+    // The new device used to wait out the whole of its wait for the
+    // enrolment over a connection that had gone, and then say the other
+    // device had sent nothing. Here a front before the new device closes
+    // its connection as the enrolment comes down it.
+    test('a new device whose connection closes while it waits for the '
+        'enrolment says so at once', () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final tap = await front(url, (frame) => [frame],
+          cut: (frame) => kindOfFrame(frame) == 'enroll-v3');
+      try {
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final waited = Stopwatch();
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          n: desktop,
+          confirm: (s) async {
+            waited.start();
+            return true;
+          },
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        waited.stop();
+        expect(laptop, isA<RelayException>(),
+            reason: 'its connection closed, and it says so');
+        expect(waited.elapsed, lessThan(timeout),
+            reason: 'at once, and not when its wait for the enrolment, '
+                '${timeout + margin}, ran out');
+        final outcome = await host;
+        expect('$outcome', contains('did not finish linking'),
+            reason: 'the enrolment never reached it, and nothing is linked');
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // Both ceremony mailboxes' keys derive from the pairing code alone, so
+    // whoever has seen the code can log in as either, and the relay closes
+    // the connection that login replaces (4002). Here someone holding the
+    // code logs in as the new device's mailbox while the new device's person
+    // compares the digits, and acknowledges what the relay hands it — the
+    // reply among it, which the existing device takes for the new device's
+    // word. The new device says so once its person has answered, and does
+    // not wait out its timer for an enrolment that goes to the other login.
+    test('a new device whose mailbox someone holding the code logs in as '
+        'says so at once', () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final comparing = Completer<void>(), loggedIn = Completer<void>();
+      final host = RelayPairing.runExistingDeviceV3(
+        relayUrl: url,
+        code: code,
+        me: await AccountIdentity.generate(),
+        contacts: const [],
+        attest: (s) async => randomBytes(3309),
+        confirm: (s) async => true,
+        timeout: timeout,
+        margin: margin,
+      ).then<Object?>((r) => r, onError: (Object e) => e);
+      final waited = Stopwatch();
+      final laptop = RelayPairing.runNewDeviceV3(
+        relayUrl: url,
+        n: desktop,
+        confirm: (s) async {
+          comparing.complete();
+          // The person answers once the other login is in.
+          await loggedIn.future;
+          waited.start();
+          return true;
+        },
+        timeout: timeout,
+        margin: margin,
+      ).then<Object?>((r) => r, onError: (Object e) => e);
+      await comparing.future;
+      final other = await RelayClient.connect(
+          url, await RelayPairing.relayIdentityV3(code, 'i'));
+      final sub = other.messages
+          .listen((m) => other.ackReceived(id: m.id, from: m.from));
+      loggedIn.complete();
+      try {
+        final outcome = await laptop;
+        waited.stop();
+        expect('$outcome', contains('another connection took over'),
+            reason: 'the new device says another connection took its '
+                'mailbox over');
+        expect(waited.elapsed, lessThan(timeout),
+            reason: 'at once, and not when its wait for the enrolment ran '
+                'out');
+        // What §10.2 says is left: the existing device took the other
+        // login's acknowledgements for the new device's word.
+        final phone = await host;
+        // ignore: avoid_print
+        print('the existing device, on the other login\'s acknowledgements: '
+            '${phone is DeviceCertificate ? 'lists the new device' : phone}');
+      } finally {
+        await sub.cancel();
+        await other.close();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {

@@ -17,6 +17,12 @@ const String relayErrorBadIkey = 'bad_ikey';
 /// fetch is taken only on one that never did (§12.7). Carries no `id`.
 const String relayErrorAnonOnly = 'anon_only';
 
+/// The code a relay closes an authenticated connection with when another
+/// connection authenticates as the same routing id: a routing id is its
+/// newest login's (`server.js`, "replaced by new connection", on one
+/// instance and across an HA group alike).
+const int relayCloseReplaced = 4002;
+
 /// A single connection to a Z relay — authenticated, to receive from this
 /// device's mailbox; or anonymous ([connectAnonymous]), to send sealed
 /// envelopes from a connection the relay cannot attribute to anyone.
@@ -105,6 +111,12 @@ class RelayClient {
   Stream<DeliveredReceipt> get delivered => _delivered.stream;
 
   bool get isOpen => _ws.readyState == WebSocket.open;
+
+  /// The code the relay closed this connection with, once it has closed:
+  /// [relayCloseReplaced] when another connection authenticated as the same
+  /// routing id. Null while it is open, and for one that dropped with no
+  /// closing handshake.
+  int? get closeCode => _ws.closeCode;
 
   /// Lightweight reachability check used by the UI's "Test connection".
   /// Connects, waits for the relay's `challenge` frame (which proves it really

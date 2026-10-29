@@ -437,6 +437,16 @@ your phone sends nothing of your account until the new device says its code
 matched too. Confirm on both within about forty seconds of each other: each
 device waits that long for the other.
 
+Keep the pairing code the new device shows to yourself until the link has
+finished: anyone who sees it can interfere with the link while it runs.
+They cannot read anything that goes across, but they can make your phone
+add the new device even if you said on the new device that the codes
+differ, or when the new device never got your account. When that happens
+the new device says another connection took the link over, and shows a new
+code. Start again on both devices with the new code, and on your phone, in
+Settings → Linked devices, revoke any device there that you did not finish
+linking.
+
 **Both devices need this version of Z or later.** Linking changed in this
 version, and neither device falls back to the way older versions link. If
 the other device is older, the screen says which one to update: your phone

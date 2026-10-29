@@ -3,12 +3,14 @@ import 'dart:async' show TimeoutException;
 import 'package:z_protocol/z_protocol.dart'
     show
         PairingAbort,
+        PairingInstallFailed,
         PairingNoAnswer,
         PairingNoEnrolment,
         PairingPeerGaveUp,
         PairingPeerOutdated,
         PairingPeerUnconfirmed,
         PairingPeerUnfinished,
+        PairingTakenOver,
         RelayException;
 
 import 'app_localizations.dart';
@@ -23,8 +25,9 @@ import 'app_localizations.dart';
 // nothing, and says the device it is linking from may be older. Each way a
 // link stops on time — one person's confirmation not answered by the
 // other's, an enrolment that never came or was never installed — has words
-// of its own, and so do a timeout and a lost connection: none of them is a
-// raw exception in English.
+// of its own, and so do an enrolment that came and could not be opened or
+// installed, a mailbox someone else holding the code logged in as, a
+// timeout and a lost connection: none of them is a raw exception in English.
 
 /// The existing device's screen (`HostLinkScreen`): the new device spoke an
 /// older ceremony, so it is the new device that needs updating.
@@ -34,6 +37,7 @@ String hostLinkFailureText(AppLocalizations l, Object error) =>
       PairingPeerUnconfirmed() => l.linkPeerUnconfirmed,
       PairingPeerGaveUp() => l.linkPeerGaveUp,
       PairingPeerUnfinished() => l.linkPeerUnfinished,
+      PairingTakenOver() => l.linkHostTakenOver,
       PairingAbort(:final message) => l.linkFailed(message),
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,
@@ -46,6 +50,8 @@ String newDeviceLinkFailureText(AppLocalizations l, Object error) =>
     switch (error) {
       PairingNoAnswer() => l.linkHostMayBeOlder,
       PairingNoEnrolment() => l.linkNoEnrolment,
+      PairingInstallFailed() => l.linkInstallFailed,
+      PairingTakenOver() => l.linkTakenOver,
       PairingAbort(:final message) => l.linkFailed(message),
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,

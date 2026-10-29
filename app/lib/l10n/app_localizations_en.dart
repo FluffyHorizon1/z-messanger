@@ -530,6 +530,18 @@ class AppLocalizationsEn extends AppLocalizations {
       'The connection to the relay was lost during the link. Check that both devices are online, then start again on both.';
 
   @override
+  String get linkInstallFailed =>
+      'This device could not open or install the account your other device sent, so it is not linked. Check that this device has space free, then start again on both devices.';
+
+  @override
+  String get linkTakenOver =>
+      'Another connection took over this link, so this device is not linked: someone else may have seen the code. Start again on both devices with the new code, and keep it to yourself. If your other device lists this one anyway, revoke it there, under Settings → Linked devices.';
+
+  @override
+  String get linkHostTakenOver =>
+      'Another connection took over this link, so this device has not added the new one: someone else may have seen the code. Start again on both devices, and keep the code to yourself. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.';
+
+  @override
   String get linkADevice => 'Link a device';
 
   @override

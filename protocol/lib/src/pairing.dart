@@ -409,6 +409,30 @@ class PairingPeerUnfinished extends PairingAbort {
       : super('the new device did not finish linking');
 }
 
+/// A v3 new device was sent an enrolment and could not open or install it
+/// (§10.2): it did not open under the channel key — spoiled on its way —
+/// or broke a rule every enrolment keeps, such as carrying the account root,
+/// or installing it failed. Nothing was acknowledged, so the existing device
+/// links nothing. [cause] is what failed.
+class PairingInstallFailed extends PairingAbort {
+  final Object cause;
+  PairingInstallFailed(this.cause)
+      : super('the enrolment could not be opened or installed: $cause');
+}
+
+/// The relay closed this side's connection to its ceremony mailbox because
+/// another connection logged in as that mailbox (§10.2): a routing id is its
+/// newest login's (`relayCloseReplaced`), and the mailboxes' keys derive from
+/// the pairing code alone, so that login is someone else who holds the code.
+/// From then on what the relay holds for this side goes to that connection
+/// — and on the new device's mailbox its acknowledgements are what the
+/// existing device takes for the new device's word. The attempt stops here,
+/// whatever this side's person said, and the code is not used again.
+class PairingTakenOver extends PairingAbort {
+  const PairingTakenOver()
+      : super('another connection took over this side of the link');
+}
+
 /// A rendezvous frame's fixed-width field: a string that decodes to exactly
 /// [length] bytes, or the ceremony aborts.
 ///

@@ -33,8 +33,10 @@ import 'util.dart';
 /// once the relay has reported that; and it acknowledges the enrolment only
 /// once it has installed it, and the existing device links it only on that
 /// report. A copy of a frame that the relay delivers again is dropped and
-/// never acknowledged ([_Mailbox]). The v1 runners are left as builds before
-/// v2 ran them.
+/// never acknowledged ([_Mailbox]). A wait in v2 or v3 ends at once when its
+/// connection closes, and says so — [PairingTakenOver] when the relay closed
+/// it for another login to the same mailbox, which is anyone else who holds
+/// the code. The v1 runners are left as builds before v2 ran them.
 
 const String _relayCtx = 'z-pair-relay:';
 // v2 (§10.1) derives its throwaway mailboxes from a different context, so a
@@ -318,7 +320,17 @@ class RelayPairing {
   /// caller keeps it: the existing device links this one on the relay's
   /// report of that acknowledgement, so the report means this device has its
   /// account. Anything that fails before it leaves the enrolment
-  /// unacknowledged, and the existing device links nothing.
+  /// unacknowledged, and the existing device links nothing; an enrolment
+  /// that does not open or does not install ends the attempt in
+  /// [PairingInstallFailed].
+  ///
+  /// A connection that closes ends any wait at once, as a [RelayException],
+  /// or as [PairingTakenOver] when the relay closed it because another
+  /// connection logged in as this device's mailbox — someone else holding
+  /// the code. A takeover is also what the attempt ends in when it happened
+  /// while [confirm] was asking, whatever the person answered: that login
+  /// can acknowledge the reply, and the existing device may list this device
+  /// on it (§10.2).
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
@@ -353,7 +365,16 @@ class RelayPairing {
       // which the relay reports to the existing device, is what lets it send
       // the enrolment (§10.2). A person who says they differ leaves the
       // reply unacknowledged, and is sent nothing of the account.
-      if (!await confirm(session.sas)) return null;
+      final matched = await confirm(session.sas);
+      // While the person compared, someone else holding the code may have
+      // logged in as this mailbox, and the relay closed this connection for
+      // it: that login is handed the reply and can acknowledge it, which the
+      // existing device takes for this device's word. Said, whatever the
+      // person answered — the existing device may list this device on that
+      // word — and at once, rather than at the end of a wait for an
+      // enrolment that now goes to the other login.
+      if (_takenOver(box)) throw const PairingTakenOver();
+      if (!matched) return null;
       box.acknowledge(replied.$2);
 
       final (Map<String, Object?>, RelayInbound) enrolment;
@@ -362,10 +383,19 @@ class RelayPairing {
       } on TimeoutException catch (e) {
         throw PairingNoEnrolment(e.message ?? 'pairing: no enrolment');
       }
-      final data = await session
-          .openEnrollment(unb64(enrolment.$1['blob'] as String));
-      final result = PairingResult(await n.installFromData(data), data);
-      if (install != null) await install(result);
+      final PairingResult result;
+      try {
+        final blob = enrolment.$1['blob'];
+        if (blob is! String) throw const FormatException('no sealed blob');
+        final data = await session.openEnrollment(unb64(blob));
+        result = PairingResult(await n.installFromData(data), data);
+        if (install != null) await install(result);
+      } catch (e) {
+        // An enrolment that does not open, breaks a rule, or fails to
+        // install is one failure to this device's person: it is not linked,
+        // and the enrolment is not acknowledged.
+        throw PairingInstallFailed(e);
+      }
       box.acknowledge(enrolment.$2);
       return result;
     } finally {
@@ -408,7 +438,10 @@ class RelayPairing {
   /// ([PairingPeerUnfinished]) — and so too when this side's connection
   /// closes once the enrolment has started up it, or the relay refuses it:
   /// the report cannot come then, and the new device may hold its account
-  /// all the same, which a lost connection would not say.
+  /// all the same, which a lost connection would not say. Every other wait
+  /// ends at once when the connection closes, and any of them, that one
+  /// too, in [PairingTakenOver] when the relay closed it because another
+  /// connection logged in as this device's mailbox.
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -476,6 +509,7 @@ class RelayPairing {
           to: iMailbox,
           payload: jsonEncode({'k': 'enroll-v3', 'blob': b64(sealed)}),
           wait: timeout + margin * 2)) {
+        if (_takenOver(box)) throw const PairingTakenOver();
         throw const PairingPeerUnfinished();
       }
       return newDeviceCert;
@@ -485,6 +519,21 @@ class RelayPairing {
       await v1?.close();
     }
   }
+
+  /// Whether the relay closed [box]'s connection because another connection
+  /// logged in as the same mailbox ([relayCloseReplaced]): both mailboxes'
+  /// keys derive from the code alone, so that login is someone else who
+  /// holds the code.
+  static bool _takenOver(_Mailbox box) =>
+      !box.client.isOpen && box.client.closeCode == relayCloseReplaced;
+
+  /// What a wait on [box] ends in once its connection has closed:
+  /// [PairingTakenOver] when another connection took the mailbox over, and
+  /// otherwise a [RelayException] — this side's connection was lost, and the
+  /// other device is not to blame for what it never received.
+  static Exception _closed(_Mailbox box) => _takenOver(box)
+      ? const PairingTakenOver()
+      : RelayException('connection closed');
 
   /// [_awaitFrame] for a ceremony's first frame, of [kind] on [box], with the
   /// older ceremonies' first frames watched for on their own mailboxes —
@@ -503,6 +552,7 @@ class RelayPairing {
       if (v1 != null && v1.take('hello') != null) {
         throw const PairingPeerOutdated(1);
       }
+      if (!box.client.isOpen) throw _closed(box);
       if (DateTime.now().isAfter(deadline)) {
         throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
       }
@@ -511,13 +561,16 @@ class RelayPairing {
   }
 
   /// Waits for a frame of [kind] on [box], taking — and so acknowledging —
-  /// the first that arrives.
+  /// the first that arrives. A connection that closes ends the wait at once
+  /// ([_closed]), where it used to run on to its timeout and end as though
+  /// the other device had sent nothing.
   static Future<Map<String, Object?>> _awaitFrame(
       _Mailbox box, String kind, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
       final found = box.take(kind);
       if (found != null) return found;
+      if (!box.client.isOpen) throw _closed(box);
       if (DateTime.now().isAfter(deadline)) {
         throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
       }
@@ -535,6 +588,7 @@ class RelayPairing {
     while (true) {
       final found = box.takeHeld(kind);
       if (found != null) return found;
+      if (!box.client.isOpen) throw _closed(box);
       if (DateTime.now().isAfter(deadline)) {
         throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
       }
@@ -544,13 +598,13 @@ class RelayPairing {
 
   /// Whether the relay reports, within [timeout], that the frame this side
   /// sent as [id] was acknowledged by the mailbox it went to; false when the
-  /// time runs out. A connection that goes first is a [RelayException]:
+  /// time runs out. A connection that goes first ends it ([_closed]):
   /// nothing can be said of the other device then.
   static Future<bool> _awaitAcknowledged(
       _Mailbox box, String id, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (!box.acknowledged(id)) {
-      if (!box.client.isOpen) throw RelayException('connection closed');
+      if (!box.client.isOpen) throw _closed(box);
       if (DateTime.now().isAfter(deadline)) return false;
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
@@ -602,10 +656,11 @@ class RelayPairing {
       required Duration wait}) async {
     const id = 'z-pair-enroll';
     var refused = false;
-    // A connection that has already closed refuses the frame as it is handed
-    // over, and that throws from here: nothing of the enrolment left, and
-    // the connection is as lost as at any other step. A refusal after it
-    // has started up fails the send's future, and ends the wait.
+    // A connection that has already closed would refuse the frame as it is
+    // handed over: nothing of the enrolment leaves, and the step ends as any
+    // other does when its connection has gone ([_closed]). A refusal after
+    // the frame has started up fails the send's future, and ends the wait.
+    if (!box.client.isOpen) throw _closed(box);
     unawaited(box.client
         .send(to: to, id: id, payload: payload, timeout: wait)
         .then<void>((_) {}, onError: (Object _) => refused = true));

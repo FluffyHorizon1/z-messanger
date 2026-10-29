@@ -2112,9 +2112,12 @@ new device whose user saw different digits is sent nothing of the account,
 whatever the other user pressed — on an HA relay too, whose sweep sends the
 reply again while the new device holds it: that copy is dropped, and
 neither is acknowledged — and its `reply-v3` stays queued until
-`QUEUE_TTL_HOURS`. The report is the relay's to make: a relay that forges
-it gives the existing device what every ceremony before this did, the
-enrollment sent on its own user's comparison alone. And the relay learns
+`QUEUE_TTL_HOURS`. The report is the relay's to make, and the
+acknowledgement anyone's who holds the code (below): a relay that forges
+the report, or someone who has seen the code and acknowledges the reply in
+the new device's place, gives the existing device what every ceremony
+before this did, the enrollment sent on its own user's comparison alone —
+sealed to the new device, which alone can open it. And the relay learns
 from the acknowledgement when the new device's user confirmed, or, when
 none comes, that the link stopped there (R57). Each device now waits for
 the other's confirmation as long as it waits for any frame: a new device
@@ -2154,7 +2157,12 @@ links nothing and says the new device did not finish, not that the
 connection was lost, since the new device may hold its account all the
 same. Until 2026‑10‑29 a `sent` that came late or not at all ended the link
 on the existing device as a lost connection, while the new device installed
-the enrollment, unlisted.
+the enrollment, unlisted. Every other wait, on either side, ends as soon as
+that side's connection closes, and says so; a new device whose connection
+dropped used to wait out the whole of its wait for the enrollment, and
+then say that the other device had sent nothing. And an enrollment the new
+device cannot open, or cannot install, ends its attempt in words of their
+own in the reference client, not in the error that stopped it.
 
 What this leaves is an installed but unlisted new device, whenever the new
 device installs the enrollment and the existing device never hears that it
@@ -2176,6 +2184,35 @@ phone was merely offline would report a fault where there is none. The way
 out needs no reinstall: wiping the new device — Settings → Wipe everything,
 in the reference client — puts it back where it can be linked, and the
 existing device's screen says so. No frame changes.
+
+**Someone else who has seen the code (v3).** Both mailboxes' keys derive
+from the code alone, and a relay hands a routing id to its newest login,
+closing the connection before it with code 4002 (`server.js`, "replaced by
+new connection", on one instance and across an HA group). So anyone who has
+seen the code — over a shoulder, in a screenshot — can log in as either
+mailbox until the link has finished, and is handed what the relay holds for
+it. As the new device's, once the opening is out, they are handed
+`reply-v3` and then `enroll-v3`, and can acknowledge both unread: the
+existing device takes the first for the new device's user's confirmation
+and the second for its install, and lists the new device's keys — although
+its user may have said the digits differ, and it installed nothing. They
+learn nothing: the enrollment is sealed under a channel key that needs the
+new device's ephemeral and KEM secrets, and the digits on both screens are
+the honest ones, so the comparison cannot catch it. The new device, whose
+connection the relay closed with 4002, stops and says another connection
+took the link over — at once, or, when its user was comparing the digits,
+as soon as they answer, whatever the answer — and the reference client's
+next attempt is a new ceremony under a new code; a
+takeover of the existing device's mailbox ends that device's attempt in the
+same way. What is left is the device listed, which the user revokes. What
+would close it is two frames sent under the channel key in place of the
+two acknowledgements as signals: the new device's MAC'd "confirmed", once
+its user has said the digits match, and its MAC'd "installed", once it has
+installed the enrollment, each checked by the existing device — before it
+sends the enrollment, and before it links. Someone holding only the code
+can make neither, and the acknowledgements would only clean the relay up;
+but that changes what v3 puts on the wire — two frames more, and vectors
+for them — and it is not made here.
 
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.

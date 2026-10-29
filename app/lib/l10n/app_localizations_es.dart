@@ -536,6 +536,18 @@ class AppLocalizationsEs extends AppLocalizations {
       'Se perdió la conexión con el relay durante la vinculación. Comprueba que los dos dispositivos tienen conexión y vuelve a empezar en ambos.';
 
   @override
+  String get linkInstallFailed =>
+      'Este dispositivo no pudo abrir ni instalar la cuenta que envió tu otro dispositivo, así que no está vinculado. Comprueba que este dispositivo tiene espacio libre y vuelve a empezar en los dos dispositivos.';
+
+  @override
+  String get linkTakenOver =>
+      'Otra conexión se hizo cargo de esta vinculación, así que este dispositivo no está vinculado: puede que alguien más haya visto el código. Vuelve a empezar en los dos dispositivos con el código nuevo y no se lo enseñes a nadie. Si aun así tu otro dispositivo muestra este en su lista, revócalo allí, en Ajustes → Dispositivos vinculados.';
+
+  @override
+  String get linkHostTakenOver =>
+      'Otra conexión se hizo cargo de esta vinculación, así que este dispositivo no ha añadido el nuevo: puede que alguien más haya visto el código. Vuelve a empezar en los dos dispositivos y no enseñes el código a nadie. Si aun así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
+
+  @override
   String get linkADevice => 'Vincular un dispositivo';
 
   @override

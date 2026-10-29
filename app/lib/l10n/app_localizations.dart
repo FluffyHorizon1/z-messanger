@@ -950,6 +950,24 @@ abstract class AppLocalizations {
   /// **'The connection to the relay was lost during the link. Check that both devices are online, then start again on both.'**
   String get linkConnectionLost;
 
+  /// On the new device, after the account arrived: it did not open — it was spoiled on its way, or broke a rule every account sent this way keeps — or saving it on this device failed. Nothing was linked, and the other device has not added this one; the person starts again on both devices.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not open or install the account your other device sent, so it is not linked. Check that this device has space free, then start again on both devices.'**
+  String get linkInstallFailed;
+
+  /// On the new device, when the relay closed its connection because another connection logged in as this link's mailbox. That mailbox comes from the pairing code alone, so whoever did it has seen the code. That connection can tell the other device that this one confirmed and installed the account, so the other device may list this one although it is not linked; the person revokes it there (Settings → Linked devices, as stSettings and stLinkedDevices word them). This device shows a new code for the next attempt.
+  ///
+  /// In en, this message translates to:
+  /// **'Another connection took over this link, so this device is not linked: someone else may have seen the code. Start again on both devices with the new code, and keep it to yourself. If your other device lists this one anyway, revoke it there, under Settings → Linked devices.'**
+  String get linkTakenOver;
+
+  /// On the existing device, when the relay closed its connection because another connection logged in as this link's mailbox — someone else who has seen the pairing code. Nothing was added. The new device may have installed the account all the same; it is not on the account, and is wiped (Settings → Wipe everything, as stWipe words it) before it is linked again.
+  ///
+  /// In en, this message translates to:
+  /// **'Another connection took over this link, so this device has not added the new one: someone else may have seen the code. Start again on both devices, and keep the code to yourself. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.'**
+  String get linkHostTakenOver;
+
   /// Title of the screen that adds a device, and the action that opens it.
   ///
   /// In en, this message translates to:

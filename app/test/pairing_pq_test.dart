@@ -68,10 +68,12 @@
 //      acknowledged: the phone lists nothing, and the enrolment alone waits
 //      at the relay;
 //  13. an enrolment the laptop cannot open — spoiled on its way — is not
-//      acknowledged, and the phone lists nothing;
+//      acknowledged, and the phone lists nothing; the laptop's screen says
+//      it could not open or install the account, in English and Spanish;
 //  14. nor is one the laptop cannot install: the link screen installs the
 //      enrolment into the vault before the ceremony acknowledges it, and an
-//      install that fails leaves the laptop unlisted;
+//      install that fails leaves the laptop unlisted, its screen saying so
+//      in both languages;
 //  15. a phone whose person confirms first, and a laptop whose person
 //      confirms after the phone stopped waiting: each screen says why the
 //      link stopped, nothing is linked, and the relay keeps the receipt for
@@ -80,7 +82,14 @@
 //      whose connection closed once the enrolment had gone up says the
 //      laptop did not finish — not that the connection was lost — and lists
 //      nothing, the laptop having installed it; one whose connection stays
-//      links the laptop on its report.
+//      links the laptop on its report;
+//  17. a laptop whose connection to the relay closes while it waits for the
+//      enrolment says the connection was lost, at once and in both
+//      languages, where it used to wait out its timer and blame the phone;
+//  18. a laptop whose mailbox someone else holding the code logs in as —
+//      while its person compares the digits, or before any reply — says
+//      another connection took the link over, at once and in both
+//      languages, and shows a new code.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -160,7 +169,12 @@ class Recorder {
             down.add(f);
           }
         }
-      }, onDone: () => down.close(), onError: (Object _) => down.close());
+      }, onDone: () {
+        // The relay's own close code passes on — 4002 above all, its word
+        // that another connection logged in as this one's routing id.
+        final c = up.closeCode;
+        down.close(c != null && c >= 3000 && c <= 4999 ? c : null);
+      }, onError: (Object _) => down.close());
     });
     return r;
   }
@@ -231,6 +245,24 @@ void main() {
       'time: its person may have said the codes differ, or confirmed too '
       'late. Start again on both devices, and confirm on both within about '
       'forty seconds of each other.';
+  const laptopInstallFailed = 'This device could not open or install the '
+      'account your other device sent, so it is not linked. Check that this '
+      'device has space free, then start again on both devices.';
+  const laptopInstallFailedEs = 'Este dispositivo no pudo abrir ni instalar '
+      'la cuenta que envió tu otro dispositivo, así que no está vinculado. '
+      'Comprueba que este dispositivo tiene espacio libre y vuelve a empezar '
+      'en los dos dispositivos.';
+  const laptopTakenOver = 'Another connection took over this link, so this '
+      'device is not linked: someone else may have seen the code. Start '
+      'again on both devices with the new code, and keep it to yourself. If '
+      'your other device lists this one anyway, revoke it there, under '
+      'Settings → Linked devices.';
+  const laptopTakenOverEs = 'Otra conexión se hizo cargo de esta '
+      'vinculación, así que este dispositivo no está vinculado: puede que '
+      'alguien más haya visto el código. Vuelve a empezar en los dos '
+      'dispositivos con el código nuevo y no se lo enseñes a nadie. Si aun '
+      'así tu otro dispositivo muestra este en su lista, revócalo allí, en '
+      'Ajustes → Dispositivos vinculados.';
   const metricsToken = 'z-apptest-metrics';
 
   setUpAll(() async {
@@ -839,11 +871,15 @@ void main() {
     await hostile;
     expect(
         refused,
-        isA<FormatException>().having((e) => e.message, 'message',
-            'a v3 enrolment never carries the account root'),
+        isA<PairingInstallFailed>().having(
+            (e) => e.cause,
+            'cause',
+            isA<FormatException>().having((e) => e.message, 'message',
+                'a v3 enrolment never carries the account root')),
         reason: 'the new device refuses it, so there is nothing to install');
-    expect(newDeviceLinkFailureText(en, refused!), en.linkFailed('$refused'),
-        reason: 'and its screen says the link failed');
+    expect(newDeviceLinkFailureText(en, refused!), en.linkInstallFailed,
+        reason: 'and its screen says it could not open or install the '
+            'account');
   });
 
   test(
@@ -961,11 +997,25 @@ void main() {
       final gone = RelayException('connection closed');
       expect(hostLinkFailureText(l, gone), l.linkConnectionLost);
       expect(newDeviceLinkFailureText(l, gone), l.linkConnectionLost);
+      // An enrolment that came and did not open or install, and a mailbox
+      // someone else holding the code logged in as.
+      expect(
+          newDeviceLinkFailureText(
+              l, PairingInstallFailed(const FormatException('x'))),
+          l.linkInstallFailed);
+      expect(newDeviceLinkFailureText(l, const PairingTakenOver()),
+          l.linkTakenOver);
+      expect(hostLinkFailureText(l, const PairingTakenOver()),
+          l.linkHostTakenOver);
     }
     expect(en.linkPeerUnconfirmed, phoneUnconfirmed);
     expect(en.linkPeerGaveUp, phoneGaveUp);
     expect(en.linkPeerUnfinished, phoneUnfinished);
     expect(en.linkNoEnrolment, laptopNoEnrolment);
+    expect(en.linkInstallFailed, laptopInstallFailed);
+    expect(es.linkInstallFailed, laptopInstallFailedEs);
+    expect(en.linkTakenOver, laptopTakenOver);
+    expect(es.linkTakenOver, laptopTakenOverEs);
     for (final (a, b) in [
       (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
       (es.linkPeerGaveUp, en.linkPeerGaveUp),
@@ -973,14 +1023,21 @@ void main() {
       (es.linkNoEnrolment, en.linkNoEnrolment),
       (es.linkTimedOut, en.linkTimedOut),
       (es.linkConnectionLost, en.linkConnectionLost),
+      (es.linkInstallFailed, en.linkInstallFailed),
+      (es.linkTakenOver, en.linkTakenOver),
+      (es.linkHostTakenOver, en.linkHostTakenOver),
     ]) {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
     expect(es.linkPeerGaveUp, contains('dejó de esperar'));
     // A new device that installed the account unlisted is wiped, not
-    // reinstalled, and the phone names the setting as Settings shows it.
+    // reinstalled, and the phone names the setting as Settings shows it;
+    // a new device taken over says where the phone lists its devices.
     for (final l in [en, es]) {
       expect(l.linkPeerUnfinished, contains('${l.stSettings} → ${l.stWipe}'));
+      expect(l.linkHostTakenOver, contains('${l.stSettings} → ${l.stWipe}'));
+      expect(l.linkTakenOver,
+          contains('${l.stSettings} → ${l.stLinkedDevices}'));
     }
   });
 
@@ -1252,6 +1309,11 @@ void main() {
           .then<Object?>((r) => r, onError: (Object e) => e);
       expect(laptop, isNot(isA<PairingResult>()),
           reason: 'the spoiled enrolment does not open');
+      expect(laptopScreen(laptop), laptopInstallFailed,
+          reason: "the laptop's screen says it could not open the account, "
+              'in words, not in the error that stopped it');
+      expect(newDeviceLinkFailureText(es, laptop!), laptopInstallFailedEs,
+          reason: 'and in Spanish');
       final phone = await hosted;
       expect(phone, isA<PairingAbort>(),
           reason: 'the phone lists nothing: the laptop never said it '
@@ -1298,7 +1360,13 @@ void main() {
         .then<Object?>((r) => r, onError: (Object e) => e);
     expect(installing, isTrue, reason: 'the enrolment opened, and came to '
         'be installed');
-    expect(laptop, isA<FileSystemException>());
+    expect('$laptop', contains('the vault refused the write'),
+        reason: 'what stopped it was the install');
+    expect(laptopScreen(laptop), laptopInstallFailed,
+        reason: "the laptop's screen says it could not install the account, "
+            'in words, not in the error that stopped it');
+    expect(newDeviceLinkFailureText(es, laptop!), laptopInstallFailedEs,
+        reason: 'and in Spanish');
     final phone = await hosted;
     expect(phone, isA<PairingAbort>(),
         reason: 'the phone lists nothing: the laptop never said it installed '
@@ -1411,6 +1479,136 @@ void main() {
         expect(await alice.svc.linkedDevices(), hasLength(1), reason: what);
       } finally {
         await rec.close();
+      }
+    }
+  });
+
+  test(
+      '17. a laptop whose connection to the relay closes while it waits for '
+      'the enrolment says so at once, in both languages', () async {
+    final alice = await person('Alice17');
+    await connected([alice]);
+    const timeout = Duration(seconds: 3), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    // The laptop connects through a front that closes its connection as the
+    // enrolment comes down it.
+    final tap = await Recorder.start(relayUrl(),
+        cut: (f) => Recorder.kindOf(f) == 'enroll-v3');
+    try {
+      final n = await NewDeviceLink.create();
+      final hosted = alice.svc
+          .hostDeviceLink(n.code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final waited = Stopwatch();
+      final laptop = await n
+          .run(
+            relayUrl: tap.url,
+            confirm: (_) async {
+              waited.start();
+              return true;
+            },
+            timeout: timeout,
+            margin: margin,
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      waited.stop();
+      expect(laptopScreen(laptop), en.linkConnectionLost,
+          reason: "the laptop's own connection went: it says so, and does "
+              'not blame the phone for an account that never came');
+      expect(newDeviceLinkFailureText(es, laptop!), es.linkConnectionLost);
+      expect(waited.elapsed, lessThan(timeout),
+          reason: 'at once, and not when its wait for the enrolment, '
+              '${timeout + margin}, ran out');
+      final phone = await hosted;
+      expect(phoneScreen(phone), phoneUnfinished,
+          reason: 'the phone heard nothing installed');
+      expect(await alice.svc.linkedDevices(), isEmpty);
+      expect(await alice.svc.ownDeviceListVersion(), listBefore);
+    } finally {
+      await tap.close();
+    }
+  });
+
+  test(
+      '18. a laptop whose mailbox someone else holding the code logs in as '
+      'says so at once, in both languages, and shows a new code', () async {
+    final alice = await person('Alice18');
+    await connected([alice]);
+    const timeout = Duration(seconds: 3), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    // While the laptop's person compares the digits, and before any reply
+    // has reached the laptop: the other login is in by the time the laptop
+    // next looks at its mailbox.
+    for (final whileComparing in [true, false]) {
+      final what = whileComparing
+          ? 'taken over while its person compared the digits'
+          : 'taken over before any reply';
+      final n = await NewDeviceLink.create();
+      final code = n.code;
+      final mailbox =
+          await RelayPairing.relayIdentityV3(PairingCode.parse(code), 'i');
+      // The laptop connects through a front that keeps what it sends, so
+      // the test sees its commitment leave; the relay's close code passes
+      // on.
+      final tap = await Recorder.start(relayUrl());
+      final comparing = Completer<void>(), loggedIn = Completer<void>();
+      Future<Object?>? hosted;
+      if (whileComparing) {
+        hosted = alice.svc
+            .hostDeviceLink(code, confirmSas: (_) async => true)
+            .then<Object?>((r) => r, onError: (Object e) => e);
+      }
+      final waited = Stopwatch();
+      final laptop = n
+          .run(
+            relayUrl: tap.url,
+            confirm: (_) async {
+              comparing.complete();
+              await loggedIn.future;
+              waited.start();
+              return true;
+            },
+            timeout: timeout,
+            margin: margin,
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      if (whileComparing) {
+        await comparing.future;
+      } else {
+        await waitUntil(() => tap.frames.containsKey('commit-v3'),
+            what: "$what: the laptop's commitment sent");
+        waited.start();
+      }
+      final other = await RelayClient.connect(relayUrl(), mailbox);
+      final sub = other.messages
+          .listen((m) => other.ackReceived(id: m.id, from: m.from));
+      loggedIn.complete();
+      try {
+        final outcome = await laptop;
+        waited.stop();
+        expect(laptopScreen(outcome), laptopTakenOver, reason: what);
+        expect(newDeviceLinkFailureText(es, outcome!), laptopTakenOverEs,
+            reason: what);
+        expect(waited.elapsed, lessThan(timeout),
+            reason: '$what: at once, and not when a wait ran out');
+        expect(n.code, isNot(code),
+            reason: '$what: someone else holds the code, and the next '
+                'attempt is a new one');
+        if (hosted != null) {
+          // What §10.2 says is left: the phone took the other login's
+          // acknowledgements for the laptop's word.
+          final phone = await hosted;
+          // ignore: avoid_print
+          print('$what: the phone, on the other login\'s acknowledgements: '
+              '${phone == true ? 'lists the laptop' : phone}');
+        }
+      } finally {
+        await sub.cancel();
+        await other.close();
+        await tap.close();
       }
     }
   });

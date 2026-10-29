@@ -686,6 +686,18 @@
   "@linkConnectionLost": {
     "description": "On either linking screen, when this device's connection to the relay closed in the middle of the link."
   },
+  "linkInstallFailed": "This device could not open or install the account your other device sent, so it is not linked. Check that this device has space free, then start again on both devices.",
+  "@linkInstallFailed": {
+    "description": "On the new device, after the account arrived: it did not open \u2014 it was spoiled on its way, or broke a rule every account sent this way keeps \u2014 or saving it on this device failed. Nothing was linked, and the other device has not added this one; the person starts again on both devices."
+  },
+  "linkTakenOver": "Another connection took over this link, so this device is not linked: someone else may have seen the code. Start again on both devices with the new code, and keep it to yourself. If your other device lists this one anyway, revoke it there, under Settings → Linked devices.",
+  "@linkTakenOver": {
+    "description": "On the new device, when the relay closed its connection because another connection logged in as this link's mailbox. That mailbox comes from the pairing code alone, so whoever did it has seen the code. That connection can tell the other device that this one confirmed and installed the account, so the other device may list this one although it is not linked; the person revokes it there (Settings \u2192 Linked devices, as stSettings and stLinkedDevices word them). This device shows a new code for the next attempt."
+  },
+  "linkHostTakenOver": "Another connection took over this link, so this device has not added the new one: someone else may have seen the code. Start again on both devices, and keep the code to yourself. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.",
+  "@linkHostTakenOver": {
+    "description": "On the existing device, when the relay closed its connection because another connection logged in as this link's mailbox \u2014 someone else who has seen the pairing code. Nothing was added. The new device may have installed the account all the same; it is not on the account, and is wiped (Settings \u2192 Wipe everything, as stWipe words it) before it is linked again."
+  },
   "linkADevice": "Link a device",
   "@linkADevice": {
     "description": "Title of the screen that adds a device, and the action that opens it."
