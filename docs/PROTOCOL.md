@@ -5141,38 +5141,54 @@ queue and expire like any other (§12, `QUEUE_TTL_HOURS`).
 Each message of 20.3 is one ordinary envelope, sent authenticated as the
 sending mailbox, with the JSON object as its payload and an envelope id of
 `z-connect-c1`..`c4` respectively. A side that has not yet had an answer MAY
-re-post its message; the relay dedupes an attributed envelope on (id, sender),
-so a retry costs nothing and leaves one envelope. A side whose post of
-message 2 or message 3 fails — the post that follows its drawing that
-message: the acceptor's ephemeral and commitment, the inviter's opening —
-MUST post the same bytes again, under the same id, on each later round that
-finds no answer to it, until a post of them is answered `sent` or the answer
-arrives, and MUST NOT draw the message again. A second message 2 carries a
-second ephemeral: if the relay took the first and only its `sent` was lost,
-it keeps that one under the id, the inviter answers it, and the invite is
-spent at message 3 on a mismatch nobody produced. A side that posts nothing
-waits for an answer the other side cannot give, while the other waits for
-the message itself, until the invite expires — what the reference client did
-until 2026‑10‑29. It now writes the run's record, holding the message,
-before the post, and writes what a round made of what it read before it
-acknowledges any of it, so an app that dies anywhere in a round comes back
-to a record the relay agrees with, and posts that same message. Until
-2026‑10‑29 nothing of a round was written until the round was over, and an
-app that died after the relay took its message 2 came back to the record
-from before it, drew a second message 2 — which the relay, holding the first
-under the id, dropped — and spent the invite at message 3. One thing
-remains: message 4, posted in the round that completes the ceremony, is not
-held, and an app that dies after the relay took it and before that round is
+re-post its message; the relay dedupes an attributed envelope on (id, sender)
+while it holds it, so a retry that reaches it before the recipient has
+acknowledged the first copy costs nothing and leaves one envelope. One that
+reaches it after — the recipient read the first and acknowledged it in between
+— is stored again, and waits unread for the queue lifetime
+(`QUEUE_TTL_HOURS`): the side it is for already has it, or is finished. A copy
+that does reach a side is read once with the first, since each side takes a
+message by its kind and every copy of that kind with it. A side whose post of
+message 2 or message 3 fails — the post that follows its drawing that message:
+the acceptor's ephemeral and commitment, the inviter's opening — MUST post the
+same bytes again, under the same id, on each later round that finds no answer
+to it, until a post of them is answered `sent` or the answer arrives, and MUST
+NOT draw the message again. A second message 2 carries a second ephemeral: if
+the relay took the first and only its `sent` was lost, it keeps that one under
+the id, the inviter answers it, and the invite is spent at message 3 on a
+mismatch nobody produced. A side that posts nothing waits for an answer the
+other side cannot give, while the other waits for the message itself, until
+the invite expires — what the reference client did until 2026‑10‑29. It now
+writes the run's record, holding the message, before the post, and writes what
+a round made of what it read before it acknowledges any of it, so an app that
+dies anywhere in a round comes back to a record the relay agrees with, and
+posts that same message. Until 2026‑10‑29 nothing of a round was written until
+the round was over, and an app that died after the relay took its message 2
+came back to the record from before it, drew a second message 2 — which the
+relay, holding the first under the id, dropped — and spent the invite at
+message 3.
+
+What can still be left is a copy at the relay that nobody reads, in two
+ways. Message 4, posted in the round that completes the ceremony, is not
+held: an app that dies after the relay took it and before that round is
 written down does the round again from message 3, which the relay still
-holds — the same reveal under the same channel, so the same digits; if the
-inviter had already read the first message 4, the second waits at the relay
-unread. The messages are the same bytes as before; only a failed post adds a
-post.
-Anyone holding the invite
-holds both mailbox key pairs — that is what makes the invite a bearer token
-(R23), and why it is one‑time and short‑lived. In the middle of an invite of
-version 1 the relay needs neither: it writes into both mailboxes as the relay,
-and completes both legs (20.8).
+holds — the same reveal under the same channel, so the same digits — and if
+the inviter had already read the first message 4, the second waits. And a
+message 3 posted again can cross its answer: when the acceptor reads the
+first copy and acknowledges it after the inviter's round found no message 4
+and before the copy reaches the relay, the copy is stored again and waits.
+Once a post of a held message lands it is not posted again, so a failed post
+leaves at most one such copy. A copy of message 2 is not left: the acceptor
+posts it again only before it has message 3, so the copy reaches the
+inviter's mailbox before message 4 does, and the inviter acknowledges it in
+the round that reads message 4. Each is a frame the relay has already
+carried. The messages are the same bytes as before; only a failed post adds
+a post.
+
+Anyone holding the invite holds both mailbox key pairs — that is what makes
+the invite a bearer token (R23), and why it is one‑time and short‑lived. In
+the middle of an invite of version 1 the relay needs neither: it writes into
+both mailboxes as the relay, and completes both legs (20.8).
 
 A client MUST acknowledge (§12.3) every ceremony envelope it has consumed, and
 MUST acknowledge whatever remains in its mailbox once the ceremony completes.
