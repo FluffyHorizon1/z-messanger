@@ -75,7 +75,14 @@
 //      nothing: the banner the deleted one had and the claims behind it are
 //      gone, and what their device claims from then on is judged on its own
 //      (on ef550b5 the banner comes back with them, in memory, and the old
-//      claims are written back with the next one).
+//      claims are written back with the next one);
+//   8. and the banner comes up for what else it is for: two of a contact's
+//      devices claiming one version under two fingerprints — a list someone
+//      signed twice, one for each — raise the conflict banner (dl_conflict),
+//      neither claiming the version held for them;
+//   9. and so does one of their devices claiming the version held for them
+//      under another fingerprint — the list handed over is not the one its
+//      devices hold, a split view (T2).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -228,8 +235,15 @@ void main() {
   /// [f], run in [svc]'s zone: what it leaves running — the mirror of a
   /// message to the account's other devices, a link's history — is that
   /// service's, and fails no test by meeting the database [stop] closed.
-  Future<T> inside<T>(ChatService svc, Future<T> Function() f) =>
-      zones[svc]!.run(f);
+  /// What [f] itself returns or throws comes back to the test: a future of
+  /// another error zone would keep its error there, and the test would wait
+  /// for it until it timed out.
+  Future<T> inside<T>(ChatService svc, Future<T> Function() f) {
+    final done = Completer<T>();
+    zones[svc]!
+        .run(() => f().then(done.complete, onError: done.completeError));
+    return done.future;
+  }
 
   Future<void> say(ChatService from, String toRid, String text) =>
       inside(from, () => from.sendText(toRid, text));
@@ -315,6 +329,55 @@ void main() {
     final s = svc.contactDevlistAlerts[rid];
     return s == null ? null : (jsonDecode(s) as Map)['k'] as String?;
   }
+
+  /// A device linked to [host]'s account, its client running: enrolled with
+  /// the account's keys, and knowing the root's certificate.
+  Future<({ChatService svc, DeviceCertificate cert})> linkedTo(
+      ChatService host, String name) async {
+    final account = await host.accountIdentity();
+    final ml = await host.pqAccountPublic();
+    final devId = await ZIdentity.generate();
+    final cert = await account.signDeviceCert(
+        deviceEdPub: devId.edPub, deviceXPub: devId.xPub, deviceId: name);
+    final dir =
+        dirs[name] = await Directory.systemTemp.createTemp('z_ord_$name');
+    final vault = await Vault.open(rootOverride: dir);
+    await vault.kvPut('identity', jsonEncode(devId.toJson()));
+    final enrolled = await AccountIdentity.fromEnrollment(
+      accountEdPub: account.accountEdPub,
+      accountMlPub: ml,
+      deviceEdSeed: devId.edSeed,
+      deviceXSeed: devId.xSeed,
+      deviceId: name,
+      deviceCert: cert,
+    );
+    await vault.kvPut('account', jsonEncode(enrolled.toJson()));
+    await vault.kvPut('my_devices', jsonEncode([account.deviceCert.toJson()]),
+        sensitive: false);
+    return (svc: await run(name, vault, devId), cert: cert);
+  }
+
+  /// What [s]'s device claims about its own account's list from here on,
+  /// written behind its back: the claim of a device whose list was signed
+  /// somewhere else.
+  Future<void> claimAs(ChatService s, int v, String h) async {
+    await s.vault.kvPut('own_list_v', '$v', sensitive: false);
+    await s.vault.kvPut('own_list_h', h, sensitive: false);
+    s.forgetOwnListClaim();
+  }
+
+  /// [device], one of [account]'s, says [text] to [to], and it arrives in
+  /// the account's chat.
+  Future<void> speaks(ChatService device, ChatService to, ChatService account,
+      String text) async {
+    await say(device, to.myRid, text);
+    await waitUntil(() => received(to, account.myRid, text),
+        what: '"$text" from ${device.displayName} reaches ${to.displayName}');
+  }
+
+  /// Two fingerprints no list here has.
+  final fpA = base64Encode(List<int>.filled(32, 0xA1));
+  final fpB = base64Encode(List<int>.filled(32, 0xB2));
 
   /// Bob links a device (version 2) and a backup of his account is taken;
   /// he links another (version 3), and his device says so to Vic; then it
@@ -685,5 +748,103 @@ void main() {
         reason: 'the highest it has claimed is the one it claims now, not '
             "the deleted contact's version 3");
     expect(banner(), isNull);
+  });
+
+  test(
+      "8. two of a contact's devices claiming one version under two "
+      'fingerprints raise the conflict banner', () async {
+    final vic = await start('vic8');
+    final bob = await start('bob8');
+    // A device claiming a version nobody has handed Vic is a list on its
+    // way, which she gives an hour: nothing here waits that out.
+    vic.devlistGrace = const Duration(hours: 1);
+    await introduce(vic, bob);
+    // Two devices linked to Bob's account, their clients running: version 3.
+    final laptop = await linkedTo(bob, 'bob8laptop');
+    final tablet = await linkedTo(bob, 'bob8tablet');
+    await link(bob, laptop.cert);
+    await link(bob, tablet.cert);
+    await waitUntil(
+        () async => await vic.heldContactListVersion(bob.myRid) == 3,
+        what: "Vic installs Bob's version 3");
+    for (final d in [laptop.svc, tablet.svc]) {
+      await waitUntil(() async => await d.ownDeviceListVersion() == 3,
+          what: '${d.displayName} learns its account is at version 3');
+      await waitUntil(() => linked(d), what: '${d.displayName} connected');
+    }
+    // The laptop adds Vic, and the account's other devices are told (13.7).
+    await add(laptop.svc, await vic.myContactCode());
+    await waitUntil(() => tablet.svc.contacts.containsKey(vic.myRid),
+        what: 'the tablet has Vic, from the laptop');
+    for (final d in [laptop.svc, tablet.svc]) {
+      await speaks(d, vic, bob, 'from ${d.displayName}');
+    }
+    expect(vic.contactDevlistAlerts[bob.myRid], isNull,
+        reason: 'his devices claim version 3, the list Vic holds');
+
+    // Someone has signed a version 4 twice and given each linked device one.
+    // His root goes on claiming the list it signed: a root whose claim is
+    // moved past what Vic holds signs that list again when her echo shows
+    // her behind, and claims it.
+    await claimAs(laptop.svc, 4, fpA);
+    await speaks(laptop.svc, vic, bob, 'the laptop at version 4');
+    await claimAs(tablet.svc, 4, fpB);
+    await speaks(tablet.svc, vic, bob, 'the tablet at version 4');
+    await waitUntil(() => vic.contactDevlistAlerts[bob.myRid] != null,
+        what: "Vic says Bob's devices disagree");
+    expect(alertKind(vic, bob.myRid), 'dl_conflict',
+        reason: 'two of his devices claim version 4 under two fingerprints');
+    expect(await vic.heldContactListVersion(bob.myRid), 3);
+  });
+
+  test(
+      "9. a contact's device claiming the version held for them under "
+      'another fingerprint raises the conflict banner', () async {
+    final vic = await start('vic9');
+    final bob = await start('bob9');
+    vic.devlistGrace = const Duration(hours: 1);
+    await introduce(vic, bob);
+    // Vic misses the list Bob's link hands her, so her next message shows
+    // her behind and his root signs it again to hand it over: once in the
+    // minute (§3.6). A signing records the list it signs as his device's
+    // claim, and one still in flight when the claim below is written would
+    // write over it — measured: a re-send asked for by an echo she sent
+    // before she held the list recorded it 7 ms after the claim was
+    // written. Once it has been handed over, nothing in the minute signs.
+    var missed = false;
+    vic.debugOnDecrypted = (path, from, dec) {
+      if (missed || path != 'primary' || from != bob.myRid) return false;
+      try {
+        return missed =
+            InnerMessage.fromBytes(dec.plaintext).kind == 'devlist';
+      } catch (_) {
+        return false;
+      }
+    };
+    bob.debugListResends = [];
+    await link(bob, await deviceOf(bob, 'tablet'));
+    await waitUntil(() => missed, what: "Vic misses Bob's list");
+    await say(vic, bob.myRid, 'anything new?');
+    await waitUntil(
+        () => bob.debugListResends!
+            .any((r) => r.rid == vic.myRid && r.sent != null),
+        what: "Bob's root hands its list over again");
+    await waitUntil(
+        () async => await vic.heldContactListVersion(bob.myRid) == 2,
+        what: "Vic installs Bob's version 2");
+    await heard(bob, vic, 'at version 2');
+    expect(vic.contactDevlistAlerts[bob.myRid], isNull);
+
+    // Bob's device holds a version 2 that is not the one Vic was handed:
+    // someone with the account's key gave her one list and his devices
+    // another.
+    await claimAs(bob, 2, fpA);
+    await heard(bob, vic, 'still at version 2');
+    await waitUntil(() => vic.contactDevlistAlerts[bob.myRid] != null,
+        what: "Vic says Bob's device holds another list");
+    expect(alertKind(vic, bob.myRid), 'dl_conflict',
+        reason: 'his device claims the version she holds under another '
+            'fingerprint');
+    expect(await vic.heldContactListVersion(bob.myRid), 2);
   });
 }
