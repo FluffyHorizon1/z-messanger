@@ -428,7 +428,10 @@ same, and names the members whose channels are not post-quantum yet.
 
 Link a second device from Settings → Linked devices. Both screens show a short
 code; they have to match. If they do not, stop — something is on the wire
-between them.
+between them. Saying they differ on either device stops the link on both:
+your phone sends nothing of your account until the new device says its code
+matched too. Confirm on both within about forty seconds of each other: each
+device waits that long for the other.
 
 **Both devices need this version of Z or later.** Linking changed in this
 version, and neither device falls back to the way older versions link. If

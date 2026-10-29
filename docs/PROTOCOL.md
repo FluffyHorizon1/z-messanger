@@ -2034,7 +2034,7 @@ addition:
    key and the `ded`, `dx` and `sk` that the opening revealed and the digits
    covered; pairing carries it as bytes, and whoever installs the enrollment
    checks it. It is absent from a host that sent none. The reference client's
-   root signs it once the digits are confirmed, over `sk`
+   root signs it once the digits are confirmed on both devices, over `sk`
    (`signDeviceAttestationFromHash`, §18.11). Its new device draws its
    sealing key before the ceremony — the commitment binds its hash — and
    keeps it for its life; installing, it checks `pqdc` as §18.11 checks one,
@@ -2074,7 +2074,30 @@ acknowledged any frame: all four stayed queued until `QUEUE_TTL_HOURS` (72),
 the enrollment among them — 10 479 bytes of the relay's store for an account
 with one contact, measured through the app at 4.7.2. A frame sent to a side
 that never reads it — the other device gone, or never there — still waits
-out the queue's lifetime, as any envelope does.
+out the queue's lifetime, as any envelope does. v3's reply is acknowledged
+later than it is read, below.
+
+**Both comparisons before the enrollment (v3).** §10 has both users compare
+the digits before the existing device sends the enrollment, and in v3 the
+new device says its user did: it acknowledges `reply-v3` only once its
+user has said the digits match, and not when they say they differ. The
+existing device, once its own user has said they match, waits for the
+relay's `delivered` for its reply — as long as it waits for any frame —
+and only then signs the new device's certificate, asks for its `pqdc` and
+sends `enroll-v3`; without it, it sends nothing and links nothing. So a
+new device whose user saw different digits is sent nothing of the account,
+whatever the other user pressed, and its `reply-v3` stays queued until
+`QUEUE_TTL_HOURS`. The report is the relay's to make: a relay that forges
+it gives the existing device what every ceremony before this did, the
+enrollment sent on its own user's comparison alone. And the relay learns
+from the acknowledgement when the new device's user confirmed, or, when
+none comes, that the link stopped there (R57). Each device now waits for
+the other's confirmation as long as it waits for any frame: a new device
+whose user confirms later than that after the existing device's user is
+sent nothing, where until this change the enrollment waited for it at the
+relay — as a new device whose user confirms first has always waited that
+long for the enrollment. No frame changes, and the reference client's v2
+runners are left as they were.
 
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.

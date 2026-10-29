@@ -8674,7 +8674,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// 44.4: by pairing v3 (§10.2, ADR 0033 §3), and nothing older. The
   /// enrolment is hybrid with ML-KEM-768, never carries the account root,
   /// and carries the new device's `pqdc`, which this root signs once the
-  /// digits are confirmed ([_attestLinkedDevice]). A new device on an older
+  /// digits are confirmed on both devices ([_attestLinkedDevice]): the new
+  /// device says its person confirmed by acknowledging this one's reply, and
+  /// without that nothing of the account is sent and nothing is linked
+  /// (`RelayPairing.runExistingDeviceV3`). A new device on an older
   /// version speaks a ceremony this one only listens for: it is recognised
   /// by its first frame and answered with nothing — [PairingPeerOutdated],
   /// naming the version it spoke, so the screen can say to update that
@@ -8736,7 +8739,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// the `ded`, `dx` and `sk` its opening revealed and the digits both
   /// screens showed covered, made over `sk` because this root holds the hash
   /// of the new device's sealing key and not yet the key. Asked for by the
-  /// ceremony once the digits are confirmed, and sealed into the enrolment.
+  /// ceremony once the digits are confirmed on both devices, and sealed into
+  /// the enrolment.
   /// Null on a device that holds no ML-DSA seed — never a root, the one
   /// device that links — and the enrolment then carries none.
   Future<Uint8List?> _attestLinkedDevice(PairingSessionV3 session) async {

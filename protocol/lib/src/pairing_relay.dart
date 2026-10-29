@@ -27,6 +27,9 @@ import 'util.dart';
 /// existing device keeps its connection until the relay reports the new
 /// device's acknowledgement of the enrolment, so that the relay's receipt
 /// for it is handed over rather than queued at a mailbox nobody reads again.
+/// One frame is acknowledged later: in v3 the new device acknowledges the
+/// reply only once its person has said the digits match, and the existing
+/// device sends the enrolment only once the relay has reported that.
 /// The v1 runners are left as builds before v2 ran them.
 
 const String _relayCtx = 'z-pair-relay:';
@@ -278,7 +281,9 @@ class RelayPairing {
   /// existing device, listening where v2 or v1 speak, which this one does
   /// not: there is no fallback, and the wait ends in [PairingNoAnswer]. The
   /// first reply is the one it answers (§10.2 rule 5): [n] decapsulates once
-  /// and opens no second ceremony.
+  /// and opens no second ceremony. That reply is acknowledged once [confirm]
+  /// says the digits match, and not otherwise: the existing device sends
+  /// nothing of the account before the relay reports the acknowledgement.
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
@@ -294,19 +299,25 @@ class RelayPairing {
           id: 'z-pair-commit',
           payload: jsonEncode({'k': 'commit-v3', ...await n.commit()}));
 
-      final Map<String, Object?> reply;
+      final (Map<String, Object?>, RelayInbound) replied;
       try {
-        reply = await _awaitFrame(box, 'reply-v3', timeout);
+        replied = await _awaitFrameHeld(box, 'reply-v3', timeout);
       } on TimeoutException {
         throw const PairingNoAnswer();
       }
-      final (open, session) = await n.open(reply);
+      final (open, session) = await n.open(replied.$1);
       await box.client.send(
           to: rMailbox,
           id: 'z-pair-open',
           payload: jsonEncode({'k': 'open-v3', ...open}));
 
+      // The reply is acknowledged once this device's person has said the
+      // digits match, and not before or otherwise: that acknowledgement,
+      // which the relay reports to the existing device, is what lets it send
+      // the enrolment (§10.2). A person who says they differ leaves the
+      // reply unacknowledged, and is sent nothing of the account.
       if (!await confirm(session.sas)) return null;
+      box.acknowledge(replied.$2);
 
       final env = await _awaitFrame(box, 'enroll-v3', timeout);
       final data = await session.openEnrollment(unb64(env['blob'] as String));
@@ -328,7 +339,12 @@ class RelayPairing {
   /// which device to update. Detect, do not transact: the older frame is
   /// acknowledged, so the relay drops it, and answered with nothing.
   ///
-  /// [attest] is asked, once the digits are confirmed, for the new device's
+  /// Once [confirm] says the digits match it waits, up to [timeout], for the
+  /// relay to report that the new device acknowledged its reply, which the
+  /// new device does only once its own person has said they match; without
+  /// that it sends nothing and returns null, as a cancelled link.
+  ///
+  /// [attest] is asked, once both people have said so, for the new device's
   /// `pqdc` (ADR 0033 §1) — the root's signature over what the session says
   /// the new device opened — and its answer is sealed into the enrolment as
   /// it is; null, or no [attest], sends none. The enrolment never carries
@@ -373,6 +389,14 @@ class RelayPairing {
       final session = await pending.accept(open);
 
       if (!await confirm(session.sas)) return null;
+      // §10 has both people compare the digits before the enrolment goes,
+      // and the new device says its person did by acknowledging the reply.
+      // Until the relay reports that, nothing of the account leaves here: a
+      // new device whose person said they differ is sent no enrolment, and
+      // its device is not linked — null, as a cancelled link is.
+      if (!await _awaitAcknowledged(box, 'z-pair-reply', timeout)) {
+        return null;
+      }
 
       final newDeviceCert = await session.signedPeerCert(me);
       final sealed = await session.sealEnrollment(me,
@@ -430,6 +454,38 @@ class RelayPairing {
       }
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
+  }
+
+  /// [_awaitFrame] without the acknowledgement: the frame is taken and handed
+  /// back with its relay envelope, for the caller to acknowledge when — and
+  /// only if — it decides to ([_Mailbox.acknowledge]). Until then the relay
+  /// keeps it, and a mailbox that closes does not acknowledge it either.
+  static Future<(Map<String, Object?>, RelayInbound)> _awaitFrameHeld(
+      _Mailbox box, String kind, Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      final found = box.takeHeld(kind);
+      if (found != null) return found;
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('pairing: no "$kind" frame arrived', timeout);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+  }
+
+  /// Whether the relay reports, within [timeout], that the frame this side
+  /// sent as [id] was acknowledged by the mailbox it went to; false when the
+  /// time runs out or the connection goes first.
+  static Future<bool> _awaitAcknowledged(
+      _Mailbox box, String id, Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (!box.acknowledged(id)) {
+      if (!box.client.isOpen || DateTime.now().isAfter(deadline)) {
+        return false;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    return true;
   }
 
   /// The existing device's last frame: the enrolment, sent, and then the
@@ -495,7 +551,9 @@ class RelayPairing {
 /// its id and sender, §12.5), and whatever arrived and was never taken is
 /// acknowledged when the mailbox closes: a copy a reconnect flushed again, a
 /// frame of a kind this side was not waiting for. Nothing of a ceremony is
-/// left on the relay for `QUEUE_TTL_HOURS` by the side that read it.
+/// left on the relay for `QUEUE_TTL_HOURS` by the side that read it, but a
+/// frame taken to be acknowledged later ([takeHeld]) and never acknowledged:
+/// v3's reply, at a new device whose person said the digits differ.
 class _Mailbox {
   final RelayClient client;
   final _inbox = <RelayInbound>[];
@@ -514,6 +572,16 @@ class _Mailbox {
   /// The first frame of [kind] that has arrived, acknowledged and taken out;
   /// null while none has. Frames of other kinds are left where they are.
   Map<String, Object?>? take(String kind) {
+    final found = takeHeld(kind);
+    if (found == null) return null;
+    _ack(found.$2);
+    return found.$1;
+  }
+
+  /// [take] without the acknowledgement: the frame and its envelope, taken
+  /// out, for the caller to [acknowledge] when it decides to. A frame taken
+  /// this way is no longer this mailbox's to acknowledge when it closes.
+  (Map<String, Object?>, RelayInbound)? takeHeld(String kind) {
     for (var i = 0; i < _inbox.length; i++) {
       final Object? j;
       try {
@@ -522,12 +590,14 @@ class _Mailbox {
         continue;
       }
       if (j is Map && j['k'] == kind) {
-        _ack(_inbox.removeAt(i));
-        return j.cast<String, Object?>();
+        return (j.cast<String, Object?>(), _inbox.removeAt(i));
       }
     }
     return null;
   }
+
+  /// Acknowledges [frame], one [takeHeld] handed out.
+  void acknowledge(RelayInbound frame) => _ack(frame);
 
   /// Whether the relay has reported that the frame this side sent as [id]
   /// was acknowledged by the mailbox it went to.

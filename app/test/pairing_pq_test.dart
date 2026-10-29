@@ -37,10 +37,13 @@
 //   4. a new device of this build meeting an existing device of the version
 //      before (v2) hears nothing, says the device it is linking from may be
 //      older, and keeps its code; neither side links anything;
-//   5. a wrong digit comparison stops the side that makes it: an existing
-//      device whose person says the digits differ sends no enrolment and
-//      links nothing, and a new device whose person says so installs
-//      nothing — and a spent attempt leaves the new device a new code;
+//   5. a wrong digit comparison stops the link whichever side makes it: an
+//      existing device whose person says the digits differ sends no
+//      enrolment and links nothing; a new device whose person says so
+//      installs nothing and is sent nothing of the account, and the
+//      existing device, whose person said they match, links nothing
+//      either, as the new device never said its person confirmed; and a
+//      spent attempt leaves the new device a new code;
 //   6. an enrolment carrying the account root is refused: the link fails,
 //      and the screen says so;
 //   7. an enrolment whose `pqdc` does not verify is refused — the `pqdc`,
@@ -583,7 +586,8 @@ void main() {
         reason: 'nothing was spent: the same code is tried again');
   });
 
-  test('5. a wrong digit comparison stops the side that makes it', () async {
+  test('5. a wrong digit comparison stops the link whichever side makes it',
+      () async {
     final alice = await person('Alice5');
     await connected([alice]);
     alice.svc.linkTimeout = const Duration(seconds: 8);
@@ -615,16 +619,26 @@ void main() {
     expect(n.code, isNot(code),
         reason: 'its KEM key spent, the next attempt is a new ceremony');
 
-    // The laptop's person says they differ. The phone's says they match,
-    // and the phone sends its enrolment, as each side acts on its own
-    // comparison (§10): the laptop takes none of it.
+    // The laptop's person says they differ, and the phone's that they
+    // match. The phone waits for the laptop to say its person confirmed
+    // too — its acknowledgement of the reply — and it never comes: nothing
+    // of the account is sent, and nothing is linked.
     final m = await NewDeviceLink.create();
+    final mCode = PairingCode.parse(m.code);
     final hostedToo =
         alice.svc.hostDeviceLink(m.code, confirmSas: (_) async => true);
     expect(await m.run(relayUrl: relayUrl(), confirm: (_) async => false),
         isNull,
         reason: 'a new device that says they differ installs nothing');
-    await hostedToo;
+    expect(await hostedToo, isFalse,
+        reason: 'and the phone, whose person said they match, links '
+            'nothing: the laptop never said its person confirmed');
+    expect(await alice.svc.linkedDevices(), isEmpty);
+    expect(await alice.svc.ownDeviceListVersion(), listBefore);
+    final left = await peek(await RelayPairing.relayIdentityV3(mCode, 'i'));
+    expect([for (final e in left) (jsonDecode(e.payload) as Map)['k']],
+        isNot(contains('enroll-v3')),
+        reason: 'no enrolment went to a device whose person refused');
   });
 
   test('6. an enrolment carrying the account root is refused', () async {
