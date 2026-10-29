@@ -664,8 +664,13 @@ class ConnectInvites extends ChangeNotifier {
       // acceptor drew a second ephemeral and spent the invite at message 3.
       // Until 2026-10-29 a pass wrote down what its rounds did once every
       // pending invite's round had run, and an app killed during a later
-      // one's lost an earlier one's the same way. A round that throws is not
-      // compared; it is written down when its failure is new.
+      // one's lost an earlier one's the same way. A round that throws is
+      // compared too: one whose post of its message 2 or 3 failed has drawn
+      // that message and holds it to post again (ConnectRun.step), so it is
+      // written down with it whatever the card already said, and after a
+      // restart that message goes, never a second one drawn in its place.
+      // Until 2026-10-29 a round that threw was written down only when its
+      // failure was new to the card.
       final before = jsonEncode(invite.run.toJson());
       final ConnectProgress next;
       try {
@@ -675,20 +680,20 @@ class ConnectInvites extends ChangeNotifier {
             refusePeer: _blockedHere);
       } on RelayException catch (e) {
         // The relay refused something, or nothing answered: not a fact about
-        // the invite. Leave it alone, say why, and try again next time.
-        if (_fail(invite, e.message)) await _written();
+        // the invite. Say why, and try again next time.
+        await _threw(invite, e.message, before);
         continue;
       } on IOException catch (e) {
-        if (_fail(invite, '$e')) await _written();
+        await _threw(invite, '$e', before);
         continue;
       } on TimeoutException catch (e) {
-        if (_fail(invite, e.message ?? 'timed out')) await _written();
+        await _threw(invite, e.message ?? 'timed out', before);
         continue;
       } catch (e) {
         // Anything else is a fault in this build rather than in the network,
         // and the honest thing to do with one on a timer is to put it on the
         // card rather than to crash or to hide it behind "waiting".
-        if (_fail(invite, '$e')) await _written();
+        await _threw(invite, '$e', before);
         continue;
       }
       var changed = false;
@@ -708,6 +713,14 @@ class ConnectInvites extends ChangeNotifier {
   Future<void> _written() async {
     await _save();
     notifyListeners();
+  }
+
+  /// A round that threw: why, on the card, and the invite written down when
+  /// that is new or the round had moved its run ([before], its record as the
+  /// round began) before it threw.
+  Future<void> _threw(PendingInvite invite, String why, String before) async {
+    final told = _fail(invite, why);
+    if (told || jsonEncode(invite.run.toJson()) != before) await _written();
   }
 
   /// Records why an invite could not be carried forward. True if the card

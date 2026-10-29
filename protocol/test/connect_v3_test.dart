@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -83,7 +84,13 @@ import 'package:z_protocol/z_protocol.dart';
 // 12. a frame of one version on the other's mailbox transacts nothing: runs
 //     of version 2 and version 3 on the same ten bytes never meet, and a
 //     version-2 message 1 posted into a version-3 acceptor's mailbox stops
-//     that run before it posts anything.
+//     that run before it posts anything;
+// 13. a message 2 or 3 whose post the link drops — before the relay has
+//     it, or after, with only the relay's answer lost — is held by the run,
+//     through storage, and posted again as it was, never drawn again: the
+//     acceptor's encapsulation and the inviter's one decapsulation stand,
+//     the ceremony completes, the relay holds one envelope of it either
+//     way, and the mailboxes are left empty.
 
 /// One side of a ceremony: what the app holds about itself.
 class Party {
@@ -926,6 +933,11 @@ void main() {
     final seen = <Map<String, Object?>>[];
     final raw = <String>[];
     QuantumRelayInTheMiddle? mitm;
+    // When set, the post of the ceremony envelope it names is where the link
+    // drops, once (criterion 13): the connection carrying it is cut before
+    // the relay has it, or, when `relayTakes`, once the relay has answered
+    // it and before that answer reaches the client.
+    ({String id, bool relayTakes})? drop;
 
     setUpAll(() async {
       final serverDir =
@@ -979,8 +991,17 @@ void main() {
         }
 
         var inOrder = Future<void>.value();
+        var dead = false; // the link dropped: nothing more goes either way
+        String? answerLost; // the id whose answer this link drops
+        void cut() {
+          dead = true;
+          unawaited(down.close());
+          unawaited(upstream.close());
+        }
+
         down.listen((d) {
           inOrder = inOrder.then((_) async {
+            if (dead) return;
             note(d);
             final m = mitm;
             Map<String, Object?>? f;
@@ -988,6 +1009,18 @@ void main() {
               final j = jsonDecode(d as String);
               if (j is Map) f = j.cast<String, Object?>();
             } catch (_) {}
+            final cutAt = drop;
+            if (cutAt != null &&
+                f != null &&
+                f['t'] == 'send' &&
+                f['id'] == cutAt.id) {
+              drop = null;
+              if (!cutAt.relayTakes) {
+                cut();
+                return;
+              }
+              answerLost = cutAt.id;
+            }
             final payload = f?['payload'];
             if (m != null &&
                 f != null &&
@@ -1004,7 +1037,19 @@ void main() {
             onDone: () => inOrder = inOrder.then((_) => upstream.close()),
             onError: (_) => inOrder = inOrder.then((_) => upstream.close()));
         upstream.listen((d) {
+          if (dead) return;
           note(d);
+          final lost = answerLost;
+          if (lost != null && d is String) {
+            try {
+              final j = jsonDecode(d);
+              if (j is Map && j['t'] == 'sent' && j['id'] == lost) {
+                answerLost = null;
+                cut();
+                return;
+              }
+            } catch (_) {}
+          }
           down.add(d);
         }, onDone: () => down.close(), onError: (_) => down.close());
       });
@@ -1020,6 +1065,7 @@ void main() {
       seen.clear();
       raw.clear();
       mitm = null;
+      drop = null;
     });
 
     const p = Duration(milliseconds: 500);
@@ -1242,6 +1288,87 @@ void main() {
       expect(acc.finished, isTrue);
       expect(sends('z-connect-c2'), 0);
     }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('13. a message 2 or 3 whose post the link drops is posted again, as '
+        'it was, and the ceremony completes', () async {
+      final alice = await person('Alice', sk: true);
+      final bob = await person('Bob');
+      // One invite for each place the link drops — the acceptor's message
+      // 2, the inviter's message 3, before the relay has it or after, its
+      // answer lost — every run read back from storage after every step.
+      // Where each ended, and what the relay was asked to carry and held.
+      final ended = <String>[];
+      for (final (at, relayTakes) in const [
+        ('z-connect-c2', false),
+        ('z-connect-c2', true),
+        ('z-connect-c3', false),
+        ('z-connect-c3', true),
+      ]) {
+        seen.clear();
+        var inv = await reopen(await ConnectRunV3.invite(
+            me: alice.id, sealKey: alice.sealKey, pqKey: alice.pqKey));
+        final code = ConnectCode.parseV3(inv.code.text);
+        var acc = await reopen(ConnectRunV3.accept(
+            me: bob.id, sealKey: bob.sealKey, pqKey: bob.pqKey, code: code));
+        final acceptorDrops = at == 'z-connect-c2';
+        Future<ConnectProgress> stepOf(bool acceptor) async {
+          try {
+            return acceptor
+                ? await acc.step(relayUrl: url, poll: p)
+                : await inv.step(relayUrl: url, poll: p);
+          } finally {
+            if (acceptor) {
+              acc = await reopen(acc);
+            } else {
+              inv = await reopen(inv);
+            }
+          }
+        }
+
+        expect(await stepOf(false), ConnectProgress.waiting); // message 1
+        if (!acceptorDrops) {
+          expect(await stepOf(true), ConnectProgress.waiting); // message 2
+        }
+        drop = (id: at, relayTakes: relayTakes);
+        await expectLater(
+            stepOf(acceptorDrops), throwsA(isA<RelayException>()),
+            reason: 'a post that fails is thrown, not returned');
+        expect(drop, isNull, reason: 'the link dropped at $at');
+        // Each step's run is read back from storage, so what goes next
+        // is what the record held.
+        // The same side's next step comes before the other has answered,
+        // and posts the message again.
+        expect(await stepOf(acceptorDrops), ConnectProgress.waiting);
+        final copies = (await peek(code, acceptorDrops ? 'i' : 'r'))
+            .where((e) => e.id == at)
+            .length;
+        for (var i = 0;
+            i < 4 && (inv.session == null || acc.session == null);
+            i++) {
+          if (inv.session == null) await stepOf(false);
+          if (acc.session == null) await stepOf(true);
+        }
+        final posts = [
+          for (final f in seen)
+            if (f['t'] == 'send' && f['id'] == at) f['payload']
+        ];
+        final left = [...await peek(code, 'i'), ...await peek(code, 'r')]
+            .where((e) => e.id.startsWith('z-connect-c'));
+        final both = inv.session != null &&
+            acc.session != null &&
+            inv.session!.sas == acc.session!.sas &&
+            b64(inv.session!.peerSealKey) == b64(bob.sealKey) &&
+            b64(acc.session!.peerSealKey) == b64(alice.sealKey);
+        ended.add('${both ? 'one string' : 'no string'}; $at posts: '
+            '${posts.length}, messages: ${posts.toSet().length}, held: '
+            '$copies, left: ${left.length}');
+      }
+      expect(ended, [
+        for (final at in const ['z-connect-c2', 'z-connect-c3'])
+          for (var i = 0; i < 2; i++)
+            'one string; $at posts: 2, messages: 1, held: 1, left: 0'
+      ]);
+    }, timeout: const Timeout(Duration(minutes: 3)));
   });
 }
 

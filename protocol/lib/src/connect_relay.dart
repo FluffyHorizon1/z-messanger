@@ -56,11 +56,64 @@ enum ConnectProgress {
   aborted,
 }
 
+/// The message a run draws in a round that also moves it past drawing it —
+/// message 2 on the acceptor's side, with the ephemeral its commitment
+/// covers; message 3 on the inviter's, its opening — held byte for byte,
+/// with its envelope id, from just before it is posted until the relay has
+/// taken it (§20.5). A post that fails leaves it held, in the run and in its
+/// record, and every later round posts it again as it was, until a post of
+/// it lands or its answer arrives. It is never drawn twice: the run has
+/// moved past that, and a second message 2 would carry a second ephemeral.
+/// Posted again to a relay that already holds it — taken, and only its
+/// answer lost — it is still one envelope there: the relay dedupes an
+/// attributed envelope on its id and sender. Until 2026-10-29 nothing posted
+/// it again, and a link that dropped as it went left this side waiting for
+/// an answer to a message the other side never had, and the other side
+/// waiting for that message, both until the invite expired. Shared by
+/// [ConnectRun] and [ConnectRunV3].
+mixin _Unposted {
+  ({String id, String payload})? _unposted;
+
+  /// Posts [payload] as envelope [id] to [to], held until the relay takes it.
+  Future<void> _post(
+      RelayClient client, String to, String id, String payload) async {
+    _unposted = (id: id, payload: payload);
+    await client.send(to: to, id: id, payload: payload);
+    _unposted = null;
+  }
+
+  /// Posts again the message a failed post left held, if there is one.
+  Future<void> _repost(RelayClient client, String to) async {
+    final u = _unposted;
+    if (u != null) await _post(client, to, u.id, u.payload);
+  }
+
+  /// The record's member for it, present only while a message is held: a
+  /// record is what it was before 2026-10-29 unless a post failed.
+  Map<String, Object?> get _unpostedJson => {
+        if (_unposted != null)
+          'unposted': {'id': _unposted!.id, 'payload': _unposted!.payload},
+      };
+
+  /// Reads back what [_unpostedJson] wrote — nothing, or an id and a payload.
+  void _readUnposted(Object? j) {
+    if (j == null) return;
+    final id = j is Map ? j['id'] : null;
+    final payload = j is Map ? j['payload'] : null;
+    if (id is! String || payload is! String) {
+      throw const FormatException('an unposted message this build cannot read');
+    }
+    _unposted = (id: id, payload: payload);
+  }
+}
+
 /// One side's whole invite, durable across restarts.
 ///
-/// Serialise with [toJson] after every [step] — that is what makes criterion
-/// 2 ("the initiator resumes after a restart") true rather than aspirational.
-class ConnectRun {
+/// Serialise with [toJson] after every [step], whether it returned or threw
+/// — that is what makes criterion 2 ("the initiator resumes after a
+/// restart") true rather than aspirational, and a step that threw after
+/// drawing its message may have moved the run ([_Unposted]).
+class ConnectRun with _Unposted {
   /// True for the side that made the invite.
   final bool inviter;
 
@@ -164,6 +217,7 @@ class ConnectRun {
               'peerName': session!.peer.displayName,
             if (session!.group != null) 'grp': session!.group,
           },
+        ..._unpostedJson,
         'spent': _spent,
         if (abortReason != null) 'abort': abortReason,
       };
@@ -204,6 +258,7 @@ class ConnectRun {
     run._code = code;
     run._groupAware = j['ga'] == true;
     run.abortReason = j['abort'] as String?;
+    run._readUnposted(j['unposted']);
     return run;
   }
 
@@ -215,8 +270,11 @@ class ConnectRun {
   ///
   /// Every return value is a fact about the ceremony. A network failure is
   /// not one of those, so it is thrown rather than returned: an unreachable
-  /// relay means try again, and nothing about the invite has changed.
-  /// Persist the run after each call — see [toJson].
+  /// relay means try again. Nothing it read is acknowledged; but a round
+  /// that drew its message 2 or 3 before the post of it failed has moved
+  /// past drawing it, and holds that message for the next round to post
+  /// again ([_Unposted]). Persist the run after each call, whether it
+  /// returned or threw — see [toJson].
   ///
   /// [refusePeer]: asked about the identity the other side revealed, the
   /// moment this side has it checked against its commitment — and, on the
@@ -280,6 +338,7 @@ class ConnectRun {
       // they can do with it, not a new exposure.
       abortReason = e.message;
       _spent = true;
+      _unposted = null;
       return ConnectProgress.aborted;
     } finally {
       await sub.cancel();
@@ -305,14 +364,17 @@ class ConnectRun {
         return ConnectProgress.waiting;
       }
       final open = await i.open(reply);
-      await client.send(
-          to: theirs,
-          id: 'z-connect-c3',
-          payload: jsonEncode({'k': 'x3', ...open}));
+      await _post(
+          client, theirs, 'z-connect-c3', jsonEncode({'k': 'x3', ...open}));
       return ConnectProgress.waiting;
     }
     final reveal = _take(inbox, 'x4', spent);
-    if (reveal == null) return ConnectProgress.waiting;
+    if (reveal == null) {
+      // No answer to message 3 yet: post it again if its post failed.
+      await _repost(client, theirs);
+      return ConnectProgress.waiting;
+    }
+    _unposted = null; // answered, so the relay had it
     final s = await i.complete(reveal);
     if (refusePeer != null && await refusePeer(s.peer)) {
       throw const ConnectAbort('refused: whoever answered is refused here');
@@ -333,14 +395,17 @@ class ConnectRun {
       final (reply, acceptor) = await ConnectAcceptor.reply(commit,
           me: _me, code: code, groupAware: _groupAware);
       _acceptor = acceptor;
-      await client.send(
-          to: theirs,
-          id: 'z-connect-c2',
-          payload: jsonEncode({'k': 'x2', ...reply}));
+      await _post(
+          client, theirs, 'z-connect-c2', jsonEncode({'k': 'x2', ...reply}));
       return ConnectProgress.waiting;
     }
     final open = _take(inbox, 'x3', spent);
-    if (open == null) return ConnectProgress.waiting;
+    if (open == null) {
+      // No answer to message 2 yet: post it again if its post failed.
+      await _repost(client, theirs);
+      return ConnectProgress.waiting;
+    }
+    _unposted = null; // answered, so the relay had it
     final (reveal, s) = await _acceptor!.accept(open);
     // Asked before this side's own reveal goes: a refused inviter is never
     // shown who opened its invite.
@@ -423,15 +488,16 @@ Future<ZIdentity> mailboxIdentity(ConnectCode code, String role) async {
 
 /// One side of a version-3 invite (§20.9), durable across restarts: the same
 /// four frames, mailboxes of its own, and every rule of [ConnectRun] —
-/// store-and-forward, the lifetime, spent on confirmation, an abandonment or
-/// any abort, the mailbox acknowledged empty — around [ConnectInviterV3] and
-/// [ConnectAcceptorV3].
+/// store-and-forward, a message 2 or 3 whose post failed held and posted
+/// again as it was ([_Unposted]), the lifetime, spent on confirmation, an
+/// abandonment or any abort, the mailbox acknowledged empty — around
+/// [ConnectInviterV3] and [ConnectAcceptorV3].
 ///
 /// Nothing in the app ran one before 44.6, which runs it for an invite of
 /// version 3 that it opens — and makes one only for a test (ADR 0033
 /// decision 2). [ConnectRun] refuses a version-3 invite, [ConnectRun.fromJson]
 /// a version-3 record ([connectRecordVersion]), and [fromJson] here any other.
-class ConnectRunV3 {
+class ConnectRunV3 with _Unposted {
   /// True for the side that made the invite.
   final bool inviter;
 
@@ -526,6 +592,7 @@ class ConnectRunV3 {
             if (session!.peerPqKey != null) 'pqk': b64(session!.peerPqKey!),
             'pqseal': b64(session!.peerSealKey),
           },
+        ..._unpostedJson,
         'spent': _spent,
         if (abortReason != null) 'abort': abortReason,
       };
@@ -571,12 +638,15 @@ class ConnectRunV3 {
     run._groupAware = j['ga'] == true;
     run._spent = j['spent'] as bool? ?? false;
     run.abortReason = j['abort'] as String?;
+    run._readUnposted(j['unposted']);
     return run;
   }
 
   /// [ConnectRun.step], for version 3: connect as this side's version-3
   /// mailbox, do everything that can be done now, acknowledge what was
-  /// consumed, disconnect. The same answers, for the same reasons.
+  /// consumed, disconnect. The same answers, for the same reasons — a
+  /// message 2 or 3 whose post failed among them, held and posted again
+  /// ([_Unposted]).
   Future<ConnectProgress> step(
       {required String relayUrl,
       int? nowMs,
@@ -610,6 +680,7 @@ class ConnectRunV3 {
     } on ConnectAbort catch (e) {
       abortReason = e.message;
       _spent = true;
+      _unposted = null;
       return ConnectProgress.aborted;
     } finally {
       await sub.cancel();
@@ -633,15 +704,19 @@ class ConnectRunV3 {
             payload: jsonEncode({'k': 'x1', ...await i.commit()}));
         return ConnectProgress.waiting;
       }
+      // Opens once: its KEM key decapsulates this one ciphertext, and a
+      // message 3 whose post fails is posted again rather than made again.
       final open = await i.open(reply);
-      await client.send(
-          to: theirs,
-          id: 'z-connect-c3',
-          payload: jsonEncode({'k': 'x3', ...open}));
+      await _post(
+          client, theirs, 'z-connect-c3', jsonEncode({'k': 'x3', ...open}));
       return ConnectProgress.waiting;
     }
     final reveal = ConnectRun._take(inbox, 'x4', spent);
-    if (reveal == null) return ConnectProgress.waiting;
+    if (reveal == null) {
+      await _repost(client, theirs);
+      return ConnectProgress.waiting;
+    }
+    _unposted = null; // answered, so the relay had it
     final s = await i.complete(reveal);
     if (refusePeer != null && await refusePeer(s.peer)) {
       throw const ConnectAbort('refused: whoever answered is refused here');
@@ -666,14 +741,16 @@ class ConnectRunV3 {
           pqKey: _pqKey,
           groupAware: _groupAware);
       _acceptor = acceptor;
-      await client.send(
-          to: theirs,
-          id: 'z-connect-c2',
-          payload: jsonEncode({'k': 'x2', ...reply}));
+      await _post(
+          client, theirs, 'z-connect-c2', jsonEncode({'k': 'x2', ...reply}));
       return ConnectProgress.waiting;
     }
     final open = ConnectRun._take(inbox, 'x3', spent);
-    if (open == null) return ConnectProgress.waiting;
+    if (open == null) {
+      await _repost(client, theirs);
+      return ConnectProgress.waiting;
+    }
+    _unposted = null; // answered, so the relay had it
     final (reveal, s) = await _acceptor!.accept(open);
     if (refusePeer != null && await refusePeer(s.peer)) {
       throw const ConnectAbort('refused: whoever made it is refused here');

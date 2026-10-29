@@ -65,7 +65,12 @@
 //      forward; and again at its digits — and completes, the contact then
 //      holding the keys its reveal carried; and a stored version-3 record
 //      this build cannot read costs that invite alone, written back as it
-//      was.
+//      was;
+//  11. a version-3 invite whose link drops as this build's acceptor posts
+//      its message 2, or as the inviter posts its message 3, goes on to the
+//      digits: that message is posted again on a later round, as it was —
+//      until 2026-10-29 the run had moved past drawing it and nothing
+//      posted it again, and both sides waited until the invite expired.
 @Tags(['integration'])
 library;
 
@@ -142,6 +147,10 @@ void main() {
   // what this returns.
   Future<String> Function(String payload)? rewrite;
 
+  // When set, the post of the ceremony envelope it names is where the link
+  // drops, once: the connection carrying it is cut before the relay has it.
+  String? dropAt;
+
   setUpAll(() async {
     HttpOverrides.global = null;
     final serverDir =
@@ -195,9 +204,18 @@ void main() {
       }
 
       var inOrder = Future<void>.value();
+      var dead = false; // the link dropped: nothing more goes either way
       down.listen((d) {
         inOrder = inOrder.then((_) async {
+          if (dead) return;
           final f = note(d);
+          if (f != null && f['t'] == 'send' && f['id'] == dropAt) {
+            dropAt = null;
+            dead = true;
+            await down.close();
+            await upstream.close();
+            return;
+          }
           final edit = rewrite;
           final payload = f?['payload'];
           if (edit != null &&
@@ -214,6 +232,7 @@ void main() {
           onDone: () => inOrder = inOrder.then((_) => upstream.close()),
           onError: (_) => inOrder = inOrder.then((_) => upstream.close()));
       upstream.listen((d) {
+        if (dead) return;
         note(d);
         down.add(d);
       }, onDone: () => down.close(), onError: (_) => down.close());
@@ -241,6 +260,7 @@ void main() {
   setUp(() {
     seen.clear();
     rewrite = null;
+    dropAt = null;
   });
 
   Future<Person> openApp(Directory dir, ZIdentity id, String name,
@@ -1099,4 +1119,44 @@ void main() {
     expect(kept.singleWhere((r) => r['id'] == unread['id']), equals(unread),
         reason: 'the one that does not parse, as it was');
   }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test('11. a version-3 invite whose link drops as message 2 or message 3 is '
+      'posted goes on to the digits, that message posted again as it was',
+      () async {
+    // Where each ended: one string on both screens, or what each card was
+    // left at; and how many posts went under the id that dropped — the one
+    // the link dropped and the one after it, nothing more once one lands —
+    // and how many different messages they carried.
+    final ended = <String>[];
+    for (final at in const ['z-connect-c2', 'z-connect-c3']) {
+      seen.clear();
+      final alice = await nextRelease('Alice');
+      final bob = await person('Bob');
+      final mine = await alice.invites.create();
+      await alice.invites.pump(); // message 1 waits for Bob
+      final theirs = await bob.invites.open(mine.link);
+      if (at == 'z-connect-c2') dropAt = at;
+      await bob.invites.pump();
+      if (at == 'z-connect-c3') {
+        dropAt = at;
+        await alice.invites.pump();
+      }
+      expect(dropAt, isNull, reason: 'the link dropped at $at');
+      expect((at == 'z-connect-c2' ? theirs : mine).lastFailure, isNotNull,
+          reason: 'the card says the round did not get through');
+      await dance(alice, mine, bob, theirs);
+      final posts = {
+        for (final f in seen)
+          if (f['t'] == 'send' && f['id'] == at) f['payload']
+      };
+      final where = mine.sas != null && mine.sas == theirs.sas
+          ? 'one string'
+          : 'acceptor ${theirs.progress.name}, inviter ${mine.progress.name}';
+      ended.add('$where; $at posts: ${sends(at)}, messages: ${posts.length}');
+    }
+    expect(ended, [
+      'one string; z-connect-c2 posts: 2, messages: 1',
+      'one string; z-connect-c3 posts: 2, messages: 1',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

@@ -55,7 +55,15 @@
 //     message the relay no longer held, and with both killed the acceptor
 //     spent the invite at message 3; and until 2026-10-29 what a pass did
 //     was written down once every pending invite's round had run, so a kill
-//     during a later one's lost it all the same.
+//     during a later one's lost it all the same. And one whose link drops as
+//     the acceptor posts message 2, or as the inviter posts message 3 —
+//     before the relay has it, or after, its answer lost — goes on the
+//     same, that message posted again as it was: until 2026-10-29 the run
+//     moved past drawing it and nothing posted it again, so both cards said
+//     "waiting" until the invite expired; and until then a round that threw
+//     was written down only when its failure was new, so an inviter whose
+//     round had dropped already came back after a restart to the record
+//     before its message 3 and made another.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -104,6 +112,15 @@ void main() {
   final temps = <Directory>[];
   final live = <Person>[];
 
+  // A link to the relay that drops once, where it is told to (criterion
+  // 11): the connection carrying the post of the ceremony envelope [dropAt]
+  // names is cut there — before the relay has it, or, when [relayTakes],
+  // once the relay has taken it and before its answer is back. Every send
+  // it carries is written down in [linkSends].
+  late HttpServer link;
+  ({String id, bool relayTakes})? dropAt;
+  final linkSends = <Map<String, Object?>>[];
+
   setUpAll(() async {
     HttpOverrides.global = null;
     final serverDir =
@@ -114,6 +131,69 @@ void main() {
     relay = await Process.start('node', ['server.js'],
         workingDirectory: serverDir,
         environment: {'PORT': '$port', 'LOG_LEVEL': 'silent'});
+    Map<String, Object?>? frame(dynamic d) {
+      if (d is! String) return null;
+      try {
+        final j = jsonDecode(d);
+        return j is Map ? j.cast<String, Object?>() : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    link = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    link.listen((req) async {
+      final WebSocket down;
+      try {
+        down = await WebSocketTransformer.upgrade(req);
+      } catch (_) {
+        req.response.statusCode = HttpStatus.badRequest;
+        await req.response.close();
+        return;
+      }
+      // The Host header passed on, as a front passes it: the client signs
+      // its authentication over the address it dialled (§12.1).
+      final up = await WebSocket.connect('ws://127.0.0.1:$port',
+          headers: {'host': req.headers.value('host') ?? ''});
+      String? answerLost;
+      var dead = false; // cut: nothing more goes either way
+      void cut() {
+        dead = true;
+        unawaited(down.close());
+        unawaited(up.close());
+      }
+
+      down.listen((d) {
+        if (dead) return;
+        final f = frame(d);
+        final drop = dropAt;
+        if (f != null && f['t'] == 'send') {
+          linkSends.add(f);
+          if (drop != null && f['id'] == drop.id) {
+            dropAt = null;
+            if (!drop.relayTakes) {
+              cut();
+              return;
+            }
+            answerLost = drop.id;
+          }
+        }
+        up.add(d);
+      }, onDone: () => up.close(), onError: (_) => up.close());
+      up.listen((d) {
+        if (dead) return;
+        final f = frame(d);
+        if (answerLost != null &&
+            f != null &&
+            f['t'] == 'sent' &&
+            f['id'] == answerLost) {
+          answerLost = null;
+          cut();
+          return;
+        }
+        down.add(d);
+      }, onDone: () => down.close(), onError: (_) => down.close());
+    });
     for (var i = 0; i < 60; i++) {
       try {
         final res = await (await HttpClient()
@@ -134,6 +214,7 @@ void main() {
       await p.svc.transport.stop();
       await p.vault.db.close();
     }
+    await link.close(force: true);
     relay.kill();
     for (final d in temps) {
       if (d.existsSync()) d.deleteSync(recursive: true);
@@ -166,12 +247,13 @@ void main() {
   }
 
   /// The app being killed and relaunched: nothing in memory survives.
-  Future<Person> restart(Person p, Directory dir, ZIdentity id, String name) async {
+  Future<Person> restart(Person p, Directory dir, ZIdentity id, String name,
+      {String? url}) async {
     await p.svc.transport.stop();
     p.svc.dispose();
     await p.vault.db.close();
     live.remove(p);
-    return open(dir, id, name);
+    return open(dir, id, name, url: url);
   }
 
   /// Step both sides until the ceremony is done or we give up.
@@ -713,16 +795,79 @@ void main() {
           'inviter ${a.progress.name}';
     }
 
+    // One invite for each way its link drops, both people through [link]:
+    // as Bob, the acceptor, posts message 2 ([at] z-connect-c2), or as
+    // Alice, the inviter, posts message 3 (z-connect-c3) — before the relay
+    // has it, or, when [relayTakes], after, with only its answer lost.
+    // [again]: Alice's round before that one dropped too, at message 1, so
+    // her card already said what the dropped round says; [kill]: her app is
+    // killed after the round that dropped. Where it ended, as for [killed],
+    // and how many different messages went under the id that dropped.
+    Future<String> dropped(String at,
+        {bool relayTakes = false, bool again = false, bool kill = false}) async {
+      final via = 'ws://127.0.0.1:${link.port}';
+      final aDir = await Directory.systemTemp.createTemp('z_ci_drop_a_');
+      temps.add(aDir);
+      final aId = await ZIdentity.generate();
+      var alice = await open(aDir, aId, 'Alice', url: via);
+      final bob = await person('Bob', url: via);
+      linkSends.clear();
+
+      final invite = await alice.invites.create();
+      await alice.invites.pump(); // message 1 waits for Bob
+      if (again) {
+        dropAt = (id: 'z-connect-c1', relayTakes: false);
+        await alice.invites.pump(); // and is posted again, and that drops
+        expect(alice.invites.invites.single.lastFailure, isNotNull);
+      }
+      final mine = await bob.invites.open(invite.link);
+      if (at == 'z-connect-c2') dropAt = (id: at, relayTakes: relayTakes);
+      await bob.invites.pump();
+      if (at == 'z-connect-c3') {
+        dropAt = (id: at, relayTakes: relayTakes);
+        await alice.invites.pump();
+      }
+      expect(dropAt, isNull, reason: 'the link dropped at $at');
+      final dropping =
+          at == 'z-connect-c2' ? mine : alice.invites.invites.single;
+      expect(dropping.lastFailure, isNotNull,
+          reason: 'the card says the round did not get through');
+      expect(dropping.progress, ConnectProgress.waiting);
+      if (kill) {
+        alice = await restart(alice, aDir, aId, 'Alice', url: via);
+        await alice.invites.load();
+      }
+
+      await danceTo(bob, alice);
+      final a = alice.invites.invites.single;
+      final b = bob.invites.invites.single;
+      final ended = a.sas != null && a.sas == b.sas
+          ? 'one string'
+          : 'acceptor ${b.progress.name}, inviter ${a.progress.name}';
+      final drawn = {
+        for (final f in linkSends)
+          if (f['id'] == at) f['payload']
+      }.length;
+      return drawn == 1 ? ended : '$ended, $at drawn $drawn times';
+    }
+
     expect(
         [
           await killed(acceptor: true, inviter: false),
           await killed(acceptor: false, inviter: true),
           await killed(acceptor: true, inviter: true),
           await killed(acceptor: true, inviter: false, midPass: true),
+          await dropped('z-connect-c2'),
+          await dropped('z-connect-c3'),
+          await dropped('z-connect-c3', again: true, kill: true),
+          await dropped('z-connect-c2', relayTakes: true),
         ],
-        ['one string', 'one string', 'one string', 'one string'],
+        [for (var i = 0; i < 8; i++) 'one string'],
         reason: 'the acceptor killed after its message 2, the inviter after '
             'its message 3, both, and the acceptor while its pass was still '
-            "at another invite's round");
-  }, timeout: const Timeout(Duration(minutes: 4)));
+            "at another invite's round; the link dropped as message 2 was "
+            'posted, as message 3 was, as message 3 was after a round that '
+            'dropped already and with the app killed after, and as message 2 '
+            'was with the relay holding it');
+  }, timeout: const Timeout(Duration(minutes: 6)));
 }

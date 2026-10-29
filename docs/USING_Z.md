@@ -68,8 +68,9 @@ the room. It works like this:
    whom. With the app lock on, a tapped invite waits until they are past it.
 4. From here neither of you has to do anything. While Z is open it carries
    the invite forward on its own, a step every twenty seconds or so, and
-   "Check now" only hurries it. An invite the other person has not opened yet
-   says so; one they have opened says it is waiting for them.
+   "Check now" only hurries it. A step a lost connection cuts short is taken
+   again once the connection is back. An invite the other person has not
+   opened yet says so; one they have opened says it is waiting for them.
 5. Both screens show the same **eight digits**. Get on a call, or say them in
    person, and compare. If they match, you are added to each other and both
    of you are verified — no safety number to read out afterwards.

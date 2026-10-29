@@ -58,10 +58,16 @@ import 'package:z_protocol/z_protocol.dart';
 //     for such an invite, pinned here so it cannot change unnoticed;
 //  9. a side that refuses the identity the other revealed ends the
 //     ceremony there: an acceptor that refuses the inviter never sends
-//     message 4, and an inviter that refuses the acceptor holds no session.
+//     message 4, and an inviter that refuses the acceptor holds no session;
+// 10. a message 2 or 3 whose post the link drops — before the relay has
+//     it, or after, with only the relay's answer lost — is held by the run,
+//     through storage, and posted again as it was on the next step, and the
+//     ceremony completes; the relay holds one envelope of it either way,
+//     and the mailboxes are left empty. Until 2026-10-29 the run moved past
+//     drawing it and never posted it again.
 //
-// Criteria 5, 6 and 7 are asserted against what the relay actually saw, not
-// against what the client meant to send: every frame passes through a
+// Criteria 5, 6, 7 and 10 are asserted against what the relay actually saw,
+// not against what the client meant to send: every frame passes through a
 // recording WebSocket tap standing between the clients and the relay.
 //
 // One more, unnumbered test covers the transport's half of 17.1's criterion
@@ -78,6 +84,12 @@ void main() {
 
   // When set, the tap is the relay in the middle (criterion 7).
   RelayInTheMiddle? mitm;
+
+  // When set, the post of the ceremony envelope it names is where the link
+  // drops, once (criterion 10): the connection carrying it is cut before the
+  // relay has it, or, when `relayTakes`, once the relay has answered it and
+  // before that answer reaches the client.
+  ({String id, bool relayTakes})? drop;
 
   setUpAll(() async {
     final serverDir =
@@ -144,8 +156,17 @@ void main() {
       // stores. Each connection's frames keep their order: a rewrite is
       // awaited before the next frame goes, and the close after both.
       var inOrder = Future<void>.value();
+      var dead = false; // the link dropped: nothing more goes either way
+      String? answerLost; // the id whose answer this link drops
+      void cut() {
+        dead = true;
+        unawaited(down.close());
+        unawaited(upstream.close());
+      }
+
       down.listen((d) {
         inOrder = inOrder.then((_) async {
+          if (dead) return;
           note(d);
           final m = mitm;
           Map<String, Object?>? f;
@@ -153,6 +174,18 @@ void main() {
             final j = jsonDecode(d as String);
             if (j is Map) f = j.cast<String, Object?>();
           } catch (_) {}
+          final cutAt = drop;
+          if (cutAt != null &&
+              f != null &&
+              f['t'] == 'send' &&
+              f['id'] == cutAt.id) {
+            drop = null;
+            if (!cutAt.relayTakes) {
+              cut();
+              return;
+            }
+            answerLost = cutAt.id;
+          }
           final payload = f?['payload'];
           if (m != null &&
               f != null &&
@@ -169,7 +202,19 @@ void main() {
           onDone: () => inOrder = inOrder.then((_) => upstream.close()),
           onError: (_) => inOrder = inOrder.then((_) => upstream.close()));
       upstream.listen((d) {
+        if (dead) return;
         note(d);
+        final lost = answerLost;
+        if (lost != null && d is String) {
+          try {
+            final j = jsonDecode(d);
+            if (j is Map && j['t'] == 'sent' && j['id'] == lost) {
+              answerLost = null;
+              cut();
+              return;
+            }
+          } catch (_) {}
+        }
         down.add(d);
       }, onDone: () => down.close(), onError: (_) => down.close());
     });
@@ -185,6 +230,7 @@ void main() {
     seen.clear();
     raw.clear();
     mitm = null;
+    drop = null;
   });
 
   const p = Duration(milliseconds: 500);
@@ -640,6 +686,113 @@ void main() {
     expect(await (await reopen(inv2)).step(relayUrl: url, poll: p),
         ConnectProgress.spent);
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('10. a message 2 or 3 whose post the link drops is posted again, as '
+      'it was, and the ceremony completes', () async {
+    // What one of [code]'s mailboxes holds, read without acknowledging it:
+    // a marker is posted behind it and the mailbox read until the marker
+    // arrives — the relay flushes a mailbox in the order it was filled.
+    // Only the marker is acknowledged.
+    Future<List<RelayInbound>> held(ConnectCode code, String role) async {
+      final who = await mailboxIdentity(code, role);
+      final marker = 'z-peek-${b64url(randomBytes(9))}';
+      final poster = await RelayClient.connect(url, await ZIdentity.generate());
+      await poster.send(to: await who.routingId(), id: marker, payload: '{}');
+      await poster.close();
+      final c = await RelayClient.connect(url, who);
+      final got = <RelayInbound>[];
+      final arrived = Completer<void>();
+      final sub = c.messages.listen((e) {
+        got.add(e);
+        if (e.id == marker && !arrived.isCompleted) arrived.complete();
+      });
+      try {
+        await arrived.future.timeout(const Duration(seconds: 20));
+        final m = got.firstWhere((e) => e.id == marker);
+        c.ackReceived(id: m.id, from: m.from);
+      } finally {
+        await sub.cancel();
+        await c.close();
+      }
+      return [
+        for (final e in got)
+          if (e.id != marker) e
+      ];
+    }
+
+    // One invite for each place the link drops — the acceptor's message 2,
+    // the inviter's message 3, before the relay has it or after, its answer
+    // lost — every run read back from JSON after every step. Where each
+    // ended, and what the relay was asked to carry and held.
+    final ended = <String>[];
+    for (final (at, relayTakes) in const [
+      ('z-connect-c2', false),
+      ('z-connect-c2', true),
+      ('z-connect-c3', false),
+      ('z-connect-c3', true),
+    ]) {
+      seen.clear();
+      final (alice, _) = await person('Alice');
+      final (bob, _) = await person('Bob');
+      var inv = await reopen(await ConnectRun.invite(me: alice));
+      final code = inv.code;
+      var acc = await reopen(ConnectRun.accept(me: bob, code: code));
+      final acceptorDrops = at == 'z-connect-c2';
+      Future<ConnectProgress> stepOf(bool acceptor) async {
+        try {
+          return acceptor
+              ? await acc.step(relayUrl: url, poll: p)
+              : await inv.step(relayUrl: url, poll: p);
+        } finally {
+          if (acceptor) {
+            acc = await reopen(acc);
+          } else {
+            inv = await reopen(inv);
+          }
+        }
+      }
+
+      expect(await stepOf(false), ConnectProgress.waiting); // message 1
+      if (!acceptorDrops) {
+        expect(await stepOf(true), ConnectProgress.waiting); // message 2
+      }
+      drop = (id: at, relayTakes: relayTakes);
+      await expectLater(stepOf(acceptorDrops), throwsA(isA<RelayException>()),
+          reason: 'a post that fails is thrown, not returned');
+      expect(drop, isNull, reason: 'the link dropped at $at');
+      // Each step's run is read back from storage, so what goes next is
+      // what the record held.
+      // The same side's next step comes before the other has answered, and
+      // posts the message again.
+      expect(await stepOf(acceptorDrops), ConnectProgress.waiting);
+      final copies = (await held(code, acceptorDrops ? 'i' : 'r'))
+          .where((e) => e.id == at)
+          .length;
+      for (var i = 0;
+          i < 4 && (inv.session == null || acc.session == null);
+          i++) {
+        if (inv.session == null) await stepOf(false);
+        if (acc.session == null) await stepOf(true);
+      }
+      final posts = [
+        for (final f in seen)
+          if (f['t'] == 'send' && f['id'] == at) f['payload']
+      ];
+      final left = [...await held(code, 'i'), ...await held(code, 'r')]
+          .where((e) => e.id.startsWith('z-connect-c'));
+      final both = inv.session != null &&
+          acc.session != null &&
+          inv.session!.sas == acc.session!.sas;
+      ended.add('${both ? 'one string' : 'no string'}; $at posts: '
+          '${posts.length}, messages: ${posts.toSet().length}, held: $copies, '
+          'left: ${left.length}');
+    }
+    expect(ended, [
+      for (final at in const ['z-connect-c2', 'z-connect-c3'])
+        for (var i = 0; i < 2; i++)
+          'one string; $at posts: 2, messages: 1, held: 1, left: 0'
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a refused frame spends the invite, and the refusal is durable',
       () async {

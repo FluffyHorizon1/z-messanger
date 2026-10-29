@@ -5094,7 +5094,21 @@ Each message of 20.3 is one ordinary envelope, sent authenticated as the
 sending mailbox, with the JSON object as its payload and an envelope id of
 `z-connect-c1`..`c4` respectively. A side that has not yet had an answer MAY
 re-post its message; the relay dedupes an attributed envelope on (id, sender),
-so a retry costs nothing and leaves one envelope. Anyone holding the invite
+so a retry costs nothing and leaves one envelope. A side whose post of
+message 2 or message 3 fails — the post that follows its drawing that
+message: the acceptor's ephemeral and commitment, the inviter's opening —
+MUST post the same bytes again, under the same id, on each later round that
+finds no answer to it, until a post of them is answered `sent` or the answer
+arrives, and MUST NOT draw the message again. A second message 2 carries a
+second ephemeral: if the relay took the first and only its `sent` was lost,
+it keeps that one under the id, the inviter answers it, and the invite is
+spent at message 3 on a mismatch nobody produced. A side that posts nothing
+waits for an answer the other side cannot give, while the other waits for
+the message itself, until the invite expires — what the reference client did
+until 2026‑10‑29. It now holds the message in the run's record from just
+before the post until the relay has taken it, so a restart posts it too. The
+messages are the same bytes as before; only a failed post adds a post.
+Anyone holding the invite
 holds both mailbox key pairs — that is what makes the invite a bearer token
 (R23), and why it is one‑time and short‑lived. In the middle of an invite of
 version 1 the relay needs neither: it writes into both mailboxes as the relay,
