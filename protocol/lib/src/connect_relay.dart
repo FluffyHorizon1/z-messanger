@@ -60,36 +60,46 @@ enum ConnectProgress {
 /// message 2 on the acceptor's side, with the ephemeral its commitment
 /// covers; message 3 on the inviter's, its opening — held byte for byte,
 /// with its envelope id, from just before it is posted until the relay has
-/// taken it (§20.5). A post that fails leaves it held, in the run and in its
-/// record, and every later round posts it again as it was, until a post of
-/// it lands or its answer arrives. It is never drawn twice: the run has
-/// moved past that, and a second message 2 would carry a second ephemeral.
-/// Posted again to a relay that already holds it — taken, and only its
-/// answer lost — it is still one envelope there: the relay dedupes an
-/// attributed envelope on its id and sender. Until 2026-10-29 nothing posted
-/// it again, and a link that dropped as it went left this side waiting for
-/// an answer to a message the other side never had, and the other side
-/// waiting for that message, both until the invite expired. Shared by
-/// [ConnectRun] and [ConnectRunV3].
+/// taken it (§20.5): in the run, and in the record the step's `persist`
+/// writes before the post. A post that fails leaves it held, and every later
+/// round posts it again as it was, until a post of it lands or its answer
+/// arrives. It is never drawn twice: the run has moved past that, and a
+/// second message 2 would carry a second ephemeral. Posted again to a relay
+/// that still holds it — taken, and only its answer lost — it is one
+/// envelope there: the relay dedupes an attributed envelope on its id and
+/// sender while it holds it. One that reaches the relay after the other side
+/// has read and acknowledged the first is stored again and read by nobody.
+/// Until 2026-10-29 nothing posted it again, and a link that dropped as it
+/// went left this side waiting for an answer to a message the other side
+/// never had, and the other side waiting for that message, both until the
+/// invite expired. Shared by [ConnectRun] and [ConnectRunV3].
 mixin _Unposted {
   ({String id, String payload})? _unposted;
 
-  /// Posts [payload] as envelope [id] to [to], held until the relay takes it.
-  Future<void> _post(
-      RelayClient client, String to, String id, String payload) async {
+  /// Posts [payload] as envelope [id] to [to], held until the relay takes
+  /// it, and written down by [persist] with it held before it goes: once the
+  /// relay may have it, the record says so.
+  Future<void> _post(RelayClient client, String to, String id, String payload,
+      Future<void> Function()? persist) async {
     _unposted = (id: id, payload: payload);
+    if (persist != null) await persist();
     await client.send(to: to, id: id, payload: payload);
     _unposted = null;
   }
 
-  /// Posts again the message a failed post left held, if there is one.
+  /// Posts again the message a failed post left held, if there is one —
+  /// held in the record too, since its first post wrote it there.
   Future<void> _repost(RelayClient client, String to) async {
     final u = _unposted;
-    if (u != null) await _post(client, to, u.id, u.payload);
+    if (u == null) return;
+    await client.send(to: to, id: u.id, payload: u.payload);
+    _unposted = null;
   }
 
-  /// The record's member for it, present only while a message is held: a
-  /// record is what it was before 2026-10-29 unless a post failed.
+  /// The record's member for it, present only while a message is held —
+  /// from just before its post until the relay has taken it — so a record
+  /// written once a round's posts have landed is what it was before
+  /// 2026-10-29.
   Map<String, Object?> get _unpostedJson => {
         if (_unposted != null)
           'unposted': {'id': _unposted!.id, 'payload': _unposted!.payload},
@@ -276,6 +286,19 @@ class ConnectRun with _Unposted {
   /// again ([_Unposted]). Persist the run after each call, whether it
   /// returned or threw — see [toJson].
   ///
+  /// [persist]: write the run down, as [toJson] has it, and only then
+  /// return. It is called at the two moments of a round when the record
+  /// must already say what the relay may know: once a message 2 or 3 is
+  /// drawn and held, before it is posted; and once the round has taken in
+  /// what it read, before the relay is told to forget it. So an app that
+  /// dies anywhere in a round comes back to a record the relay agrees with,
+  /// and posts the message it drew rather than drawing another. Until
+  /// 2026-10-29 nothing was written until the round was over, and an app
+  /// that died after the relay took its message 2 drew a second one, which
+  /// the relay, holding the first under its id, dropped: the invite was
+  /// spent at message 3. A throw from [persist] ends the round there, as a
+  /// network failure does — nothing more posted, nothing acknowledged.
+  ///
   /// [refusePeer]: asked about the identity the other side revealed, the
   /// moment this side has it checked against its commitment — and, on the
   /// acceptor's side, BEFORE this side reveals its own. True ends the
@@ -287,7 +310,8 @@ class ConnectRun with _Unposted {
       {required String relayUrl,
       int? nowMs,
       Duration poll = const Duration(milliseconds: 1500),
-      Future<bool> Function(ConnectIdentity peer)? refusePeer}) async {
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist}) async {
     if (_spent) return ConnectProgress.spent;
     if (session != null) return ConnectProgress.done;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -309,8 +333,9 @@ class ConnectRun with _Unposted {
       // Give the relay's flush a moment to deliver whatever was waiting.
       await Future<void>.delayed(poll);
       final progress = inviter
-          ? await _stepInviter(client, theirs, inbox, spent, refusePeer)
-          : await _stepAcceptor(client, theirs, inbox, spent, refusePeer);
+          ? await _stepInviter(client, theirs, inbox, spent, refusePeer, persist)
+          : await _stepAcceptor(
+              client, theirs, inbox, spent, refusePeer, persist);
       // Nothing this side has read will be read again, and the ceremony is
       // over for good once the session exists: acknowledge, so the relay
       // wipes it from RAM. Two reasons, neither cosmetic. A mailbox left
@@ -321,8 +346,11 @@ class ConnectRun with _Unposted {
       // second party arriving on a spent invite would otherwise be answered
       // by the *stored* frames: the commitment binding makes that abort
       // rather than succeed (§20), which is the right outcome but not one
-      // worth relying on when the frames can simply be gone.
+      // worth relying on when the frames can simply be gone. Written down
+      // first: once acknowledged, nothing can be read again, so the record
+      // must already hold what the round made of it.
       if (progress == ConnectProgress.confirm) spent.addAll(inbox);
+      if (spent.isNotEmpty && persist != null) await persist();
       for (final e in spent) {
         client.ackReceived(id: e.id, from: e.from);
       }
@@ -351,7 +379,8 @@ class ConnectRun with _Unposted {
       String theirs,
       List<RelayInbound> inbox,
       List<RelayInbound> spent,
-      Future<bool> Function(ConnectIdentity peer)? refusePeer) async {
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist) async {
     final i = _inviter!;
     if (!i.opened) {
       final reply = _take(inbox, 'x2', spent);
@@ -364,8 +393,8 @@ class ConnectRun with _Unposted {
         return ConnectProgress.waiting;
       }
       final open = await i.open(reply);
-      await _post(
-          client, theirs, 'z-connect-c3', jsonEncode({'k': 'x3', ...open}));
+      await _post(client, theirs, 'z-connect-c3',
+          jsonEncode({'k': 'x3', ...open}), persist);
       return ConnectProgress.waiting;
     }
     final reveal = _take(inbox, 'x4', spent);
@@ -388,15 +417,16 @@ class ConnectRun with _Unposted {
       String theirs,
       List<RelayInbound> inbox,
       List<RelayInbound> spent,
-      Future<bool> Function(ConnectIdentity peer)? refusePeer) async {
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist) async {
     if (_acceptor == null) {
       final commit = _take(inbox, 'x1', spent);
       if (commit == null) return ConnectProgress.waiting;
       final (reply, acceptor) = await ConnectAcceptor.reply(commit,
           me: _me, code: code, groupAware: _groupAware);
       _acceptor = acceptor;
-      await _post(
-          client, theirs, 'z-connect-c2', jsonEncode({'k': 'x2', ...reply}));
+      await _post(client, theirs, 'z-connect-c2',
+          jsonEncode({'k': 'x2', ...reply}), persist);
       return ConnectProgress.waiting;
     }
     final open = _take(inbox, 'x3', spent);
@@ -646,12 +676,13 @@ class ConnectRunV3 with _Unposted {
   /// mailbox, do everything that can be done now, acknowledge what was
   /// consumed, disconnect. The same answers, for the same reasons — a
   /// message 2 or 3 whose post failed among them, held and posted again
-  /// ([_Unposted]).
+  /// ([_Unposted]) — and [persist] called at the same two moments.
   Future<ConnectProgress> step(
       {required String relayUrl,
       int? nowMs,
       Duration poll = const Duration(milliseconds: 1500),
-      Future<bool> Function(ConnectIdentity peer)? refusePeer}) async {
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist}) async {
     if (_spent) return ConnectProgress.spent;
     if (session != null) return ConnectProgress.done;
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -670,9 +701,12 @@ class ConnectRunV3 with _Unposted {
       // Give the relay's flush a moment to deliver whatever was waiting.
       await Future<void>.delayed(poll);
       final progress = inviter
-          ? await _stepInviter(client, theirs, inbox, spent, refusePeer)
-          : await _stepAcceptor(client, theirs, inbox, spent, refusePeer);
+          ? await _stepInviter(client, theirs, inbox, spent, refusePeer, persist)
+          : await _stepAcceptor(
+              client, theirs, inbox, spent, refusePeer, persist);
       if (progress == ConnectProgress.confirm) spent.addAll(inbox);
+      // Written down before anything read is acknowledged, as for version 2.
+      if (spent.isNotEmpty && persist != null) await persist();
       for (final e in spent) {
         client.ackReceived(id: e.id, from: e.from);
       }
@@ -693,7 +727,8 @@ class ConnectRunV3 with _Unposted {
       String theirs,
       List<RelayInbound> inbox,
       List<RelayInbound> spent,
-      Future<bool> Function(ConnectIdentity peer)? refusePeer) async {
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist) async {
     final i = _inviter!;
     if (!i.opened) {
       final reply = ConnectRun._take(inbox, 'x2', spent);
@@ -707,8 +742,8 @@ class ConnectRunV3 with _Unposted {
       // Opens once: its KEM key decapsulates this one ciphertext, and a
       // message 3 whose post fails is posted again rather than made again.
       final open = await i.open(reply);
-      await _post(
-          client, theirs, 'z-connect-c3', jsonEncode({'k': 'x3', ...open}));
+      await _post(client, theirs, 'z-connect-c3',
+          jsonEncode({'k': 'x3', ...open}), persist);
       return ConnectProgress.waiting;
     }
     final reveal = ConnectRun._take(inbox, 'x4', spent);
@@ -730,7 +765,8 @@ class ConnectRunV3 with _Unposted {
       String theirs,
       List<RelayInbound> inbox,
       List<RelayInbound> spent,
-      Future<bool> Function(ConnectIdentity peer)? refusePeer) async {
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist) async {
     if (_acceptor == null) {
       final commit = ConnectRun._take(inbox, 'x1', spent);
       if (commit == null) return ConnectProgress.waiting;
@@ -741,8 +777,8 @@ class ConnectRunV3 with _Unposted {
           pqKey: _pqKey,
           groupAware: _groupAware);
       _acceptor = acceptor;
-      await _post(
-          client, theirs, 'z-connect-c2', jsonEncode({'k': 'x2', ...reply}));
+      await _post(client, theirs, 'z-connect-c2',
+          jsonEncode({'k': 'x2', ...reply}), persist);
       return ConnectProgress.waiting;
     }
     final open = ConnectRun._take(inbox, 'x3', spent);

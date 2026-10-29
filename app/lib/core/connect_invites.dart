@@ -40,10 +40,13 @@ abstract class InviteRun {
   bool get finished;
   String? get abortReason;
   Map<String, Object?> toJson();
+  /// One round ([ConnectRun.step]), [persist] writing the run down at the
+  /// two moments in it that must be on disk before the round goes on.
   Future<ConnectProgress> step(
       {required String relayUrl,
       int? nowMs,
-      Future<bool> Function(ConnectIdentity peer)? refusePeer});
+      Future<bool> Function(ConnectIdentity peer)? refusePeer,
+      Future<void> Function()? persist});
   void confirmed();
   void abandon();
 
@@ -76,8 +79,13 @@ final class _ClassicalRun implements InviteRun {
   Future<ConnectProgress> step(
           {required String relayUrl,
           int? nowMs,
-          Future<bool> Function(ConnectIdentity peer)? refusePeer}) =>
-      _run.step(relayUrl: relayUrl, nowMs: nowMs, refusePeer: refusePeer);
+          Future<bool> Function(ConnectIdentity peer)? refusePeer,
+          Future<void> Function()? persist}) =>
+      _run.step(
+          relayUrl: relayUrl,
+          nowMs: nowMs,
+          refusePeer: refusePeer,
+          persist: persist);
   @override
   void confirmed() => _run.confirmed();
   @override
@@ -108,8 +116,13 @@ final class _HybridRun implements InviteRun {
   Future<ConnectProgress> step(
           {required String relayUrl,
           int? nowMs,
-          Future<bool> Function(ConnectIdentity peer)? refusePeer}) =>
-      _run.step(relayUrl: relayUrl, nowMs: nowMs, refusePeer: refusePeer);
+          Future<bool> Function(ConnectIdentity peer)? refusePeer,
+          Future<void> Function()? persist}) =>
+      _run.step(
+          relayUrl: relayUrl,
+          nowMs: nowMs,
+          refusePeer: refusePeer,
+          persist: persist);
   @override
   void confirmed() => _run.confirmed();
   @override
@@ -262,20 +275,31 @@ class PendingInvite {
         if (!consented) 'held': true,
       };
 
-  static Future<PendingInvite> fromJson(Map<String, Object?> j) async =>
-      PendingInvite(
-        id: j['id'] as String,
-        mine: j['mine'] as bool,
-        createdMs: (j['created'] as num).toInt(),
-        gid: j['gid'] as String?,
-        run: await InviteRun.fromJson(
-            (j['run'] as Map).cast<String, Object?>()),
-        progress: ConnectProgress.values.firstWhere(
-            (p) => p.name == j['progress'],
-            orElse: () => ConnectProgress.waiting),
-        addedMs: (j['addedMs'] as num?)?.toInt(),
-        consented: j['held'] != true,
-      );
+  static Future<PendingInvite> fromJson(Map<String, Object?> j) async {
+    final run =
+        await InviteRun.fromJson((j['run'] as Map).cast<String, Object?>());
+    final stored = ConnectProgress.values.firstWhere(
+        (p) => p.name == j['progress'],
+        orElse: () => ConnectProgress.waiting);
+    return PendingInvite(
+      id: j['id'] as String,
+      mine: j['mine'] as bool,
+      createdMs: (j['created'] as num).toInt(),
+      gid: j['gid'] as String?,
+      run: run,
+      // A run that holds its session is at the digits, whatever the record
+      // says beside it: the round that reaches them writes the run down
+      // before it acknowledges what it read (ConnectRun.step), and an app
+      // killed before the round was over had not yet written the progress
+      // it returned. Read as "waiting", the card would still offer the
+      // invite's link and code beside the digits.
+      progress: stored == ConnectProgress.waiting && run.session != null
+          ? ConnectProgress.confirm
+          : stored,
+      addedMs: (j['addedMs'] as num?)?.toInt(),
+      consented: j['held'] != true,
+    );
+  }
 }
 
 /// The app's half of the connect ceremony: making invites, opening them, and
@@ -670,14 +694,29 @@ class ConnectInvites extends ChangeNotifier {
       // written down with it whatever the card already said, and after a
       // restart that message goes, never a second one drawn in its place.
       // Until 2026-10-29 a round that threw was written down only when its
-      // failure was new to the card.
+      // failure was new to the card. And inside the round, [persist] writes
+      // the run down where the round asks: once it holds a message 2 or 3 it
+      // has drawn and before it posts it, and once it has taken in what it
+      // read and before that is acknowledged — so an app killed in the
+      // middle of a round, after the relay took its message 2 and before the
+      // round was over, comes back to that message, not to the record from
+      // before the round, which until 2026-10-29 drew a second one.
       final before = jsonEncode(invite.run.toJson());
+      var onDisk = before;
+      Future<void> persist() async {
+        final now = jsonEncode(invite.run.toJson());
+        if (now == onDisk) return;
+        onDisk = now;
+        await _save();
+      }
+
       final ConnectProgress next;
       try {
         next = await invite.run.step(
             relayUrl: _svc.transport.serverUrl,
             nowMs: nowMs,
-            refusePeer: _blockedHere);
+            refusePeer: _blockedHere,
+            persist: persist);
       } on RelayException catch (e) {
         // The relay refused something, or nothing answered: not a fact about
         // the invite. Say why, and try again next time.

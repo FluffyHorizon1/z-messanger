@@ -64,7 +64,17 @@ import 'package:z_protocol/z_protocol.dart';
 //     through storage, and posted again as it was on the next step, and the
 //     ceremony completes; the relay holds one envelope of it either way,
 //     and the mailboxes are left empty. Until 2026-10-29 the run moved past
-//     drawing it and never posted it again.
+//     drawing it and never posted it again;
+// 11. a run asks to be written down at the two moments of a round that
+//     must be on disk before the round goes on — holding its message 2 or
+//     3, before posting it; and before acknowledging what it read — and an
+//     app that dies at any of those writes comes back from the one before
+//     to the same ceremony: one string, messages 2 and 3 each one message,
+//     the mailboxes left empty but for the one copy that dying before
+//     acknowledging message 3 leaves — the acceptor's second message 4,
+//     which the finished inviter never reads. Until 2026-10-29 nothing was
+//     written inside a round, and an acceptor killed after the relay took
+//     its message 2 drew another, which spent the invite at message 3.
 //
 // Criteria 5, 6, 7 and 10 are asserted against what the relay actually saw,
 // not against what the client meant to send: every frame passes through a
@@ -268,6 +278,37 @@ void main() {
     await sub.cancel();
     await c.close();
     return got;
+  }
+
+  // What one of [code]'s mailboxes holds, read without acknowledging it:
+  // a marker is posted behind it and the mailbox read until the marker
+  // arrives — the relay flushes a mailbox in the order it was filled.
+  // Only the marker is acknowledged.
+  Future<List<RelayInbound>> held(ConnectCode code, String role) async {
+    final who = await mailboxIdentity(code, role);
+    final marker = 'z-peek-${b64url(randomBytes(9))}';
+    final poster = await RelayClient.connect(url, await ZIdentity.generate());
+    await poster.send(to: await who.routingId(), id: marker, payload: '{}');
+    await poster.close();
+    final c = await RelayClient.connect(url, who);
+    final got = <RelayInbound>[];
+    final arrived = Completer<void>();
+    final sub = c.messages.listen((e) {
+      got.add(e);
+      if (e.id == marker && !arrived.isCompleted) arrived.complete();
+    });
+    try {
+      await arrived.future.timeout(const Duration(seconds: 20));
+      final m = got.firstWhere((e) => e.id == marker);
+      c.ackReceived(id: m.id, from: m.from);
+    } finally {
+      await sub.cancel();
+      await c.close();
+    }
+    return [
+      for (final e in got)
+        if (e.id != marker) e
+    ];
   }
 
   test('1. the acceptor completes against a rendezvous the inviter left behind',
@@ -689,37 +730,6 @@ void main() {
 
   test('10. a message 2 or 3 whose post the link drops is posted again, as '
       'it was, and the ceremony completes', () async {
-    // What one of [code]'s mailboxes holds, read without acknowledging it:
-    // a marker is posted behind it and the mailbox read until the marker
-    // arrives — the relay flushes a mailbox in the order it was filled.
-    // Only the marker is acknowledged.
-    Future<List<RelayInbound>> held(ConnectCode code, String role) async {
-      final who = await mailboxIdentity(code, role);
-      final marker = 'z-peek-${b64url(randomBytes(9))}';
-      final poster = await RelayClient.connect(url, await ZIdentity.generate());
-      await poster.send(to: await who.routingId(), id: marker, payload: '{}');
-      await poster.close();
-      final c = await RelayClient.connect(url, who);
-      final got = <RelayInbound>[];
-      final arrived = Completer<void>();
-      final sub = c.messages.listen((e) {
-        got.add(e);
-        if (e.id == marker && !arrived.isCompleted) arrived.complete();
-      });
-      try {
-        await arrived.future.timeout(const Duration(seconds: 20));
-        final m = got.firstWhere((e) => e.id == marker);
-        c.ackReceived(id: m.id, from: m.from);
-      } finally {
-        await sub.cancel();
-        await c.close();
-      }
-      return [
-        for (final e in got)
-          if (e.id != marker) e
-      ];
-    }
-
     // One invite for each place the link drops — the acceptor's message 2,
     // the inviter's message 3, before the relay has it or after, its answer
     // lost — every run read back from JSON after every step. Where each
@@ -793,6 +803,92 @@ void main() {
           'one string; $at posts: 2, messages: 1, held: 1, left: 0'
     ]);
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('11. a run written down where step asks comes back from any of those '
+      'writes to the same ceremony', () async {
+    // A ceremony, the two sides taking turns — Alice's round first — each
+    // through storage: the record an app holds is the last write [persist]
+    // made or, once a round is over, the run as it then is. With [dieAt],
+    // the app dies at that write — it throws there, and nothing after it in
+    // the round happens — and comes back from the record before it. What
+    // was written, where it ended, and what the relay was asked to carry
+    // and still holds.
+    Future<(List<String>, String)> ceremony({int? dieAt}) async {
+      seen.clear();
+      final (alice, _) = await person('Alice');
+      final (bob, _) = await person('Bob');
+      final start = await ConnectRun.invite(me: alice);
+      final code = start.code;
+      final record = {
+        'i': jsonEncode(start.toJson()),
+        'r': jsonEncode(ConnectRun.accept(me: bob, code: code).toJson()),
+      };
+      Future<ConnectRun> back(String side) => ConnectRun.fromJson(
+          jsonDecode(record[side]!) as Map<String, Object?>);
+      final run = {'i': await back('i'), 'r': await back('r')};
+      final writes = <String>[];
+      for (var turn = 0;
+          turn < 10 && (run['i']!.session == null || run['r']!.session == null);
+          turn++) {
+        final side = turn.isEven ? 'i' : 'r';
+        final r = run[side]!;
+        if (r.session != null) continue;
+        Future<void> persist() async {
+          final held = r.toJson()['unposted'];
+          writes.add(held is Map
+              ? '$side before posting ${held['id']}'
+              : '$side before acknowledging');
+          if (writes.length - 1 == dieAt) throw StateError('the app died here');
+          record[side] = jsonEncode(r.toJson());
+        }
+
+        try {
+          await r.step(relayUrl: url, poll: p, persist: persist);
+          record[side] = jsonEncode(r.toJson());
+        } on StateError {
+          // Killed: what it comes back to is the record as it was.
+        }
+        run[side] = await back(side);
+      }
+      final inv = run['i']!, acc = run['r']!;
+      Set<Object?> messages(String id) => {
+            for (final f in seen)
+              if (f['t'] == 'send' && f['id'] == id) f['payload']
+          };
+      final left = [...await held(code, 'i'), ...await held(code, 'r')]
+          .where((e) => e.id.startsWith('z-connect-c'));
+      final both = inv.session != null &&
+          acc.session != null &&
+          inv.session!.sas == acc.session!.sas;
+      return (
+        writes,
+        '${both ? 'one string' : 'no string'}; messages 2: '
+            '${messages('z-connect-c2').length}, 3: '
+            '${messages('z-connect-c3').length}; left: ${left.length}'
+      );
+    }
+
+    final (writes, whole) = await ceremony();
+    expect(writes, [
+      'r before posting z-connect-c2',
+      'r before acknowledging',
+      'i before posting z-connect-c3',
+      'i before acknowledging',
+      'r before acknowledging',
+      'i before acknowledging',
+    ]);
+    expect(whole, 'one string; messages 2: 1, 3: 1; left: 0');
+    expect([
+      for (var at = 0; at < writes.length; at++) (await ceremony(dieAt: at)).$2
+    ], [
+      for (var at = 0; at < writes.length; at++)
+        // Killed at the write before acknowledging message 3, the acceptor
+        // has posted its message 4 and does the round again from message 3,
+        // which the relay still holds: the same digits, and a second message
+        // 4 the inviter, already finished, never reads (§20.5).
+        'one string; messages 2: 1, 3: 1; left: ${at == 4 ? 1 : 0}'
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 4)));
 
   test('a refused frame spends the invite, and the refusal is durable',
       () async {

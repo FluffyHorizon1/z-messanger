@@ -5153,9 +5153,21 @@ it keeps that one under the id, the inviter answers it, and the invite is
 spent at message 3 on a mismatch nobody produced. A side that posts nothing
 waits for an answer the other side cannot give, while the other waits for
 the message itself, until the invite expires — what the reference client did
-until 2026‑10‑29. It now holds the message in the run's record from just
-before the post until the relay has taken it, so a restart posts it too. The
-messages are the same bytes as before; only a failed post adds a post.
+until 2026‑10‑29. It now writes the run's record, holding the message,
+before the post, and writes what a round made of what it read before it
+acknowledges any of it, so an app that dies anywhere in a round comes back
+to a record the relay agrees with, and posts that same message. Until
+2026‑10‑29 nothing of a round was written until the round was over, and an
+app that died after the relay took its message 2 came back to the record
+from before it, drew a second message 2 — which the relay, holding the first
+under the id, dropped — and spent the invite at message 3. One thing
+remains: message 4, posted in the round that completes the ceremony, is not
+held, and an app that dies after the relay took it and before that round is
+written down does the round again from message 3, which the relay still
+holds — the same reveal under the same channel, so the same digits; if the
+inviter had already read the first message 4, the second waits at the relay
+unread. The messages are the same bytes as before; only a failed post adds a
+post.
 Anyone holding the invite
 holds both mailbox key pairs — that is what makes the invite a bearer token
 (R23), and why it is one‑time and short‑lived. In the middle of an invite of

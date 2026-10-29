@@ -61,11 +61,12 @@
 //      are version 2, and in lib/ the seam is never set and the version-3
 //      inviter is reached from behind it alone;
 //  10. a version-3 invite pending on the acceptor survives the app being
-//      killed — after posting its message 2; opened and not yet carried
-//      forward; and again at its digits — and completes, the contact then
-//      holding the keys its reveal carried; and a stored version-3 record
-//      this build cannot read costs that invite alone, written back as it
-//      was;
+//      killed — in the middle of the round that posts its message 2, once
+//      the relay has taken it; after posting its message 2; opened and not
+//      yet carried forward; and again at its digits — and completes, message
+//      2 drawn once, the contact then holding the keys its reveal carried;
+//      and a stored version-3 record this build cannot read costs that
+//      invite alone, written back as it was;
 //  11. a version-3 invite whose link drops as this build's acceptor posts
 //      its message 2, or as the inviter posts its message 3, goes on to the
 //      digits: that message is posted again on a later round, as it was —
@@ -151,6 +152,12 @@ void main() {
   // drops, once: the connection carrying it is cut before the relay has it.
   String? dropAt;
 
+  // When set, the relay's answer to the post of the ceremony envelope it
+  // names is held back, once, the connection left open, and `taken`
+  // completed with the means to cut it: the relay has the message, and the
+  // app that posted it has not heard.
+  ({String id, Completer<void Function()> taken})? holdAt;
+
   setUpAll(() async {
     HttpOverrides.global = null;
     final serverDir =
@@ -233,7 +240,20 @@ void main() {
           onError: (_) => inOrder = inOrder.then((_) => upstream.close()));
       upstream.listen((d) {
         if (dead) return;
-        note(d);
+        final f = note(d);
+        final hold = holdAt;
+        if (hold != null &&
+            f != null &&
+            f['t'] == 'sent' &&
+            f['id'] == hold.id) {
+          holdAt = null;
+          hold.taken.complete(() {
+            dead = true;
+            unawaited(down.close());
+            unawaited(upstream.close());
+          });
+          return;
+        }
         down.add(d);
       }, onDone: () => down.close(), onError: (_) => down.close());
     });
@@ -261,6 +281,7 @@ void main() {
     seen.clear();
     rewrite = null;
     dropAt = null;
+    holdAt = null;
   });
 
   Future<Person> openApp(Directory dir, ZIdentity id, String name,
@@ -1017,6 +1038,44 @@ void main() {
       'stored one this build cannot read costs that invite alone', () async {
     final alice = await nextRelease('Alice');
     var bob = await person('Bob');
+
+    // Killed in the middle of the round that posts its message 2, once the
+    // relay has taken it: the tap holds the relay's answer back while the
+    // app is killed, so nothing the round would have done after the post
+    // happens. It comes back to the record written before the post, holding
+    // that message, and posts it again rather than drawing another — until
+    // 2026-10-29 it came back to the record from before the round, drew a
+    // second encapsulation the relay dropped for the first it held, and
+    // could not open message 3.
+    final mid = await alice.invites.create();
+    await alice.invites.pump();
+    await bob.invites.open(mid.link);
+    final taken = Completer<void Function()>();
+    holdAt = (id: 'z-connect-c2', taken: taken);
+    final dying = bob.invites.pump();
+    final cut = await taken.future.timeout(const Duration(seconds: 30));
+    bob = await restart(bob);
+    await bob.invites.load();
+    cut();
+    await dying.then((_) {}, onError: (Object _) {});
+    final after = bob.invites.invites.single;
+    await dance(alice, mid, bob, after);
+    final drawn = {
+      for (final f in seen)
+        if (f['t'] == 'send' && f['id'] == 'z-connect-c2') f['payload']
+    };
+    final why = after.run.abortReason;
+    final ended = after.sas != null && after.sas == mid.sas
+        ? 'one string'
+        : 'acceptor ${after.progress.name}${why == null ? '' : ' ($why)'}, '
+            'inviter ${mid.progress.name}';
+    expect('$ended; z-connect-c2 messages: ${drawn.length}',
+        'one string; z-connect-c2 messages: 1',
+        reason: 'killed after the relay took its message 2, it went on with '
+            'that message');
+    await bob.invites.mismatch(after);
+    await alice.invites.mismatch(mid);
+    seen.clear();
 
     // Killed after posting its message 2: the ephemeral its commitment
     // covers and its encapsulation were drawn in that round, and message 1

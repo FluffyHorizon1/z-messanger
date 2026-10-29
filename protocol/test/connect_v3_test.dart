@@ -90,7 +90,15 @@ import 'package:z_protocol/z_protocol.dart';
 //     through storage, and posted again as it was, never drawn again: the
 //     acceptor's encapsulation and the inviter's one decapsulation stand,
 //     the ceremony completes, the relay holds one envelope of it either
-//     way, and the mailboxes are left empty.
+//     way, and the mailboxes are left empty;
+// 14. a run asks to be written down at the two moments of a round that
+//     must be on disk before the round goes on — holding its message 2 or
+//     3, before posting it; and before acknowledging what it read — and an
+//     app that dies at any of those writes comes back from the one before
+//     to the same ceremony: one string, messages 2 and 3 each one message —
+//     one encapsulation, one decapsulation — and the mailboxes left empty
+//     but for the second message 4 that dying before acknowledging message
+//     3 leaves, which the finished inviter never reads.
 
 /// One side of a ceremony: what the app holds about itself.
 class Party {
@@ -1369,6 +1377,104 @@ void main() {
             'one string; $at posts: 2, messages: 1, held: 1, left: 0'
       ]);
     }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('14. a run written down where step asks comes back from any of '
+        'those writes to the same ceremony', () async {
+      final alice = await person('Alice', sk: true);
+      final bob = await person('Bob');
+      // A ceremony, the two sides taking turns — Alice's round first — each
+      // through storage: the record an app holds is the last write
+      // [persist] made or, once a round is over, the run as it then is.
+      // With [dieAt], the app dies at that write — it throws there, and
+      // nothing after it in the round happens — and comes back from the
+      // record before it. What was written, where it ended, and what the
+      // relay was asked to carry and still holds.
+      Future<(List<String>, String)> ceremony({int? dieAt}) async {
+        seen.clear();
+        final start = await ConnectRunV3.invite(
+            me: alice.id, sealKey: alice.sealKey, pqKey: alice.pqKey);
+        final code = ConnectCode.parseV3(start.code.text);
+        final record = {
+          'i': jsonEncode(start.toJson()),
+          'r': jsonEncode(ConnectRunV3.accept(
+                  me: bob.id,
+                  sealKey: bob.sealKey,
+                  pqKey: bob.pqKey,
+                  code: code)
+              .toJson()),
+        };
+        Future<ConnectRunV3> back(String side) => ConnectRunV3.fromJson(
+            jsonDecode(record[side]!) as Map<String, Object?>);
+        final run = {'i': await back('i'), 'r': await back('r')};
+        final writes = <String>[];
+        for (var turn = 0;
+            turn < 10 &&
+                (run['i']!.session == null || run['r']!.session == null);
+            turn++) {
+          final side = turn.isEven ? 'i' : 'r';
+          final r = run[side]!;
+          if (r.session != null) continue;
+          Future<void> persist() async {
+            final held = r.toJson()['unposted'];
+            writes.add(held is Map
+                ? '$side before posting ${held['id']}'
+                : '$side before acknowledging');
+            if (writes.length - 1 == dieAt) {
+              throw StateError('the app died here');
+            }
+            record[side] = jsonEncode(r.toJson());
+          }
+
+          try {
+            await r.step(relayUrl: url, poll: p, persist: persist);
+            record[side] = jsonEncode(r.toJson());
+          } on StateError {
+            // Killed: what it comes back to is the record as it was.
+          }
+          run[side] = await back(side);
+        }
+        final inv = run['i']!, acc = run['r']!;
+        Set<Object?> messages(String id) => {
+              for (final f in seen)
+                if (f['t'] == 'send' && f['id'] == id) f['payload']
+            };
+        final left = [...await peek(code, 'i'), ...await peek(code, 'r')]
+            .where((e) => e.id.startsWith('z-connect-c'));
+        final both = inv.session != null &&
+            acc.session != null &&
+            inv.session!.sas == acc.session!.sas &&
+            b64(inv.session!.peerSealKey) == b64(bob.sealKey) &&
+            b64(acc.session!.peerSealKey) == b64(alice.sealKey);
+        return (
+          writes,
+          '${both ? 'one string' : 'no string'}; messages 2: '
+              '${messages('z-connect-c2').length}, 3: '
+              '${messages('z-connect-c3').length}; left: ${left.length}'
+        );
+      }
+
+      final (writes, whole) = await ceremony();
+      expect(writes, [
+        'r before posting z-connect-c2',
+        'r before acknowledging',
+        'i before posting z-connect-c3',
+        'i before acknowledging',
+        'r before acknowledging',
+        'i before acknowledging',
+      ]);
+      expect(whole, 'one string; messages 2: 1, 3: 1; left: 0');
+      expect([
+        for (var at = 0; at < writes.length; at++)
+          (await ceremony(dieAt: at)).$2
+      ], [
+        for (var at = 0; at < writes.length; at++)
+          // Killed at the write before acknowledging message 3, the
+          // acceptor has posted its message 4 and does the round again from
+          // message 3, which the relay still holds: the same digits, and a
+          // second message 4 the inviter, already finished, never reads.
+          'one string; messages 2: 1, 3: 1; left: ${at == 4 ? 1 : 0}'
+      ]);
+    }, timeout: const Timeout(Duration(minutes: 4)));
   });
 }
 

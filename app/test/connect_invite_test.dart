@@ -63,7 +63,16 @@
 //     "waiting" until the invite expired; and until then a round that threw
 //     was written down only when its failure was new, so an inviter whose
 //     round had dropped already came back after a restart to the record
-//     before its message 3 and made another.
+//     before its message 3 and made another. And an app killed in the
+//     middle of the round that posts its message 2 or 3, once the relay has
+//     taken it and before the round is over, goes on from that message:
+//     until 2026-10-29 nothing of a round reached the vault until it was
+//     over, so the acceptor came back to the record from before it, drew a
+//     second message 2, which the relay dropped for the first it held, and
+//     spent the invite at message 3; and the inviter made a second message 3.
+//     And one killed in the round that reaches the digits, after that round
+//     has written the run down and before it writes what it returned, reads
+//     back at the digits.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -116,9 +125,13 @@ void main() {
   // 11): the connection carrying the post of the ceremony envelope [dropAt]
   // names is cut there — before the relay has it, or, when [relayTakes],
   // once the relay has taken it and before its answer is back. Every send
-  // it carries is written down in [linkSends].
+  // it carries is written down in [linkSends]. With [holdAt] instead, the
+  // relay's answer to that post is held back and the connection left open,
+  // and `taken` is completed with the means to cut it: the relay has the
+  // message, and the app that posted it has not heard.
   late HttpServer link;
   ({String id, bool relayTakes})? dropAt;
+  ({String id, Completer<void Function()> taken})? holdAt;
   final linkSends = <Map<String, Object?>>[];
 
   setUpAll(() async {
@@ -189,6 +202,15 @@ void main() {
             f['id'] == answerLost) {
           answerLost = null;
           cut();
+          return;
+        }
+        final hold = holdAt;
+        if (hold != null &&
+            f != null &&
+            f['t'] == 'sent' &&
+            f['id'] == hold.id) {
+          holdAt = null;
+          hold.taken.complete(cut);
           return;
         }
         down.add(d);
@@ -851,6 +873,95 @@ void main() {
       return drawn == 1 ? ended : '$ended, $at drawn $drawn times';
     }
 
+    // One invite for each side killed in the middle of the round that
+    // posts its message — Bob's message 2 ([at] z-connect-c2), Alice's
+    // message 3 (z-connect-c3) — once the relay has taken it and before the
+    // round is over: [link] holds the relay's answer back while the app is
+    // killed, so nothing the round would have done after the post happens.
+    // Where it ended, and how many different messages went under that id.
+    Future<String> killedMidRound(String at) async {
+      final via = 'ws://127.0.0.1:${link.port}';
+      final aDir = await Directory.systemTemp.createTemp('z_ci_mid_a_');
+      final bDir = await Directory.systemTemp.createTemp('z_ci_mid_b_');
+      temps
+        ..add(aDir)
+        ..add(bDir);
+      final aId = await ZIdentity.generate(), bId = await ZIdentity.generate();
+      var alice = await open(aDir, aId, 'Alice', url: via);
+      var bob = await open(bDir, bId, 'Bob', url: via);
+      linkSends.clear();
+
+      final invite = await alice.invites.create();
+      await alice.invites.pump(); // message 1 waits for Bob
+      await bob.invites.open(invite.link);
+      final acceptorDies = at == 'z-connect-c2';
+      if (!acceptorDies) await bob.invites.pump(); // message 2 waits too
+      final taken = Completer<void Function()>();
+      holdAt = (id: at, taken: taken);
+      final round = (acceptorDies ? bob : alice).invites.pump();
+      final cut = await taken.future.timeout(const Duration(seconds: 30));
+      if (acceptorDies) {
+        bob = await restart(bob, bDir, bId, 'Bob', url: via);
+        await bob.invites.load();
+      } else {
+        alice = await restart(alice, aDir, aId, 'Alice', url: via);
+        await alice.invites.load();
+      }
+      // The killed app's connection goes with it, and what was left of its
+      // round finds its vault closed.
+      cut();
+      await round.then((_) {}, onError: (Object _) {});
+
+      await danceTo(bob, alice);
+      final a = alice.invites.invites.single;
+      final b = bob.invites.invites.single;
+      final why = b.run.abortReason;
+      final ended = a.sas != null && a.sas == b.sas
+          ? 'one string'
+          : 'acceptor ${b.progress.name}${why == null ? '' : ' ($why)'}, '
+              'inviter ${a.progress.name}';
+      final drawn = {
+        for (final f in linkSends)
+          if (f['id'] == at) f['payload']
+      }.length;
+      return drawn == 1 ? ended : '$ended, $at drawn $drawn times';
+    }
+
+    // Killed in the round that reached the digits once that round had
+    // written the run down, before acknowledging what it read, and before
+    // it wrote what the round returned: the vault holds the run with its
+    // session beside the progress from before the round. It reads back at
+    // the digits.
+    Future<String> killedAtTheDigits() async {
+      final bDir = await Directory.systemTemp.createTemp('z_ci_digits_b_');
+      temps.add(bDir);
+      final bId = await ZIdentity.generate();
+      final alice = await person('Alice');
+      var bob = await open(bDir, bId, 'Bob');
+      final invite = await alice.invites.create();
+      await alice.invites.pump(); // message 1 waits for Bob
+      await bob.invites.open(invite.link);
+      await danceTo(bob, alice);
+      final stored = [
+        for (final r in jsonDecode((await bob.vault.kvGet('connect_invites'))!)
+            as List)
+          (r as Map).cast<String, Object?>()
+      ];
+      expect(stored.single['progress'], 'confirm');
+      await bob.vault.kvPut('connect_invites',
+          jsonEncode([...stored.map((r) => {...r, 'progress': 'waiting'})]));
+      bob = await restart(bob, bDir, bId, 'Bob');
+      await bob.invites.load();
+      final a = alice.invites.invites.single;
+      final b = bob.invites.invites.single;
+      return b.sas != null &&
+              b.sas == a.sas &&
+              b.progress == ConnectProgress.confirm
+          ? 'one string'
+          : 'acceptor ${b.progress.name}, its digits '
+              '${b.sas == null ? 'gone' : 'kept'}';
+    }
+
     expect(
         [
           await killed(acceptor: true, inviter: false),
@@ -861,13 +972,20 @@ void main() {
           await dropped('z-connect-c3'),
           await dropped('z-connect-c3', again: true, kill: true),
           await dropped('z-connect-c2', relayTakes: true),
+          await killedMidRound('z-connect-c2'),
+          await killedMidRound('z-connect-c3'),
+          await killedAtTheDigits(),
         ],
-        [for (var i = 0; i < 8; i++) 'one string'],
+        [for (var i = 0; i < 11; i++) 'one string'],
         reason: 'the acceptor killed after its message 2, the inviter after '
             'its message 3, both, and the acceptor while its pass was still '
             "at another invite's round; the link dropped as message 2 was "
             'posted, as message 3 was, as message 3 was after a round that '
             'dropped already and with the app killed after, and as message 2 '
-            'was with the relay holding it');
-  }, timeout: const Timeout(Duration(minutes: 6)));
+            'was with the relay holding it; and the acceptor killed after '
+            'the relay took its message 2, the inviter after it took its '
+            'message 3, each before its round was over, and the acceptor in '
+            'the round that reached the digits, after it was written down '
+            'and before what it returned was');
+  }, timeout: const Timeout(Duration(minutes: 8)));
 }
