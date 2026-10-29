@@ -583,18 +583,29 @@ device of that account):
   claims a version **above** the held one and the account's broadcast that
   would install it never arrives.
 
-A device's claims are taken in the order the receiver reads that device's
-messages — the order its ratchet decrypts them — not the order it finishes
-acting on them: a message carrying a list is done with only once the list is
-installed, and a later message from the same device can be done with first.
-The reference client records each claim as its message is decrypted, under
-the lock that orders the decrypts, and judges it once the message has been
-acted on. Through 4.7.2 it recorded the claim as the message's last step, and
-a list's message read before a later message of the same device was
-sometimes recorded after it: the device seemed to go back a version, and an
-honest contact was shown a rollback. A message the relay hands over after a
-later one from the same device is read after it, and can still make the
-device seem to go back (`THREAT_MODEL.md` R14).
+A device's claims are judged in the order that device sent them — not the
+order the receiver finishes acting on its messages (a message carrying a list
+is done with only once the list is installed, and a later message from the
+same device can be done with first), and not always the order they arrive
+in. On one session the receiver's ratchet reads them in the order they were
+sent, but for one kind: a message read with a key the ratchet skipped over
+for it (§5.4, step 1) was sent before a message already read on that session,
+and its claim MUST NOT become the device's latest. An honest relay hands
+messages over that way: it registers a device that comes back before it
+hands over the device's queue, and what is sent to a registered device goes
+at once, so a list sent while a backlog is being handed over is read ahead
+of texts sent before it. The reference client records each claim as its
+message is decrypted, under the lock that orders the decrypts — except a
+message read out of order, whose claim it does not record — and judges the
+claims once the message has been acted on. Through 4.7.2 it recorded the
+claim as the message's last step: a message carrying a list could be recorded
+after a later message from the same device, and a backlog handed over after a
+list that overtook it, once that list had been acted on, was recorded after
+it — either way the device seemed to go back a version, and an honest contact
+was shown a rollback. Two sessions the ratchet cannot put in order: a message
+on an older session of a device's, handed over after one on a newer session,
+is read in its place on its own, and can still make the device seem to go
+back (`THREAT_MODEL.md` R14).
 
 **Owner rule.** On each `pdl` a device receives about its *own* account, it
 compares with the newest list it issued or learned by self‑sync (§9): an echo
@@ -853,6 +864,10 @@ success (a failure leaves the state untouched).
 
 1. If `skipped` holds a key under `b64(header.dh) || "|" || decimal(header.n)`,
    remove it and decrypt with it (aad as in §5.3, then unpad; reject on failure).
+   A message read here arrived out of order: on this session its sender sent
+   it before a message this side has already read. Nothing on the wire says
+   so; the reference implementation reports it (`DecryptResult.outOfOrder`),
+   and §3.6 judges the message's device-list claim by it.
 2. Else if `header.dh ≠ dhrPub`: **skip** to `header.pn` on the current
    receiving chain (step 4), then perform the DH ratchet step:
    ```

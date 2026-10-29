@@ -172,8 +172,15 @@ class DecryptResult {
   /// session's next send.
   final bool postQuantum;
 
+  /// Whether this message was read out of the order it was sent in: its key
+  /// came from those the ratchet skipped over, so on this session its sender
+  /// sent it before a message this side has already read. Nothing on the
+  /// wire says so; the receiving ratchet knows it (PROTOCOL §3.6 judges a
+  /// contact's device-list claims by it).
+  final bool outOfOrder;
+
   DecryptResult(this.plaintext, this.sid, this.createdNewSession,
-      {this.pqOfferPayload, this.postQuantum = false});
+      {this.pqOfferPayload, this.postQuantum = false, this.outOfOrder = false});
 }
 
 /// All E2E state for one contact. Serializable; the app persists it
@@ -761,6 +768,9 @@ class Conversation {
     }
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     _expirePqWindows(session.pq, now);
+    // Asked before the decrypt, which takes the key out of the ratchet's
+    // store ([DecryptResult.outOfOrder]).
+    final outOfOrder = ratchetHoldsSkippedKey(session.ratchet, msg);
     // The ratchet step runs on the opener's header, whose `dh` the peer chose
     // and whose length the header parse does not fix: a 31-byte `dh` makes the
     // X25519 ratchet throw an `ArgumentError`. That used to escape — and,
@@ -826,7 +836,9 @@ class Conversation {
     final offerPayload =
         isPqOfferer ? await takePqOfferPayload(nowMs: nowMs) : null;
     return DecryptResult(plain, sid, created,
-        pqOfferPayload: offerPayload, postQuantum: msg.header.pq);
+        pqOfferPayload: offerPayload,
+        postQuantum: msg.header.pq,
+        outOfOrder: outOfOrder);
   }
 
   /// If [plain] is a `pqek` offer for the supported algorithm, encapsulate to

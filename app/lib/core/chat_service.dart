@@ -5600,10 +5600,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // 44.3 (§18.11): what it says of sealing keys, taken under the same
         // lock as the decrypt ([_sealNews]).
         if (_sealNews(contact.rid, contact.rid, parsed)) sealsChanged = true;
-        // 7.7a (§3.6): its device-list claim, recorded in the order the
-        // ratchet reads them, and judged once it has been acted on
-        // ([_recordClaim]).
-        _recordClaim(contact.rid, contact.rid, parsed);
+        // 7.7a (§3.6): its device-list claim, recorded as the ratchet reads
+        // it, in the order its device sent it, and judged once it has been
+        // acted on ([_recordClaim]).
+        _recordClaim(contact.rid, contact.rid, parsed,
+            outOfOrder: dec.outOfOrder);
         return (kOk, parsed);
       });
       status = s;
@@ -15329,7 +15330,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       offer = dec.pqOfferPayload;
       // 7.7a (§3.6): as on the primary door, its claim is recorded as the
       // ratchet reads it ([_recordClaim]), under the lock both doors take.
-      _recordClaim(rid, fromDeviceRid, inner!);
+      _recordClaim(rid, fromDeviceRid, inner!, outOfOrder: dec.outOfOrder);
     });
     if (outcome == kWithheld) {
       // A test withheld it (debugOnDecrypted): gone, as if never delivered.
@@ -16346,27 +16347,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
 
   /// 7.7a (§3.6): the claim ('dl') [inner] makes about [rid]'s account,
   /// from [deviceRid], one of that account's devices — recorded as that
-  /// device's latest, beside the highest it has made.
+  /// device's latest, beside the highest it has made, unless the ratchet read
+  /// the message [outOfOrder].
   ///
-  /// Called by both of a contact's doors as the ratchet reads the message,
-  /// under the conversation's lock, which orders the reads: a device's
-  /// claims are recorded in the order it sent them. [_observeDevlistGossip]
-  /// judges them once the message has been acted on. Through 4.7.2 they were
-  /// recorded there, as the message's last step, and the contact's own door
-  /// takes the steps of two messages from one device in no fixed order — a
-  /// list's install waits behind every other install, a receipt waits for
-  /// nothing. A claim made before the account's list moved was recorded
-  /// after one made after it, the device seemed to go back a version, and
-  /// an honest person was told their contact's device list had rolled back
-  /// (`dl_rollback`). device_pop_test 4 failed on it once in five runs of
-  /// the whole file on 4.7.2; with the claims logged, 3 of 11 runs of that
-  /// file raised it at contacts no criterion looks at, each a list's message
-  /// read before a `pqid` of the next version and recorded after it.
+  /// A device's claims are judged in the order it sent them. Both of a
+  /// contact's doors call this as the ratchet reads the message, under the
+  /// conversation's lock, and [_observeDevlistGossip] judges the claim once
+  /// the message has been acted on. Through 4.7.2 the claim was recorded
+  /// there, as the message's last step, and the contact's own door takes the
+  /// steps of two messages from one device in no fixed order — a list's
+  /// install waits behind every other install, a receipt waits for nothing —
+  /// so a claim made before the account's list moved could be recorded after
+  /// one made after it: the device seemed to go back a version, and an honest
+  /// person was told their contact's device list had rolled back
+  /// (`dl_rollback`; device_pop_test 4, once in five runs of the whole file
+  /// on 4.7.2).
   ///
-  /// A message the relay hands over after a later one from the same device
-  /// is read, and recorded, after it (THREAT_MODEL R14).
-  void _recordClaim(String rid, String deviceRid, InnerMessage inner) {
-    if (!contacts.containsKey(rid)) return;
+  /// The order the ratchet reads them in is not always the order they were
+  /// sent. The relay hands a device that comes back its backlog while it
+  /// hands over at once whatever is sent to it meanwhile, so a list sent then
+  /// can be read before texts sent ahead of it. The ratchet reads those with
+  /// the keys it skipped over for them ([DecryptResult.outOfOrder]): each was
+  /// sent before a message already read on its session, and its claim is not
+  /// the device's latest. Taken as the latest, it would leave the device
+  /// looking as if it had gone back a version until it next wrote. What the
+  /// ratchet cannot put in order is two sessions: a message on an older
+  /// session handed over after one on a newer is read in its place on its own
+  /// (THREAT_MODEL R14).
+  void _recordClaim(String rid, String deviceRid, InnerMessage inner,
+      {required bool outOfOrder}) {
+    if (outOfOrder || !contacts.containsKey(rid)) return;
     final dl = inner.data['dl'];
     if (dl is! Map || dl['v'] is! num || dl['h'] is! String) return;
     final v = (dl['v'] as num).toInt();

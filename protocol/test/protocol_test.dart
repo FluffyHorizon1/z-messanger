@@ -141,6 +141,44 @@ void main() {
           'before-turn');
     });
 
+    test(
+        'a message read with a key the ratchet skipped over says it came out '
+        'of order; one read in its place does not', () async {
+      final (_, __, aliceConv, bobConv) = await pair();
+      final start = await bobConv.decrypt(await aliceConv.encrypt(utf8b('s')));
+      expect(start.outOfOrder, isFalse, reason: "a session's first message");
+
+      // Within a chain: n2 first, read past n0 and n1; then n0 and n1, read
+      // with the keys skipped for them; then n3, in its place.
+      final batch = <String>[];
+      for (var i = 0; i < 4; i++) {
+        batch.add(await aliceConv.encrypt(utf8b('n$i')));
+      }
+      for (final (i, late) in [(2, false), (0, true), (1, true), (3, false)]) {
+        final res = await bobConv.decrypt(batch[i]);
+        expect(utf8.decode(res.plaintext), 'n$i');
+        expect(res.outOfOrder, late, reason: 'n$i');
+      }
+
+      // Across a DH ratchet turn: the last message of Alice's chain is held
+      // back, and the turn skips the key for it (§5.4, step 2) when her next
+      // chain is read; then it arrives.
+      await aliceConv.decrypt(await bobConv.encrypt(utf8b('reply')));
+      final first =
+          await bobConv.decrypt(await aliceConv.encrypt(utf8b('first')));
+      expect(first.outOfOrder, isFalse, reason: 'a new chain, in its place');
+      final straggler = await aliceConv.encrypt(utf8b('before-turn'));
+      await aliceConv.decrypt(await bobConv.encrypt(utf8b('turn')));
+      final after =
+          await bobConv.decrypt(await aliceConv.encrypt(utf8b('after-turn')));
+      expect(after.outOfOrder, isFalse, reason: 'the next chain, in its place');
+      final late = await bobConv.decrypt(straggler);
+      expect(utf8.decode(late.plaintext), 'before-turn');
+      expect(late.outOfOrder, isTrue,
+          reason: "the old chain's last message, with the key the turn "
+              'skipped for it');
+    });
+
     test('tampered ciphertext and headers are rejected without state damage',
         () async {
       final (_, __, aliceConv, bobConv) = await pair();

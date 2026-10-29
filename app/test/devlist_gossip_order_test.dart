@@ -24,11 +24,23 @@
 // again, once a minute (§3.6); the minute was recorded only once the list
 // had been signed, so an echo read meanwhile handed it over again.
 //
+// And the order the ratchet reads a device's messages in is not always the
+// order they were sent. The relay registers a device that comes back before
+// it hands over the device's queue, and what is sent to a registered device
+// goes at once (`server.js`, `register` then `flush`), so a list sent while a
+// backlog is being handed over is read ahead of texts sent before it — and
+// the ratchet reads those after it with the keys it skipped over for them.
+// It does so whether the list has been acted on by the time they arrive or
+// they arrive with it, and the transport starts each as it arrives.
+//
 // Real clients through the real relay; no transparency log. An order the
 // fault met by luck is made here with a seam: one that holds one message's
 // steps once it has been read (`debugBeforeInboundActs`), one that runs
-// inside a send a seal rides on (`debugBeforePqSealRides`), and one that
-// holds a signing of the account's own list (`debugBetweenOwnListReads`).
+// inside a send a seal rides on (`debugBeforePqSealRides`), one that holds a
+// signing of the account's own list (`debugBetweenOwnListReads`), and a
+// transport that keeps what its owner sends one contact, as the relay keeps
+// it while that contact is away, for the test to hand over in the order the
+// relay can.
 //
 // Criteria, each a test below:
 //   1. a contact's list whose message is read and then held, while the same
@@ -49,7 +61,16 @@
 //      list is being signed for the one before it is held back by the
 //      minute, so the contact is handed that list once (on 4a716af it is let
 //      through, to sign the same list again — the double re-send
-//      device_pop_test 13 met one run in five).
+//      device_pop_test 13 met one run in five);
+//   5. claims are judged in the order their device sent them, not the order
+//      they arrive in: a contact's list sent while their texts wait for the
+//      receiver, handed over ahead of those texts and with them — each
+//      started as it arrives, as the transport starts them — raises nothing
+//      when the texts are read after it, out of order (on ef550b5 they raise
+//      dl_rollback, which stays until the contact next writes);
+//   6. and nothing either when the list has been read and acted on before
+//      the texts arrive (on ef550b5 they raise dl_rollback; on 4a716af too,
+//      where a claim was recorded once its message had been acted on).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -71,6 +92,27 @@ import 'package:z_protocol/z_protocol.dart';
 // counted here is claims, not when a tick turns (as device_pop_test).
 const promptReceipts =
     ReceiptTiming(floor: Duration.zero, ceiling: Duration(milliseconds: 300));
+
+/// A transport that keeps what its owner sends to [heldFor] instead of
+/// handing it to the relay — what the relay keeps for a device that is away
+/// — so a test can hand it over in an order the relay hands things over in.
+/// The owner's outbox takes each as sent. Everything else goes to the relay.
+class _HoldingTransport extends Transport {
+  _HoldingTransport({required super.identity, required super.serverUrl});
+
+  String? heldFor;
+  final held = <({String id, String payload})>[];
+
+  @override
+  Future<void> send(
+      {required String to, required String id, required String payload}) {
+    if (to == heldFor) {
+      held.add((id: id, payload: payload));
+      return Future<void>.value();
+    }
+    return super.send(to: to, id: id, payload: payload);
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -137,7 +179,7 @@ void main() {
   });
 
   Future<ChatService> run(String name, Vault vault, ZIdentity id,
-      {bool beforeSealingKeys = false}) {
+      {bool beforeSealingKeys = false, bool holding = false}) {
     final ready = Completer<ChatService>();
     ChatService? made;
     runZonedGuarded(() async {
@@ -146,7 +188,10 @@ void main() {
           vault: vault,
           identity: id,
           displayName: name,
-          transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port'),
+          transport: holding
+              ? _HoldingTransport(
+                  identity: id, serverUrl: 'ws://127.0.0.1:$port')
+              : Transport(identity: id, serverUrl: 'ws://127.0.0.1:$port'),
           // The versions counted here are the ones these tests link devices
           // for; ADR 0029's one-time move to v2-only signing would land a
           // version of its own among them (as device_pop_test).
@@ -191,15 +236,19 @@ void main() {
       inside(svc, () => svc.addContactFromCode(code));
 
   /// A new account called [name]; [beforeSealingKeys], on a build from
-  /// before 44.3.
+  /// before 44.3; [holding], sending through a [_HoldingTransport].
   Future<ChatService> start(String name,
-      {bool beforeSealingKeys = false}) async {
+      {bool beforeSealingKeys = false, bool holding = false}) async {
     final dir = dirs[name] = await Directory.systemTemp.createTemp('z_ord_$name');
     final vault = await Vault.open(rootOverride: dir);
     final id = await ZIdentity.generate();
     await vault.kvPut('identity', jsonEncode(id.toJson()));
-    return run(name, vault, id, beforeSealingKeys: beforeSealingKeys);
+    return run(name, vault, id,
+        beforeSealingKeys: beforeSealingKeys, holding: holding);
   }
+
+  Future<bool> outboxEmpty(ChatService s) async =>
+      (await s.vault.db.query('outbox', limit: 1)).isEmpty;
 
   Future<void> waitUntil(FutureOr<bool> Function() cond,
       {required String what,
@@ -260,6 +309,78 @@ void main() {
   String? alertKind(ChatService svc, String rid) {
     final s = svc.contactDevlistAlerts[rid];
     return s == null ? null : (jsonDecode(s) as Map)['k'] as String?;
+  }
+
+  /// Vic, and Bob sending through a [_HoldingTransport]. While Vic is away
+  /// Bob says two things, his list at version 1, and what he sends her waits
+  /// for her, as the relay keeps it. She comes back, and while her backlog is
+  /// being handed over he links a device: the list he sends her, at version
+  /// 2, goes to her at once. Returns the two, what is to be handed to Vic —
+  /// her backlog, then what Bob sent her while it was being handed over —
+  /// and how much of it is the backlog.
+  ///
+  /// Whatever Bob sends her after that stays kept, for the rest of the test:
+  /// what Vic shows is what she makes of these messages alone. Any later
+  /// message of his, read in its place, would put his device's claims in
+  /// order again, and the banner a test looks for would come and go.
+  Future<(ChatService, ChatService, List<({String id, String payload})>, int)>
+      listBehindBacklog(String n) async {
+    final vic = await start('vic$n');
+    final bob = await start('bob$n', holding: true);
+    await introduce(vic, bob);
+    final relayed = bob.transport as _HoldingTransport;
+    relayed.heldFor = vic.myRid;
+    await say(bob, vic.myRid, 'away 1');
+    await say(bob, vic.myRid, 'away 2');
+    await waitUntil(() => outboxEmpty(bob),
+        what: "Bob's texts sent, kept for Vic");
+    final backlog = relayed.held.length;
+    await link(bob, await deviceOf(bob, 'tablet'));
+    await waitUntil(() => outboxEmpty(bob), what: "Bob's list sent, kept");
+    final handed = List.of(relayed.held);
+    expect(handed.length, greaterThan(backlog));
+    return (vic, bob, handed, backlog);
+  }
+
+  /// [e] handed to the device it was kept for, as the relay hands it over.
+  Future<void> hand(ChatService to, ({String id, String payload}) e) =>
+      inside(
+          to,
+          () => to.debugInbound(RelayInbound(
+              id: e.id,
+              from: '',
+              payload: e.payload,
+              serverTs: DateTime.now().millisecondsSinceEpoch)));
+
+  /// The kinds of what [from] sends [to] from here on, in the order [to]'s
+  /// ratchet reads them.
+  List<String> readOrder(ChatService to, ChatService from) {
+    final read = <String>[];
+    to.debugOnDecrypted = (path, rid, dec) {
+      if (rid == from.myRid) {
+        try {
+          read.add(InnerMessage.fromBytes(dec.plaintext).kind);
+        } catch (_) {}
+      }
+      return false;
+    };
+    return read;
+  }
+
+  /// Vic has read Bob's list ahead of a text he sent before it, and all of
+  /// it, and nothing says his device went back.
+  Future<void> nothingWentBack(
+      ChatService vic, ChatService bob, List<String> read) async {
+    final list = read.indexOf('devlist');
+    expect(list, isNonNegative, reason: 'read: $read');
+    expect(list, lessThan(read.lastIndexOf('text')),
+        reason: 'Vic read the list before a text sent ahead of it: $read');
+    expect(received(vic, bob.myRid, 'away 1'), isTrue);
+    expect(received(vic, bob.myRid, 'away 2'), isTrue);
+    expect(await vic.heldContactListVersion(bob.myRid), 2);
+    expect(vic.contactDevlistAlerts[bob.myRid], isNull,
+        reason: 'Bob did nothing but link a device: his device claimed '
+            'version 1 and then version 2, in the order he sent them');
   }
 
   test(
@@ -489,5 +610,33 @@ void main() {
         reason: 'the same list is handed over once in a minute, however many '
             'echoes ask for it at once');
     expect(toVic().where((r) => r.sent == null), isNotEmpty);
+  });
+
+  test(
+      '5. a list handed over ahead of the texts its device sent before it, '
+      'and with them, raises nothing when they are read after it', () async {
+    final (vic, bob, kept, backlog) = await listBehindBacklog('5');
+    final read = readOrder(vic, bob);
+    // What went live first, then the backlog, as the transport hands it
+    // over: each started as it arrives, none waiting for the one before.
+    await Future.wait([
+      for (final e in [...kept.sublist(backlog), ...kept.sublist(0, backlog)])
+        hand(vic, e),
+    ]);
+    await nothingWentBack(vic, bob, read);
+  });
+
+  test(
+      '6. a list read and acted on before the texts its device sent ahead of '
+      'it arrive raises nothing when they are read after it', () async {
+    final (vic, bob, kept, backlog) = await listBehindBacklog('6');
+    final read = readOrder(vic, bob);
+    // What went live, each read and acted on in turn; then the backlog, as
+    // the transport hands it over.
+    for (final e in kept.sublist(backlog)) {
+      await hand(vic, e);
+    }
+    await Future.wait([for (final e in kept.sublist(0, backlog)) hand(vic, e)]);
+    await nothingWentBack(vic, bob, read);
   });
 }

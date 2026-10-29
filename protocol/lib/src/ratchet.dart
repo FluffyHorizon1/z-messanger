@@ -555,6 +555,17 @@ Future<RatchetMessage> ratchetEncrypt(RatchetState state, Uint8List plaintext,
   );
 }
 
+/// Where [RatchetState.skipped] keeps the key of message [n] on the chain
+/// whose ratchet key is [dhPub]. Stored with the state, so the form is fixed.
+String _skippedKeyId(Uint8List dhPub, int n) => '${b64(dhPub)}|$n';
+
+/// Whether [state] holds [msg]'s key among the ones it skipped over: [msg] is
+/// a message its sender sent before one this side has already read, on this
+/// session, and [ratchetDecrypt] reads it with that key. Asked before the
+/// decrypt, which takes the key out.
+bool ratchetHoldsSkippedKey(RatchetState state, RatchetMessage msg) =>
+    state.skipped.containsKey(_skippedKeyId(msg.header.dhPub, msg.header.n));
+
 /// Decrypts a message, handling out-of-order delivery and DH ratchet steps.
 /// On success returns the plaintext and REPLACES the contents of [state].
 /// On any failure the state is left completely untouched.
@@ -676,7 +687,7 @@ Future<Uint8List> _decryptInner(
       !msg.header.pq && pq != null && pq.classicalSkips != null;
 
   // 1. Try skipped message keys (out-of-order arrivals).
-  final skipKey = '${b64(msg.header.dhPub)}|${msg.header.n}';
+  final skipKey = _skippedKeyId(msg.header.dhPub, msg.header.n);
   final cachedMk = s.skipped.remove(skipKey);
   if (cachedMk != null) {
     if (classicalLate && !pq.classicalSkips!.remove(skipKey)) {
@@ -763,7 +774,7 @@ Future<void> _skipMessageKeys(RatchetState s, int until) async {
   var ckr = s.ckr!;
   while (s.nr < until) {
     final (mk, next) = await _kdfCk(ckr);
-    s.skipped['${b64(s.dhrPub!)}|${s.nr}'] = b64(mk);
+    s.skipped[_skippedKeyId(s.dhrPub!, s.nr)] = b64(mk);
     // Bound memory: forget the oldest cached keys first.
     while (s.skipped.length > maxSkippedStored) {
       s.skipped.remove(s.skipped.keys.first);
