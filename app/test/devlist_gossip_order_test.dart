@@ -37,10 +37,12 @@
 // fault met by luck is made here with a seam: one that holds one message's
 // steps once it has been read (`debugBeforeInboundActs`), one that runs
 // inside a send a seal rides on (`debugBeforePqSealRides`), one that holds a
-// signing of the account's own list (`debugBetweenOwnListReads`), and a
-// transport that keeps what its owner sends one contact, as the relay keeps
-// it while that contact is away, for the test to hand over in the order the
-// relay can.
+// signing of the account's own list, or fails it
+// (`debugBetweenOwnListReads`), and a transport that keeps what its owner
+// sends one contact, as the relay keeps it while that contact is away, for
+// the test to hand over in the order the relay can. What a device claims
+// when its list was signed somewhere else is written behind its back
+// (`own_list_v`, `own_list_h`, `forgetOwnListClaim`).
 //
 // Criteria, each a test below:
 //   1. a contact's list whose message is read and then held, while the same
@@ -82,7 +84,11 @@
 //      neither claiming the version held for them;
 //   9. and so does one of their devices claiming the version held for them
 //      under another fingerprint — the list handed over is not the one its
-//      devices hold, a split view (T2).
+//      devices hold, a split view (T2);
+//  10. and a re-send that hands nothing over — its signing failed — spends
+//      no minute: the next echo inside it is handed the list (with the
+//      record put back taken out, it is held back, and the contact is
+//      handed nothing for the rest of the minute).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -846,5 +852,47 @@ void main() {
         reason: 'his device claims the version she holds under another '
             'fingerprint');
     expect(await vic.heldContactListVersion(bob.myRid), 2);
+  });
+
+  test(
+      '10. a re-send whose signing fails spends no minute: the next echo '
+      'inside it is handed the list', () async {
+    final vic = await start('vic10');
+    final bob = await start('bob10');
+    await introduce(vic, bob);
+    // As in 4: Vic takes no list of Bob's, so every echo of hers shows her
+    // behind and asks his root to hand the list over again.
+    vic.debugOnDecrypted = (path, from, dec) {
+      if (path != 'primary' || from != bob.myRid) return false;
+      try {
+        return InnerMessage.fromBytes(dec.plaintext).kind == 'devlist';
+      } catch (_) {
+        return false;
+      }
+    };
+    bob.debugListResends = [];
+    Iterable<({String rid, String? sent})> toVic() =>
+        bob.debugListResends!.where((r) => r.rid == vic.myRid);
+    // The signing after the one his link makes — the first re-send's,
+    // asked for by whichever echo of hers comes first, which can be one
+    // read while the link is still handing the list out — fails, and
+    // nothing is handed over.
+    var signings = 0;
+    var failed = false;
+    bob.debugBetweenOwnListReads = () async {
+      if (signings++ != 1) return;
+      failed = true;
+      throw StateError('the signing failed');
+    };
+    await link(bob, await deviceOf(bob, 'tablet'));
+    await say(vic, bob.myRid, 'one');
+    await waitUntil(() => failed,
+        what: "Bob's root signs its list to hand over again, and fails");
+    // Her next echo comes inside the minute.
+    await say(vic, bob.myRid, 'two');
+    await waitUntil(() => toVic().any((r) => r.sent != null),
+        what: "Bob's root hands its list over to the next echo");
+    expect([for (final r in toVic()) if (r.sent != null) r.sent],
+        hasLength(1));
   });
 }
