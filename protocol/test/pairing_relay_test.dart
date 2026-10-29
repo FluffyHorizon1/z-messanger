@@ -426,8 +426,10 @@ void main() {
               return false;
             });
         expect(laptop, isNull, reason: 'its person said the digits differ');
-        expect(await host, isNull,
+        final outcome = await host;
+        expect(outcome, isA<PairingAbort>(),
             reason: 'the phone hears no confirmation, and links nothing');
+        expect('$outcome', contains('did not say its person confirmed'));
         expect(await held(), (before.$1 + 1, before.$2 + replyCharge),
             reason: 'the relay keeps the reply, unacknowledged, and nothing '
                 'else: no enrolment was sent');
@@ -548,12 +550,14 @@ void main() {
           expect(outcome, isA<DeviceCertificate>(), reason: what);
           await heldAgain(before, what);
         } else {
-          expect(laptop, isA<TimeoutException>(),
-              reason: '$what: the new device stopped waiting');
           expect(outcome, isA<PairingAbort>(),
               reason: '$what: the existing device sends nothing and links '
                   'nothing');
           expect('$outcome', contains('stopped waiting'), reason: what);
+          expect(laptop, isA<PairingAbort>(),
+              reason: '$what: the new device stopped waiting');
+          expect('$laptop', contains('no "enroll-v3" frame arrived'),
+              reason: what);
           await heldAgain(before, what);
         }
       }
@@ -599,12 +603,12 @@ void main() {
         timeout: const Duration(seconds: 2),
         margin: const Duration(milliseconds: 500),
       ).then<Object?>((r) => r, onError: (Object e) => e);
-      expect(laptop, isA<TimeoutException>(),
-          reason: 'the new device stopped waiting for the enrolment');
       final outcome = await host;
       expect(outcome, isA<PairingAbort>(),
           reason: 'the existing device links nothing: no report came');
       expect('$outcome', contains('did not finish linking'));
+      expect(laptop, isA<PairingAbort>(),
+          reason: 'the new device stopped waiting for the enrolment');
       final now = await held();
       expect(now.$1, before.$1 + 1,
           reason: 'the enrolment, unacknowledged, and nothing else waits at '

@@ -914,6 +914,42 @@ abstract class AppLocalizations {
   /// **'Link failed: {error}'**
   String linkFailed(String error);
 
+  /// On the existing device, after its person confirmed the codes match: the new device never said its person confirmed too — they said the codes differ, or did not answer within the wait (about forty seconds). The account was not sent and nothing was linked; the person starts again on both devices.
+  ///
+  /// In en, this message translates to:
+  /// **'The new device did not confirm the code in time, or its person said the codes differ, so nothing was sent to it. Start again on both devices, and confirm on both within about forty seconds of each other.'**
+  String get linkPeerUnconfirmed;
+
+  /// On the existing device, when its person confirmed the codes long after the new device's person did: the new device stops waiting for the account about forty seconds after its own confirmation, so it would have stopped before the account reached it. Nothing was sent and nothing linked.
+  ///
+  /// In en, this message translates to:
+  /// **'The new device stopped waiting for this one, so nothing was sent to it. Start again on both devices, and confirm on both within about forty seconds of each other.'**
+  String get linkPeerGaveUp;
+
+  /// On the existing device, after the account was sent: the new device never reported it installed — it had stopped waiting, or could not open or install it — so it was not added. Rarely the new device installed the account and the report was lost on the way; that device is not on the account, and must be reinstalled before it is linked again.
+  ///
+  /// In en, this message translates to:
+  /// **'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, reinstall Z on it first: it is not on your account.'**
+  String get linkPeerUnfinished;
+
+  /// On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait — its person said the codes differ, confirmed too late, or it stopped. Nothing was installed.
+  ///
+  /// In en, this message translates to:
+  /// **'Your other device did not send your account in time: its person may have said the codes differ, or confirmed too late. Start again on both devices, and confirm on both within about forty seconds of each other.'**
+  String get linkNoEnrolment;
+
+  /// On either linking screen, when a wait ran out that no other message explains: the other device, or the relay, did not answer in time.
+  ///
+  /// In en, this message translates to:
+  /// **'The link timed out. Check that both devices are online, then start again on both.'**
+  String get linkTimedOut;
+
+  /// On either linking screen, when this device's connection to the relay closed in the middle of the link.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection to the relay was lost during the link. Check that both devices are online, then start again on both.'**
+  String get linkConnectionLost;
+
   /// Title of the screen that adds a device, and the action that opens it.
   ///
   /// In en, this message translates to:

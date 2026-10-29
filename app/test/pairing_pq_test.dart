@@ -71,7 +71,11 @@
 //      acknowledged, and the phone lists nothing;
 //  14. nor is one the laptop cannot install: the link screen installs the
 //      enrolment into the vault before the ceremony acknowledges it, and an
-//      install that fails leaves the laptop unlisted.
+//      install that fails leaves the laptop unlisted;
+//  15. a phone whose person confirms first, and a laptop whose person
+//      confirms after the phone stopped waiting: each screen says why the
+//      link stopped, nothing is linked, and the relay keeps the receipt for
+//      the laptop's late acknowledgement — 192 bytes — and nothing else.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -181,6 +185,24 @@ void main() {
   final live = <Person>[];
   final en = AppLocalizationsEn();
   final es = AppLocalizationsEs();
+  // What each screen says when a link stops on time, as `app_en.arb` has
+  // it, written out here so that a run against a build without these words
+  // says what that build showed instead (criterion 8 holds them to the ARB).
+  const phoneUnconfirmed = 'The new device did not confirm the code in '
+      'time, or its person said the codes differ, so nothing was sent to it. '
+      'Start again on both devices, and confirm on both within about forty '
+      'seconds of each other.';
+  const phoneGaveUp = 'The new device stopped waiting for this one, so '
+      'nothing was sent to it. Start again on both devices, and confirm on '
+      'both within about forty seconds of each other.';
+  const phoneUnfinished = 'The new device did not finish linking, and this '
+      'device has not added it. Start again on both devices. If the new '
+      'device shows your chats anyway, reinstall Z on it first: it is not on '
+      'your account.';
+  const laptopNoEnrolment = 'Your other device did not send your account in '
+      'time: its person may have said the codes differ, or confirmed too '
+      'late. Start again on both devices, and confirm on both within about '
+      'forty seconds of each other.';
   const metricsToken = 'z-apptest-metrics';
 
   setUpAll(() async {
@@ -368,6 +390,22 @@ void main() {
         if (!e.id.startsWith('z-peek-')) e
     ];
   }
+
+  /// What the phone's screen says for [outcome], what `hostDeviceLink`
+  /// returned or threw, as `HostLinkScreen` shows it, in English.
+  String phoneScreen(Object? outcome) => switch (outcome) {
+        true => en.linkDone,
+        false => en.linkCancelled,
+        _ => hostLinkFailureText(en, outcome!),
+      };
+
+  /// What the laptop's screen says for [outcome], what `NewDeviceLink.run`
+  /// returned or threw, as `NewDeviceLinkScreen` shows it, in English.
+  String laptopScreen(Object? outcome) => switch (outcome) {
+        PairingResult() => '(installed)',
+        null => en.linkCancelled,
+        _ => newDeviceLinkFailureText(en, outcome),
+      };
 
   /// What the relay charges an envelope whose payload is [payload] against
   /// its store (`server.js`, `envelopeSize`): the payload as the store holds
@@ -673,8 +711,10 @@ void main() {
       waited = e;
     }
     expect(await hosted, isFalse, reason: 'the phone links nothing');
-    expect(waited, isA<TimeoutException>(),
+    expect(waited, isA<PairingAbort>(),
         reason: 'and sends no enrolment for the laptop to wait for');
+    expect(laptopScreen(waited), laptopNoEnrolment,
+        reason: "the laptop's screen says the account never came");
     expect(await alice.svc.linkedDevices(), isEmpty);
     expect(await alice.svc.ownDeviceListVersion(), listBefore);
     expect(await peek(await RelayPairing.relayIdentityV3(
@@ -690,14 +730,18 @@ void main() {
     // of the account is sent, and nothing is linked.
     final m = await NewDeviceLink.create();
     final mCode = PairingCode.parse(m.code);
-    final hostedToo =
-        alice.svc.hostDeviceLink(m.code, confirmSas: (_) async => true);
+    final hostedToo = alice.svc
+        .hostDeviceLink(m.code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
     expect(await m.run(relayUrl: relayUrl(), confirm: (_) async => false),
         isNull,
         reason: 'a new device that says they differ installs nothing');
-    expect(await hostedToo, isFalse,
+    final phoneToo = await hostedToo;
+    expect(phoneToo, isA<PairingAbort>(),
         reason: 'and the phone, whose person said they match, links '
             'nothing: the laptop never said its person confirmed');
+    expect(phoneScreen(phoneToo), phoneUnconfirmed,
+        reason: "the phone's screen says the new device did not confirm");
     expect(await alice.svc.linkedDevices(), isEmpty);
     expect(await alice.svc.ownDeviceListVersion(), listBefore);
     final left = await peek(await RelayPairing.relayIdentityV3(mCode, 'i'));
@@ -849,12 +893,11 @@ void main() {
       // The new device's screen: the device it links from may be older.
       expect(newDeviceLinkFailureText(l, const PairingNoAnswer()),
           l.linkHostMayBeOlder);
-      // Anything else stops a link as a failure, never as a version.
+      // Anything else stops a link as a failure, never as a version: a
+      // timeout, too, in words of its own (below).
       const abort = PairingAbort('the opening does not match the commitment');
       expect(hostLinkFailureText(l, abort), l.linkFailed(abort.message));
       expect(newDeviceLinkFailureText(l, abort), l.linkFailed(abort.message));
-      final timeout = TimeoutException('pairing: no "commit-v3" frame arrived');
-      expect(hostLinkFailureText(l, timeout), l.linkFailed('$timeout'));
     }
     // The words name the device: the one being added, on the phone; the one
     // linked from, on the new device. And each locale has its own.
@@ -869,6 +912,42 @@ void main() {
     expect(es.linkNewDeviceOlder(2), isNot(en.linkNewDeviceOlder(2)));
     expect(es.linkHostMayBeOlder, isNot(en.linkHostMayBeOlder));
     expect(es.linkNewCode, isNot(en.linkNewCode));
+
+    // Each way a link stops on time has words of its own on the screen it
+    // stops on, and so do a timeout and a lost connection: never a raw
+    // exception, in either language.
+    for (final l in [en, es]) {
+      expect(hostLinkFailureText(l, const PairingPeerUnconfirmed()),
+          l.linkPeerUnconfirmed);
+      expect(hostLinkFailureText(l, const PairingPeerGaveUp(Duration.zero)),
+          l.linkPeerGaveUp);
+      expect(hostLinkFailureText(l, const PairingPeerUnfinished()),
+          l.linkPeerUnfinished);
+      expect(newDeviceLinkFailureText(l, const PairingNoEnrolment('x')),
+          l.linkNoEnrolment);
+      final timeout = TimeoutException('pairing: no "open-v3" frame arrived');
+      expect(hostLinkFailureText(l, timeout), l.linkTimedOut);
+      expect(newDeviceLinkFailureText(l, timeout), l.linkTimedOut);
+      final gone = RelayException('connection closed');
+      expect(hostLinkFailureText(l, gone), l.linkConnectionLost);
+      expect(newDeviceLinkFailureText(l, gone), l.linkConnectionLost);
+    }
+    expect(en.linkPeerUnconfirmed, phoneUnconfirmed);
+    expect(en.linkPeerGaveUp, phoneGaveUp);
+    expect(en.linkPeerUnfinished, phoneUnfinished);
+    expect(en.linkNoEnrolment, laptopNoEnrolment);
+    for (final (a, b) in [
+      (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
+      (es.linkPeerGaveUp, en.linkPeerGaveUp),
+      (es.linkPeerUnfinished, en.linkPeerUnfinished),
+      (es.linkNoEnrolment, en.linkNoEnrolment),
+      (es.linkTimedOut, en.linkTimedOut),
+      (es.linkConnectionLost, en.linkConnectionLost),
+    ]) {
+      expect(a, isNot(b), reason: 'the Spanish has words of its own');
+    }
+    expect(es.linkPeerGaveUp, contains('dejó de esperar'));
+    expect(es.linkPeerUnfinished, contains('reinstala Z'));
   });
 
   test(
@@ -966,9 +1045,11 @@ void main() {
             return false;
           });
       expect(result, isNull, reason: "the laptop's person said they differ");
-      expect(await hosted, isFalse,
+      final phone = await hosted;
+      expect(phone, isA<PairingAbort>(),
           reason: 'the phone hears no confirmation: it sends nothing and '
               'links nothing');
+      expect(phoneScreen(phone), phoneUnconfirmed);
       expect(await alice.svc.linkedDevices(), isEmpty);
       expect(await alice.svc.ownDeviceListVersion(), listBefore);
       final left = await peek(await RelayPairing.relayIdentityV3(code, 'i'));
@@ -1031,11 +1112,13 @@ void main() {
         expect(await alice.svc.linkedDevices(), hasLength(1), reason: what);
         continue;
       }
-      expect(laptop, isA<TimeoutException>(),
-          reason: '$what: the laptop stopped waiting');
       expect(phone, isA<PairingAbort>(),
           reason: '$what: the phone sends nothing and lists nothing');
       expect('$phone', contains('stopped waiting'), reason: what);
+      expect(phoneScreen(phone), phoneGaveUp, reason: what);
+      expect(laptop, isA<PairingAbort>(),
+          reason: '$what: the laptop stopped waiting');
+      expect(laptopScreen(laptop), laptopNoEnrolment, reason: what);
       expect(await alice.svc.linkedDevices(), isEmpty, reason: what);
       expect(await alice.svc.ownDeviceListVersion(), listBefore, reason: what);
       await waitFor(() async => await held() == before,
@@ -1085,13 +1168,15 @@ void main() {
           margin: const Duration(milliseconds: 500),
         )
         .then<Object?>((r) => r, onError: (Object e) => e);
-    expect(laptop, isA<TimeoutException>(),
-        reason: 'the laptop stopped waiting for the enrolment');
     final phone = await hosted;
     expect(phone, isA<PairingAbort>(),
         reason: 'the phone lists nothing: the laptop never said it installed '
             'the enrolment');
     expect('$phone', contains('did not finish linking'));
+    expect(phoneScreen(phone), phoneUnfinished);
+    expect(laptop, isA<PairingAbort>(),
+        reason: 'the laptop stopped waiting for the enrolment');
+    expect(laptopScreen(laptop), laptopNoEnrolment);
     expect(await alice.svc.linkedDevices(), isEmpty);
     expect(await alice.svc.ownDeviceListVersion(), listBefore);
     final left = await peek(await RelayPairing.relayIdentityV3(code, 'i'));
@@ -1138,6 +1223,7 @@ void main() {
           reason: 'the phone lists nothing: the laptop never said it '
               'installed the enrolment');
       expect('$phone', contains('did not finish linking'));
+      expect(phoneScreen(phone), phoneUnfinished);
       expect(await alice.svc.linkedDevices(), isEmpty);
       expect(await alice.svc.ownDeviceListVersion(), listBefore);
       expect(kinds(await peek(await RelayPairing.relayIdentityV3(code, 'i'))),
@@ -1184,10 +1270,63 @@ void main() {
         reason: 'the phone lists nothing: the laptop never said it installed '
             'the enrolment');
     expect('$phone', contains('did not finish linking'));
+    expect(phoneScreen(phone), phoneUnfinished);
     expect(await alice.svc.linkedDevices(), isEmpty);
     expect(await alice.svc.ownDeviceListVersion(), listBefore);
     expect(kinds(await peek(await RelayPairing.relayIdentityV3(code, 'i'))),
         ['enroll-v3'],
         reason: 'the enrolment waits at the relay, unacknowledged');
+  });
+
+  test(
+      "15. a laptop whose person confirms after the phone stopped waiting: "
+      'each screen says why, and nothing is linked', () async {
+    final alice = await person('Alice15');
+    await connected([alice]);
+    alice.svc.linkTimeout = const Duration(seconds: 3);
+    alice.svc.linkMargin = const Duration(seconds: 1);
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    final before = await held();
+    final n = await NewDeviceLink.create();
+    DateTime? phoneAt;
+    final hosted = alice.svc
+        .hostDeviceLink(n.code, confirmSas: (_) async {
+          phoneAt = DateTime.now();
+          return true;
+        })
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final laptop = await n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async {
+            // The laptop's person deliberates until a second after the
+            // phone, which waits three seconds, has stopped waiting.
+            await waitUntil(() => phoneAt != null,
+                what: "the phone's person confirmed");
+            await Future<void>.delayed(phoneAt!
+                .add(const Duration(seconds: 4))
+                .difference(DateTime.now()));
+            return true;
+          },
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final phone = await hosted;
+    expect(phoneScreen(phone), phoneUnconfirmed,
+        reason: "the phone's person confirmed, and the laptop's had not");
+    expect(laptopScreen(laptop), laptopNoEnrolment,
+        reason: 'the laptop confirmed, and no account came');
+    expect(await alice.svc.linkedDevices(), isEmpty);
+    expect(await alice.svc.ownDeviceListVersion(), listBefore);
+    // The laptop acknowledged the reply after the phone had gone, so the
+    // relay's receipt for it waits for the phone's ceremony mailbox, which
+    // nobody reads again, for QUEUE_TTL_HOURS: 192 bytes, as the relay
+    // charges a receipt.
+    final now = await held();
+    // ignore: avoid_print
+    print('a laptop that confirmed after the phone stopped waiting: the '
+        'relay held $before before and $now after (envelopes, bytes)');
+    expect(now, (before.$1 + 1, before.$2 + 192));
   });
 }

@@ -364,6 +364,22 @@ class PairingNoAnswer extends PairingAbort {
             'updated');
 }
 
+/// A v3 existing device's person confirmed the digits, and the new device
+/// did not say, within the ceremony's timeout, that its person had — by
+/// acknowledging the reply (§10.2): its person said they differ, or did not
+/// answer in time. Nothing is sent and nothing linked.
+class PairingPeerUnconfirmed extends PairingAbort {
+  const PairingPeerUnconfirmed()
+      : super('the new device did not say its person confirmed the digits');
+}
+
+/// A v3 new device whose person confirmed the digits heard no enrolment
+/// within its wait (§10.2): the existing device's person said they differ,
+/// or confirmed too late, or that device stopped. [message] is the wait's.
+class PairingNoEnrolment extends PairingAbort {
+  const PairingNoEnrolment(super.message);
+}
+
 /// A v3 existing device's person confirmed the digits too long after the new
 /// device's (§10.2): the new device acknowledged the reply when its person
 /// confirmed, and waits for the enrolment for the ceremony's timeout and the

@@ -506,6 +506,30 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get linkPeerUnconfirmed =>
+      'The new device did not confirm the code in time, or its person said the codes differ, so nothing was sent to it. Start again on both devices, and confirm on both within about forty seconds of each other.';
+
+  @override
+  String get linkPeerGaveUp =>
+      'The new device stopped waiting for this one, so nothing was sent to it. Start again on both devices, and confirm on both within about forty seconds of each other.';
+
+  @override
+  String get linkPeerUnfinished =>
+      'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, reinstall Z on it first: it is not on your account.';
+
+  @override
+  String get linkNoEnrolment =>
+      'Your other device did not send your account in time: its person may have said the codes differ, or confirmed too late. Start again on both devices, and confirm on both within about forty seconds of each other.';
+
+  @override
+  String get linkTimedOut =>
+      'The link timed out. Check that both devices are online, then start again on both.';
+
+  @override
+  String get linkConnectionLost =>
+      'The connection to the relay was lost during the link. Check that both devices are online, then start again on both.';
+
+  @override
   String get linkADevice => 'Link a device';
 
   @override

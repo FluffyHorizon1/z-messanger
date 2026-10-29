@@ -512,6 +512,30 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
+  String get linkPeerUnconfirmed =>
+      'El dispositivo nuevo no confirmó el código a tiempo, o allí dijeron que los códigos no coinciden, así que no se le ha enviado nada. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
+
+  @override
+  String get linkPeerGaveUp =>
+      'El dispositivo nuevo dejó de esperar a este, así que no se le ha enviado nada. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
+
+  @override
+  String get linkPeerUnfinished =>
+      'El dispositivo nuevo no terminó de vincularse y este no lo ha añadido. Vuelve a empezar en los dos dispositivos. Si aun así el dispositivo nuevo muestra tus chats, reinstala Z en él primero: no está en tu cuenta.';
+
+  @override
+  String get linkNoEnrolment =>
+      'Tu otro dispositivo no envió tu cuenta a tiempo: puede que allí dijeran que los códigos no coinciden, o que confirmaran demasiado tarde. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
+
+  @override
+  String get linkTimedOut =>
+      'La vinculación tardó demasiado. Comprueba que los dos dispositivos tienen conexión y vuelve a empezar en ambos.';
+
+  @override
+  String get linkConnectionLost =>
+      'Se perdió la conexión con el relay durante la vinculación. Comprueba que los dos dispositivos tienen conexión y vuelve a empezar en ambos.';
+
+  @override
   String get linkADevice => 'Vincular un dispositivo';
 
   @override

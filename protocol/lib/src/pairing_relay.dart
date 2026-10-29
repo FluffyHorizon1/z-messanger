@@ -312,12 +312,13 @@ class RelayPairing {
   /// says the digits match, and not otherwise: the existing device sends
   /// nothing of the account before the relay reports the acknowledgement.
   ///
-  /// The enrolment is waited for [timeout] and [margin] from then, and
-  /// acknowledged only once it is opened and installed — and, with
-  /// [install], kept wherever the caller keeps it: the existing device links
-  /// this one on the relay's report of that acknowledgement, so the report
-  /// means this device has its account. Anything that fails before it leaves
-  /// the enrolment unacknowledged, and the existing device links nothing.
+  /// The enrolment is waited for [timeout] and [margin] from then, and with
+  /// none the attempt ends in [PairingNoEnrolment]. It is acknowledged only
+  /// once it is opened and installed, and with [install] kept wherever the
+  /// caller keeps it: the existing device links this one on the relay's
+  /// report of that acknowledgement, so the report means this device has its
+  /// account. Anything that fails before it leaves the enrolment
+  /// unacknowledged, and the existing device links nothing.
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
@@ -355,8 +356,12 @@ class RelayPairing {
       if (!await confirm(session.sas)) return null;
       box.acknowledge(replied.$2);
 
-      final enrolment =
-          await _awaitFrameHeld(box, 'enroll-v3', timeout + margin);
+      final (Map<String, Object?>, RelayInbound) enrolment;
+      try {
+        enrolment = await _awaitFrameHeld(box, 'enroll-v3', timeout + margin);
+      } on TimeoutException catch (e) {
+        throw PairingNoEnrolment(e.message ?? 'pairing: no enrolment');
+      }
       final data = await session
           .openEnrollment(unb64(enrolment.$1['blob'] as String));
       final result = PairingResult(await n.installFromData(data), data);
@@ -382,8 +387,8 @@ class RelayPairing {
   /// Once [confirm] says the digits match it waits, up to [timeout], for the
   /// relay to report that the new device acknowledged its reply, which the
   /// new device does only once its own person has said they match; without
-  /// that it sends nothing and returns null, as a cancelled link. When that
-  /// report came more than [timeout] before this device's person confirmed,
+  /// that it sends nothing ([PairingPeerUnconfirmed]). When that report came
+  /// more than [timeout] before this device's person confirmed,
   /// the new device — which waits [timeout] and [margin] from its own
   /// person's confirmation — would have stopped before an enrolment reached
   /// it: nothing is sent ([PairingPeerGaveUp]).
@@ -445,9 +450,9 @@ class RelayPairing {
       // and the new device says its person did by acknowledging the reply.
       // Until the relay reports that, nothing of the account leaves here: a
       // new device whose person said they differ is sent no enrolment, and
-      // its device is not linked — null, as a cancelled link is.
+      // its device is not linked.
       if (!await _awaitAcknowledged(box, 'z-pair-reply', timeout)) {
-        return null;
+        throw const PairingPeerUnconfirmed();
       }
       // The new device has waited for the enrolment since it acknowledged
       // the reply, and goes on for [timeout] and [margin] from then. If that
@@ -535,14 +540,14 @@ class RelayPairing {
 
   /// Whether the relay reports, within [timeout], that the frame this side
   /// sent as [id] was acknowledged by the mailbox it went to; false when the
-  /// time runs out or the connection goes first.
+  /// time runs out. A connection that goes first is a [RelayException]:
+  /// nothing can be said of the other device then.
   static Future<bool> _awaitAcknowledged(
       _Mailbox box, String id, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (!box.acknowledged(id)) {
-      if (!box.client.isOpen || DateTime.now().isAfter(deadline)) {
-        return false;
-      }
+      if (!box.client.isOpen) throw RelayException('connection closed');
+      if (DateTime.now().isAfter(deadline)) return false;
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
     return true;
