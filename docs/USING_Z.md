@@ -442,7 +442,9 @@ version, and neither device falls back to the way older versions link. If
 the other device is older, the screen says which one to update: your phone
 says to update the device you are adding, and a new device that hears nothing
 from an older phone says to update the device you are linking from. Update
-it, then link again.
+it, then link again. A new device still on an older version can say instead
+that the phone you are linking from is the older one: whatever either
+screen says, update whichever device is not on this version.
 
 A linked device is a full peer, not a mirror. It has its own keys and its own
 encrypted sessions, and your contacts see all of them. History from before the
