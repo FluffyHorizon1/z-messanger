@@ -47,12 +47,16 @@
 //     the shorter list over the vault's copy;
 // 11. an app killed while its invite waits for the other side resumes
 //     where the invite got to — the acceptor after posting its message 2,
-//     the inviter after posting its message 3, or both — and the two meet
-//     at one string: until 2026-10-28 a round that moved the run without
-//     changing what the card shows was not written down, so a side killed
-//     came back to the record from before it and waited for a message the
-//     relay no longer held, and with both killed the acceptor spent the
-//     invite at message 3.
+//     the inviter after posting its message 3, or both, or the acceptor
+//     while its pass is still running, at another pending invite's round —
+//     and the two meet at one string: until 2026-10-28 a round that moved
+//     the run without changing what the card shows was not written down, so
+//     a side killed came back to the record from before it and waited for a
+//     message the relay no longer held, and with both killed the acceptor
+//     spent the invite at message 3; and until 2026-10-29 what a pass did
+//     was written down once every pending invite's round had run, so a kill
+//     during a later one's lost it all the same.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -640,8 +644,14 @@ void main() {
   test('11. an app killed while its invite waits for the other side resumes '
       'where the invite got to', () async {
     // One invite for each way of being killed. Where it ended: both sides
-    // at one string, or what each side's card was left at.
-    Future<String> killed({required bool acceptor, required bool inviter}) async {
+    // at one string, or what each side's card was left at. [midPass]: the
+    // acceptor is killed during its pass rather than after it — once this
+    // invite's round has run, before the round of another invite it holds,
+    // each at least a poll (ConnectRun.step's 1.5 s).
+    Future<String> killed(
+        {required bool acceptor,
+        required bool inviter,
+        bool midPass = false}) async {
       final aDir = await Directory.systemTemp.createTemp('z_ci_wait_a_');
       final bDir = await Directory.systemTemp.createTemp('z_ci_wait_b_');
       temps
@@ -653,15 +663,37 @@ void main() {
 
       final invite = await alice.invites.create();
       await alice.invites.pump(); // message 1 waits for Bob
-      await bob.invites.open(invite.link);
+      final mine = await bob.invites.open(invite.link);
       // Bob's round reads message 1 and posts message 2: the ephemeral his
       // commitment covers is drawn now, and message 1 is acknowledged away.
       // Nothing on his card changes — it was waiting, and waits.
-      await bob.invites.pump();
-      expect(bob.invites.invites.single.progress, ConnectProgress.waiting);
-      if (acceptor) {
+      if (midPass) {
+        // Bob holds another invite, opened after this one — Carol's, which
+        // she has not posted yet — so its round comes next in his pass. The
+        // app is killed there, and nothing more of that pass runs.
+        final carol = await person('Carol');
+        await bob.invites.open((await carol.invites.create()).link);
+        final there = Completer<void>(), killedThere = Completer<void>();
+        bob.invites.debugBeforeRound = (i) async {
+          if (i.id == mine.id) return;
+          there.complete();
+          await killedThere.future;
+          throw StateError('the app was killed');
+        };
+        final pass = bob.invites.pump();
+        await there.future;
+        expect(mine.progress, ConnectProgress.waiting);
         bob = await restart(bob, bDir, bId, 'Bob');
+        killedThere.complete();
+        await expectLater(pass, throwsStateError);
         await bob.invites.load();
+      } else {
+        await bob.invites.pump();
+        expect(bob.invites.invites.single.progress, ConnectProgress.waiting);
+        if (acceptor) {
+          bob = await restart(bob, bDir, bId, 'Bob');
+          await bob.invites.load();
+        }
       }
       // Alice's round reads message 2 and posts message 3: the reply it
       // answers is taken in now, and acknowledged away. Her card waits too.
@@ -673,7 +705,8 @@ void main() {
       }
 
       await danceTo(bob, alice);
-      final a = alice.invites.invites.single, b = bob.invites.invites.single;
+      final a = alice.invites.invites.single;
+      final b = bob.invites.invites.singleWhere((i) => i.id == mine.id);
       if (a.sas != null && a.sas == b.sas) return 'one string';
       final why = b.run.abortReason;
       return 'acceptor ${b.progress.name}${why == null ? '' : ' ($why)'}, '
@@ -685,9 +718,11 @@ void main() {
           await killed(acceptor: true, inviter: false),
           await killed(acceptor: false, inviter: true),
           await killed(acceptor: true, inviter: true),
+          await killed(acceptor: true, inviter: false, midPass: true),
         ],
-        ['one string', 'one string', 'one string'],
+        ['one string', 'one string', 'one string', 'one string'],
         reason: 'the acceptor killed after its message 2, the inviter after '
-            'its message 3, and both');
+            'its message 3, both, and the acceptor while its pass was still '
+            "at another invite's round");
   }, timeout: const Timeout(Duration(minutes: 4)));
 }

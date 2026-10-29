@@ -228,6 +228,12 @@ class ConnectInvites extends ChangeNotifier {
   @visibleForTesting
   String? debugMyCode;
 
+  /// Test seam: awaited before each pending invite's round in a pass, with
+  /// that invite — where an app killed between one invite's round and the
+  /// next's leaves it. Read once per round and called only if set.
+  @visibleForTesting
+  Future<void> Function(PendingInvite invite)? debugBeforeRound;
+
   final List<PendingInvite> _invites = [];
 
   /// The stored records [load] could not read, each as the JSON it was
@@ -400,9 +406,11 @@ class ConnectInvites extends ChangeNotifier {
 
   /// Carry every pending invite as far as it will go right now.
   ///
-  /// One connect-act-disconnect per invite, and the result is written to the
-  /// vault before this returns — so an app killed mid-ceremony resumes from
-  /// where it actually got to rather than from where it started.
+  /// One connect-act-disconnect per invite, and what each round did is
+  /// written to the vault as soon as it has run, before the next invite's
+  /// round starts — so an app killed mid-ceremony, even during another
+  /// invite's round, resumes from where it actually got to rather than from
+  /// where it started.
   ///
   /// One at a time. A second call while one is in flight joins it rather than
   /// starting another, because two steps on the same run at once are not
@@ -435,7 +443,6 @@ class ConnectInvites extends ChangeNotifier {
       _disarm();
       return;
     }
-    var changed = false;
     for (final invite in List.of(_invites)) {
       // Spent, or finished and waiting on a human: nothing a round trip can
       // change. (Stepping a finished run only turns `confirm` into `done`,
@@ -444,17 +451,23 @@ class ConnectInvites extends ChangeNotifier {
       if (invite.progress == ConnectProgress.done) continue;
       // Waiting for its person's yes (ADR 0024): not even a connection.
       if (invite.held) continue;
+      final hold = debugBeforeRound;
+      if (hold != null) await hold(invite);
       // What the run holds before its round. A round can move it and leave
       // what the card shows as it was — the acceptor's message 2 draws the
       // ephemeral its commitment covers, the inviter's message 3 takes in the
       // reply it answers, and each acknowledges away the message it consumed
       // — so a round that moved the run is written down like one that changed
-      // the card. Until 2026-10-28 it was not, and an app killed after such a
-      // round, while the other side was away, came back to the record from
-      // before it: it waited for a message the relay no longer held, and with
-      // both sides killed the acceptor drew a second ephemeral and spent the
-      // invite at message 3. A round that throws is not compared; it is
-      // written as before, when its failure is new or another invite is.
+      // the card, and before the next invite's round, which is at least a
+      // poll of its own (ConnectRun.step). Until 2026-10-28 such a round was
+      // not written down, and an app killed after it, while the other side
+      // was away, came back to the record from before it: it waited for a
+      // message the relay no longer held, and with both sides killed the
+      // acceptor drew a second ephemeral and spent the invite at message 3.
+      // Until 2026-10-29 a pass wrote down what its rounds did once every
+      // pending invite's round had run, and an app killed during a later
+      // one's lost an earlier one's the same way. A round that throws is not
+      // compared; it is written down when its failure is new.
       final before = jsonEncode(invite.run.toJson());
       final ConnectProgress next;
       try {
@@ -465,21 +478,22 @@ class ConnectInvites extends ChangeNotifier {
       } on RelayException catch (e) {
         // The relay refused something, or nothing answered: not a fact about
         // the invite. Leave it alone, say why, and try again next time.
-        changed = _fail(invite, e.message) || changed;
+        if (_fail(invite, e.message)) await _written();
         continue;
       } on IOException catch (e) {
-        changed = _fail(invite, '$e') || changed;
+        if (_fail(invite, '$e')) await _written();
         continue;
       } on TimeoutException catch (e) {
-        changed = _fail(invite, e.message ?? 'timed out') || changed;
+        if (_fail(invite, e.message ?? 'timed out')) await _written();
         continue;
       } catch (e) {
         // Anything else is a fault in this build rather than in the network,
         // and the honest thing to do with one on a timer is to put it on the
         // card rather than to crash or to hide it behind "waiting".
-        changed = _fail(invite, '$e') || changed;
+        if (_fail(invite, '$e')) await _written();
         continue;
       }
+      var changed = false;
       if (invite.lastFailure != null) {
         invite.lastFailure = null;
         changed = true;
@@ -487,12 +501,15 @@ class ConnectInvites extends ChangeNotifier {
       if (next != invite.progress) changed = true;
       if (jsonEncode(invite.run.toJson()) != before) changed = true;
       invite.progress = next;
-    }
-    if (changed) {
-      await _save();
-      notifyListeners();
+      if (changed) await _written();
     }
     _arm();
+  }
+
+  /// What a round did, written to the vault and shown.
+  Future<void> _written() async {
+    await _save();
+    notifyListeners();
   }
 
   /// Records why an invite could not be carried forward. True if the card
