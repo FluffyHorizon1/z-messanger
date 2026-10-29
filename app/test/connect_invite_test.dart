@@ -72,7 +72,14 @@
 //     spent the invite at message 3; and the inviter made a second message 3.
 //     And one killed in the round that reaches the digits, after that round
 //     has written the run down and before it writes what it returned, reads
-//     back at the digits.
+//     back at the digits. And one whose vault refused every write of the
+//     round that drew its message 2 or 3 — the write before the post, and
+//     the one after the round threw, so the round ended before the post —
+//     writes the run down before its next round posts that message, and
+//     killed once the relay has it goes on from it: until 2026-10-29 that
+//     post went out over the record from before the message was drawn, so
+//     the acceptor came back to it, drew a second message 2 and spent the
+//     invite at message 3, and the inviter made a second message 3.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -950,6 +957,76 @@ void main() {
       return drawn == 1 ? ended : '$ended, $at drawn $drawn times';
     }
 
+    // One invite for each side whose vault refuses every write of the round
+    // that draws its message — Bob's message 2 ([at] z-connect-c2), Alice's
+    // message 3 (z-connect-c3): the write before the post, and the one after
+    // the round threw — so that round ends before the post, nothing of it
+    // written down. The next round posts the message, and the app is killed
+    // with the relay holding it, before that round is over ([link] holds the
+    // relay's answer back). Where it ended, and how many different messages
+    // went under that id.
+    Future<String> vaultRefused(String at) async {
+      final via = 'ws://127.0.0.1:${link.port}';
+      final aDir = await Directory.systemTemp.createTemp('z_ci_refused_a_');
+      final bDir = await Directory.systemTemp.createTemp('z_ci_refused_b_');
+      temps
+        ..add(aDir)
+        ..add(bDir);
+      final aId = await ZIdentity.generate(), bId = await ZIdentity.generate();
+      var alice = await open(aDir, aId, 'Alice', url: via);
+      var bob = await open(bDir, bId, 'Bob', url: via);
+      linkSends.clear();
+
+      final invite = await alice.invites.create();
+      await alice.invites.pump(); // message 1 waits for Bob
+      await bob.invites.open(invite.link);
+      final acceptorRefused = at == 'z-connect-c2';
+      if (!acceptorRefused) await bob.invites.pump(); // message 2 waits too
+      final refusing = acceptorRefused ? bob : alice;
+      // SQLite refuses each write of the invites while the trigger stands,
+      // as it refuses a write it cannot make; nothing else in the vault is
+      // touched. (`s:` is the vault's prefix for a sealed key.)
+      await refusing.vault.db.execute(
+          'CREATE TEMP TRIGGER refuse_invites BEFORE INSERT ON kv '
+          "WHEN NEW.k = 's:connect_invites' "
+          "BEGIN SELECT RAISE(ABORT, 'database is locked'); END");
+      await expectLater(refusing.invites.pump(), throwsA(isA<Exception>()),
+          reason: 'the write after the round threw was refused too');
+      await refusing.vault.db.execute('DROP TRIGGER refuse_invites');
+      expect(refusing.invites.invites.single.lastFailure,
+          contains('database is locked'),
+          reason: 'the write before the post was refused, and ended the round');
+      expect(linkSends.where((f) => f['id'] == at), isEmpty,
+          reason: 'before the post');
+      final taken = Completer<void Function()>();
+      holdAt = (id: at, taken: taken);
+      final round = refusing.invites.pump();
+      final cut = await taken.future.timeout(const Duration(seconds: 30));
+      if (acceptorRefused) {
+        bob = await restart(bob, bDir, bId, 'Bob', url: via);
+        await bob.invites.load();
+      } else {
+        alice = await restart(alice, aDir, aId, 'Alice', url: via);
+        await alice.invites.load();
+      }
+      cut();
+      await round.then((_) {}, onError: (Object _) {});
+
+      await danceTo(bob, alice);
+      final a = alice.invites.invites.single;
+      final b = bob.invites.invites.single;
+      final why = b.run.abortReason;
+      final ended = a.sas != null && a.sas == b.sas
+          ? 'one string'
+          : 'acceptor ${b.progress.name}${why == null ? '' : ' ($why)'}, '
+              'inviter ${a.progress.name}';
+      final drawn = {
+        for (final f in linkSends)
+          if (f['id'] == at) f['payload']
+      }.length;
+      return drawn == 1 ? ended : '$ended, $at drawn $drawn times';
+    }
+
     // Killed in the round that reached the digits once that round had
     // written the run down, before acknowledging what it read, and before
     // it wrote what the round returned: the vault holds the run with its
@@ -998,8 +1075,10 @@ void main() {
           await killedMidRound('z-connect-c2'),
           await killedMidRound('z-connect-c3'),
           await killedAtTheDigits(),
+          await vaultRefused('z-connect-c2'),
+          await vaultRefused('z-connect-c3'),
         ],
-        [for (var i = 0; i < 11; i++) 'one string'],
+        [for (var i = 0; i < 13; i++) 'one string'],
         reason: 'the acceptor killed after its message 2, the inviter after '
             'its message 3, both, and the acceptor while its pass was still '
             "at another invite's round; the link dropped as message 2 was "
@@ -1009,6 +1088,9 @@ void main() {
             'the relay took its message 2, the inviter after it took its '
             'message 3, each before its round was over, and the acceptor in '
             'the round that reached the digits, after it was written down '
-            'and before what it returned was');
+            'and before what it returned was; and the acceptor killed after '
+            'the relay took its message 2, the inviter after it took its '
+            'message 3, each posted by the round after one whose every write '
+            'the vault refused, which ended before its post');
   }, timeout: const Timeout(Duration(minutes: 8)));
 }

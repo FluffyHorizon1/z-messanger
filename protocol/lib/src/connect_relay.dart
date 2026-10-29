@@ -61,7 +61,7 @@ enum ConnectProgress {
 /// covers; message 3 on the inviter's, its opening — held byte for byte,
 /// with its envelope id, from just before it is posted until the relay has
 /// taken it (§20.5): in the run, and in the record the step's `persist`
-/// writes before the post. A post that fails leaves it held, and every later
+/// writes before every post. A post that fails leaves it held, and every later
 /// round posts it again as it was, until a post of it lands or its answer
 /// arrives. It is never drawn twice: the run has moved past that, and a
 /// second message 2 would carry a second ephemeral. Posted again to a relay
@@ -88,10 +88,18 @@ mixin _Unposted {
   }
 
   /// Posts again the message a failed post left held, if there is one —
-  /// held in the record too, since its first post wrote it there.
-  Future<void> _repost(RelayClient client, String to) async {
+  /// written down by [persist] first, as before its first post. The record
+  /// need not hold it yet: when the write before the first post was refused,
+  /// that round ended there, and the write its caller makes after a round
+  /// that threw can be refused too. A write refused again ends this round
+  /// before the post as well. Until 2026-10-29 it went unwritten, and an app
+  /// that died after the relay took it came back to the record from before
+  /// the message was drawn, and drew another.
+  Future<void> _repost(RelayClient client, String to,
+      Future<void> Function()? persist) async {
     final u = _unposted;
     if (u == null) return;
+    if (persist != null) await persist();
     await client.send(to: to, id: u.id, payload: u.payload);
     _unposted = null;
   }
@@ -287,17 +295,22 @@ class ConnectRun with _Unposted {
   /// returned or threw — see [toJson].
   ///
   /// [persist]: write the run down, as [toJson] has it, and only then
-  /// return. It is called at the two moments of a round when the record
-  /// must already say what the relay may know: once a message 2 or 3 is
-  /// drawn and held, before it is posted; and once the round has taken in
-  /// what it read, before the relay is told to forget it. So an app that
-  /// dies anywhere in a round comes back to a record the relay agrees with,
-  /// and posts the message it drew rather than drawing another. Until
-  /// 2026-10-29 nothing was written until the round was over, and an app
-  /// that died after the relay took its message 2 drew a second one, which
-  /// the relay, holding the first under its id, dropped: the invite was
-  /// spent at message 3. A throw from [persist] ends the round there, as a
-  /// network failure does — nothing more posted, nothing acknowledged.
+  /// return. It is called where a round needs the record to say already
+  /// what the relay may know: once a message 2 or 3 is drawn and held,
+  /// before its first post and before any post of it again; and once the
+  /// round has taken in what it read, before the relay is told to forget
+  /// it. So an app that dies anywhere in a round comes back to a record
+  /// holding any message 2 or 3 the relay may have from it, and posts that
+  /// message rather than drawing another — and never to a record from
+  /// before something it acknowledged. What the round that reaches the
+  /// digits read is left at the relay when the app dies between that
+  /// round's write and its acknowledgements: a run that holds its session
+  /// never connects again (§20.5). Until 2026-10-29 nothing was written
+  /// until the round was over, and an app that died after the relay took
+  /// its message 2 drew a second one, which the relay, holding the first
+  /// under its id, dropped: the invite was spent at message 3. A throw from
+  /// [persist] ends the round there, as a network failure does — nothing
+  /// more posted, nothing acknowledged.
   ///
   /// [refusePeer]: asked about the identity the other side revealed, the
   /// moment this side has it checked against its commitment — and, on the
@@ -400,7 +413,7 @@ class ConnectRun with _Unposted {
     final reveal = _take(inbox, 'x4', spent);
     if (reveal == null) {
       // No answer to message 3 yet: post it again if its post failed.
-      await _repost(client, theirs);
+      await _repost(client, theirs, persist);
       return ConnectProgress.waiting;
     }
     _unposted = null; // answered, so the relay had it
@@ -432,7 +445,7 @@ class ConnectRun with _Unposted {
     final open = _take(inbox, 'x3', spent);
     if (open == null) {
       // No answer to message 2 yet: post it again if its post failed.
-      await _repost(client, theirs);
+      await _repost(client, theirs, persist);
       return ConnectProgress.waiting;
     }
     _unposted = null; // answered, so the relay had it
@@ -676,7 +689,7 @@ class ConnectRunV3 with _Unposted {
   /// mailbox, do everything that can be done now, acknowledge what was
   /// consumed, disconnect. The same answers, for the same reasons — a
   /// message 2 or 3 whose post failed among them, held and posted again
-  /// ([_Unposted]) — and [persist] called at the same two moments.
+  /// ([_Unposted]) — and [persist] called at the same moments.
   Future<ConnectProgress> step(
       {required String relayUrl,
       int? nowMs,
@@ -748,7 +761,7 @@ class ConnectRunV3 with _Unposted {
     }
     final reveal = ConnectRun._take(inbox, 'x4', spent);
     if (reveal == null) {
-      await _repost(client, theirs);
+      await _repost(client, theirs, persist);
       return ConnectProgress.waiting;
     }
     _unposted = null; // answered, so the relay had it
@@ -783,7 +796,7 @@ class ConnectRunV3 with _Unposted {
     }
     final open = ConnectRun._take(inbox, 'x3', spent);
     if (open == null) {
-      await _repost(client, theirs);
+      await _repost(client, theirs, persist);
       return ConnectProgress.waiting;
     }
     _unposted = null; // answered, so the relay had it

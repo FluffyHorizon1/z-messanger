@@ -41,7 +41,7 @@ abstract class InviteRun {
   String? get abortReason;
   Map<String, Object?> toJson();
   /// One round ([ConnectRun.step]), [persist] writing the run down at the
-  /// two moments in it that must be on disk before the round goes on.
+  /// moments in it that must be on disk before the round goes on.
   Future<ConnectProgress> step(
       {required String relayUrl,
       int? nowMs,
@@ -201,6 +201,13 @@ class PendingInvite {
   /// contact: the record was used as it was, neither replaced nor marked as
   /// compared, which is what the screen then says. In memory only.
   bool peerWasHeld = false;
+
+  /// The run as the vault holds it: what the last write of the invites that
+  /// returned wrote of it, as JSON, or null while none has. In memory only.
+  /// A round asks whether the run is written down by this, not by what the
+  /// run was when the round began — a write can be refused, and then the
+  /// vault holds less than memory does ([ConnectInvites.pump]).
+  String? _inVault;
 
   /// The person said yes to this invite on their own screen (ADR 0024).
   ///
@@ -434,8 +441,10 @@ class ConnectInvites extends ChangeNotifier {
     if (stored is List) {
       for (final e in stored) {
         try {
-          _invites.add(await PendingInvite.fromJson(
-              (e as Map).cast<String, Object?>()));
+          final invite = await PendingInvite.fromJson(
+              (e as Map).cast<String, Object?>());
+          invite._inVault = jsonEncode(invite.run.toJson());
+          _invites.add(invite);
         } catch (_) {
           _unread.add(e);
         }
@@ -444,9 +453,16 @@ class ConnectInvites extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Writes the invites to the vault, and once the vault has taken them
+  /// notes what it now holds of each run ([PendingInvite._inVault]). A write
+  /// that throws notes nothing.
   Future<void> _save() async {
-    await _svc.vault.kvPut(_kvKey,
-        jsonEncode([..._unread, for (final i in _invites) i.toJson()]));
+    final writing = [for (final i in _invites) (i, i.toJson())];
+    await _svc.vault.kvPut(
+        _kvKey, jsonEncode([..._unread, for (final (_, j) in writing) j]));
+    for (final (i, j) in writing) {
+      i._inVault = jsonEncode(j['run']);
+    }
   }
 
   Future<ConnectIdentity> _me() async => ConnectIdentity.fromCode(
@@ -696,17 +712,21 @@ class ConnectInvites extends ChangeNotifier {
       // Until 2026-10-29 a round that threw was written down only when its
       // failure was new to the card. And inside the round, [persist] writes
       // the run down where the round asks: once it holds a message 2 or 3 it
-      // has drawn and before it posts it, and once it has taken in what it
+      // has drawn, before each post of it, and once it has taken in what it
       // read and before that is acknowledged — so an app killed in the
       // middle of a round, after the relay took its message 2 and before the
       // round was over, comes back to that message, not to the record from
-      // before the round, which until 2026-10-29 drew a second one.
+      // before the round, which until 2026-10-29 drew a second one. Whether
+      // the run is written down is asked of what the vault holds of it
+      // ([PendingInvite._inVault]), there and once the round is over, not of
+      // the run as the round began: a write can be refused, and the vault
+      // then holds less than memory does. Until 2026-10-29 it was asked of
+      // the run as the round began, so the round after one whose writes were
+      // both refused — the one before its post, and the one after it threw
+      // — posted the message again over a record without it.
       final before = jsonEncode(invite.run.toJson());
-      var onDisk = before;
       Future<void> persist() async {
-        final now = jsonEncode(invite.run.toJson());
-        if (now == onDisk) return;
-        onDisk = now;
+        if (jsonEncode(invite.run.toJson()) == invite._inVault) return;
         await _save();
       }
 
@@ -720,19 +740,19 @@ class ConnectInvites extends ChangeNotifier {
       } on RelayException catch (e) {
         // The relay refused something, or nothing answered: not a fact about
         // the invite. Say why, and try again next time.
-        await _threw(invite, e.message, before);
+        await _threw(invite, e.message);
         continue;
       } on IOException catch (e) {
-        await _threw(invite, '$e', before);
+        await _threw(invite, '$e');
         continue;
       } on TimeoutException catch (e) {
-        await _threw(invite, e.message ?? 'timed out', before);
+        await _threw(invite, e.message ?? 'timed out');
         continue;
       } catch (e) {
         // Anything else is a fault in this build rather than in the network,
         // and the honest thing to do with one on a timer is to put it on the
         // card rather than to crash or to hide it behind "waiting".
-        await _threw(invite, '$e', before);
+        await _threw(invite, '$e');
         continue;
       }
       var changed = false;
@@ -741,7 +761,9 @@ class ConnectInvites extends ChangeNotifier {
         changed = true;
       }
       if (next != invite.progress) changed = true;
-      if (jsonEncode(invite.run.toJson()) != before) changed = true;
+      // The round moved the run, or the vault does not hold it as it is.
+      final now = jsonEncode(invite.run.toJson());
+      if (now != before || now != invite._inVault) changed = true;
       invite.progress = next;
       if (changed) await _written();
     }
@@ -755,11 +777,13 @@ class ConnectInvites extends ChangeNotifier {
   }
 
   /// A round that threw: why, on the card, and the invite written down when
-  /// that is new or the round had moved its run ([before], its record as the
-  /// round began) before it threw.
-  Future<void> _threw(PendingInvite invite, String why, String before) async {
+  /// that is new or the vault does not hold the run as it now is — the round
+  /// moved it before it threw, or a write of it was refused.
+  Future<void> _threw(PendingInvite invite, String why) async {
     final told = _fail(invite, why);
-    if (told || jsonEncode(invite.run.toJson()) != before) await _written();
+    if (told || jsonEncode(invite.run.toJson()) != invite._inVault) {
+      await _written();
+    }
   }
 
   /// Records why an invite could not be carried forward. True if the card

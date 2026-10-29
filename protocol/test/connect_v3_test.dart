@@ -91,14 +91,19 @@ import 'package:z_protocol/z_protocol.dart';
 //     acceptor's encapsulation and the inviter's one decapsulation stand,
 //     the ceremony completes, the relay holds one envelope of it either
 //     way, and the mailboxes are left empty;
-// 14. a run asks to be written down at the two moments of a round that
-//     must be on disk before the round goes on — holding its message 2 or
-//     3, before posting it; and before acknowledging what it read — and an
+// 14. a run asks to be written down at the moments of a round that must
+//     be on disk before the round goes on — holding its message 2 or 3,
+//     before posting it; and before acknowledging what it read — and an
 //     app that dies at any of those writes comes back from the one before
 //     to the same ceremony: one string, messages 2 and 3 each one message —
 //     one encapsulation, one decapsulation — and the mailboxes left empty
 //     but for the second message 4 that dying before acknowledging message
-//     3 leaves, which the finished inviter never reads.
+//     3 leaves, which the finished inviter never reads;
+// 15. a message 2 or 3 its app could not write down before its post — the
+//     vault refusing that write, and the one after the round threw — is
+//     written down before the next round posts it again, so an app that
+//     dies once the relay has it comes back to it: one string, one message
+//     under its id, the encapsulation and the decapsulation not redone.
 
 /// One side of a ceremony: what the app holds about itself.
 class Party {
@@ -1475,6 +1480,101 @@ void main() {
           'one string; messages 2: 1, 3: 1; left: ${at == 4 ? 1 : 0}'
       ]);
     }, timeout: const Timeout(Duration(minutes: 4)));
+
+    test('15. a message 2 or 3 its app could not write down before its post '
+        'is written down before it is posted again', () async {
+      final alice = await person('Alice', sk: true);
+      final bob = await person('Bob');
+      // One invite for each side whose vault refuses every write of the
+      // round that draws its message — Bob's message 2, Alice's message 3:
+      // the write before the post, and the one the app makes after the
+      // round threw — so the round ends before the post, and the record is
+      // the one from before it. The next round is the run in memory, as the
+      // app holds it, and posts the message again; the app dies once that
+      // round is over, before its own write, so it comes back to whatever
+      // the round wrote. Where each ended, and how many different messages
+      // went under that id.
+      final ended = <String>[];
+      for (final at in const ['z-connect-c2', 'z-connect-c3']) {
+        seen.clear();
+        final start = await ConnectRunV3.invite(
+            me: alice.id, sealKey: alice.sealKey, pqKey: alice.pqKey);
+        final code = ConnectCode.parseV3(start.code.text);
+        final record = {
+          'i': jsonEncode(start.toJson()),
+          'r': jsonEncode(ConnectRunV3.accept(
+                  me: bob.id,
+                  sealKey: bob.sealKey,
+                  pqKey: bob.pqKey,
+                  code: code)
+              .toJson()),
+        };
+        Future<ConnectRunV3> back(String side) => ConnectRunV3.fromJson(
+            jsonDecode(record[side]!) as Map<String, Object?>);
+        final run = {'i': await back('i'), 'r': await back('r')};
+        // A round as the app runs it: written down where the step asks,
+        // and once it is over.
+        Future<ConnectProgress> round(String side) async {
+          final r = run[side]!;
+          final progress = await r.step(
+              relayUrl: url,
+              poll: p,
+              persist: () async => record[side] = jsonEncode(r.toJson()));
+          record[side] = jsonEncode(r.toJson());
+          return progress;
+        }
+
+        expect(await round('i'), ConnectProgress.waiting); // message 1
+        final side = at == 'z-connect-c2' ? 'r' : 'i';
+        if (side == 'i') {
+          expect(await round('r'), ConnectProgress.waiting); // message 2
+        }
+        final r = run[side]!;
+        await expectLater(
+            r.step(
+                relayUrl: url,
+                poll: p,
+                persist: () async => throw StateError('database is locked')),
+            throwsStateError,
+            reason: 'a refused write ends the round');
+        expect(sends(at), 0, reason: 'before the post');
+        expect(
+            await r.step(
+                relayUrl: url,
+                poll: p,
+                persist: () async => record[side] = jsonEncode(r.toJson())),
+            ConnectProgress.waiting);
+        expect(sends(at), 1, reason: 'the next round posted it');
+        run[side] = await back(side); // the app died; it comes back
+
+        for (var turn = 0;
+            turn < 8 &&
+                (run['i']!.session == null || run['r']!.session == null);
+            turn++) {
+          final s = turn.isEven ? 'i' : 'r';
+          if (run[s]!.finished) continue;
+          await round(s);
+          run[s] = await back(s);
+        }
+        final inv = run['i']!, acc = run['r']!;
+        final messages = {
+          for (final f in seen)
+            if (f['t'] == 'send' && f['id'] == at) f['payload']
+        };
+        final both = inv.session != null &&
+            acc.session != null &&
+            inv.session!.sas == acc.session!.sas &&
+            b64(inv.session!.peerSealKey) == b64(bob.sealKey) &&
+            b64(acc.session!.peerSealKey) == b64(alice.sealKey);
+        final why = acc.abortReason == null ? '' : ' (${acc.abortReason})';
+        ended.add('${both ? 'one string' : 'no string$why'}; '
+            '$at messages: ${messages.length}');
+      }
+      expect(ended, [
+        'one string; z-connect-c2 messages: 1',
+        'one string; z-connect-c3 messages: 1',
+      ]);
+    }, timeout: const Timeout(Duration(minutes: 3)));
   });
 }
 

@@ -5224,14 +5224,20 @@ the id, the inviter answers it, and the invite is spent at message 3 on a
 mismatch nobody produced. A side that posts nothing waits for an answer the
 other side cannot give, while the other waits for the message itself, until
 the invite expires — what the reference client did until 2026‑10‑29. It now
-writes the run's record, holding the message, before the post, and writes what
-a round made of what it read before it acknowledges any of it, so an app that
-dies anywhere in a round comes back to a record the relay agrees with, and
-posts that same message. Until 2026‑10‑29 nothing of a round was written until
-the round was over, and an app that died after the relay took its message 2
-came back to the record from before it, drew a second message 2 — which the
-relay, holding the first under the id, dropped — and spent the invite at
-message 3.
+writes the run's record, holding the message, before every post of it — the
+first, and each post again — and writes what a round made of what it read
+before it acknowledges any of it. So an app that dies anywhere in a round
+comes back to a record that holds any message 2 or 3 the relay may have from
+it, and posts that same message; and never to a record from before something
+it acknowledged. Until 2026‑10‑29 nothing of a round was written until the
+round was over, and an app that died after the relay took its message 2 came
+back to the record from before it, drew a second message 2 — which the relay,
+holding the first under the id, dropped — and spent the invite at message 3.
+And a post again was not written first: when the device refused both writes
+of the round that drew the message — the one before its post, which ended
+the round, and the one after — the next round posted it over the record from
+before it was drawn, and an app that died then came back to that record and
+drew the message again.
 
 What can still be left is a copy at the relay that nobody reads, in two
 ways. Message 4, posted in the round that completes the ceremony, is not

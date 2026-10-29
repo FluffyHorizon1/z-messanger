@@ -65,20 +65,28 @@ import 'package:z_protocol/z_protocol.dart';
 //     ceremony completes; the relay holds one envelope of it either way,
 //     and the mailboxes are left empty. Until 2026-10-29 the run moved past
 //     drawing it and never posted it again;
-// 11. a run asks to be written down at the two moments of a round that
-//     must be on disk before the round goes on — holding its message 2 or
-//     3, before posting it; and before acknowledging what it read — and an
+// 11. a run asks to be written down at the moments of a round that must
+//     be on disk before the round goes on — holding its message 2 or 3,
+//     before posting it; and before acknowledging what it read — and an
 //     app that dies at any of those writes comes back from the one before
 //     to the same ceremony: one string, messages 2 and 3 each one message,
 //     the mailboxes left empty but for the one copy that dying before
 //     acknowledging message 3 leaves — the acceptor's second message 4,
 //     which the finished inviter never reads. Until 2026-10-29 nothing was
 //     written inside a round, and an acceptor killed after the relay took
-//     its message 2 drew another, which spent the invite at message 3.
+//     its message 2 drew another, which spent the invite at message 3;
+// 12. a message 2 or 3 its app could not write down before its post — the
+//     vault refusing that write, and the one after the round threw — is
+//     written down before the next round posts it again, so an app that
+//     dies once the relay has it comes back to it: one string, one message
+//     under its id. Until 2026-10-29 a post again was not written first:
+//     the acceptor so killed came back to the record from before its
+//     message 2 and drew another, and the inviter made a second message 3.
 //
-// Criteria 5, 6, 7 and 10 are asserted against what the relay actually saw,
-// not against what the client meant to send: every frame passes through a
-// recording WebSocket tap standing between the clients and the relay.
+// Criteria 5, 6, 7, 10, 11 and 12 are asserted against what the relay
+// actually saw, not against what the client meant to send: every frame
+// passes through a recording WebSocket tap standing between the clients and
+// the relay.
 //
 // One more, unnumbered test covers the transport's half of 17.1's criterion
 // 2: what a refusal does to an invite once the frames are coming out of a
@@ -889,6 +897,91 @@ void main() {
         'one string; messages 2: 1, 3: 1; left: ${at == 4 ? 1 : 0}'
     ]);
   }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test('12. a message 2 or 3 its app could not write down before its post is '
+      'written down before it is posted again', () async {
+    // One invite for each side whose vault refuses every write of the round
+    // that draws its message — Bob's message 2, Alice's message 3: the
+    // write before the post, and the one the app makes after the round
+    // threw — so the round ends before the post, and the record is the one
+    // from before it. The next round is the run in memory, as the app holds
+    // it, and posts the message again; the app dies once that round is over,
+    // before its own write, so it comes back to whatever the round wrote.
+    // Where each ended, and how many different messages went under that id.
+    final ended = <String>[];
+    for (final at in const ['z-connect-c2', 'z-connect-c3']) {
+      seen.clear();
+      final (alice, _) = await person('Alice');
+      final (bob, _) = await person('Bob');
+      final start = await ConnectRun.invite(me: alice);
+      final code = start.code;
+      final record = {
+        'i': jsonEncode(start.toJson()),
+        'r': jsonEncode(ConnectRun.accept(me: bob, code: code).toJson()),
+      };
+      Future<ConnectRun> back(String side) => ConnectRun.fromJson(
+          jsonDecode(record[side]!) as Map<String, Object?>);
+      final run = {'i': await back('i'), 'r': await back('r')};
+      // A round as the app runs it: written down where the step asks, and
+      // once it is over.
+      Future<ConnectProgress> round(String side) async {
+        final r = run[side]!;
+        final progress = await r.step(
+            relayUrl: url,
+            poll: p,
+            persist: () async => record[side] = jsonEncode(r.toJson()));
+        record[side] = jsonEncode(r.toJson());
+        return progress;
+      }
+
+      expect(await round('i'), ConnectProgress.waiting); // message 1
+      final side = at == 'z-connect-c2' ? 'r' : 'i';
+      if (side == 'i') {
+        expect(await round('r'), ConnectProgress.waiting); // message 2
+      }
+      final r = run[side]!;
+      await expectLater(
+          r.step(
+              relayUrl: url,
+              poll: p,
+              persist: () async => throw StateError('database is locked')),
+          throwsStateError,
+          reason: 'a refused write ends the round');
+      expect(sends(at), 0, reason: 'before the post');
+      expect(
+          await r.step(
+              relayUrl: url,
+              poll: p,
+              persist: () async => record[side] = jsonEncode(r.toJson())),
+          ConnectProgress.waiting);
+      expect(sends(at), 1, reason: 'the next round posted it');
+      run[side] = await back(side); // the app died; it comes back
+
+      for (var turn = 0;
+          turn < 8 && (run['i']!.session == null || run['r']!.session == null);
+          turn++) {
+        final s = turn.isEven ? 'i' : 'r';
+        if (run[s]!.finished) continue;
+        await round(s);
+        run[s] = await back(s);
+      }
+      final inv = run['i']!, acc = run['r']!;
+      final messages = {
+        for (final f in seen)
+          if (f['t'] == 'send' && f['id'] == at) f['payload']
+      };
+      final both = inv.session != null &&
+          acc.session != null &&
+          inv.session!.sas == acc.session!.sas;
+      final why = acc.abortReason == null ? '' : ' (${acc.abortReason})';
+      ended.add('${both ? 'one string' : 'no string$why'}; '
+          '$at messages: ${messages.length}');
+    }
+    expect(ended, [
+      'one string; z-connect-c2 messages: 1',
+      'one string; z-connect-c3 messages: 1',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('a refused frame spends the invite, and the refusal is durable',
       () async {
