@@ -84,20 +84,37 @@ class NewDeviceLink {
   /// [PairingNoAnswer] when nothing answered, most likely an existing device
   /// on an older version (§10.2 rule 6). Afterwards [code] is a new one if
   /// this attempt's KEM key was spent.
+  ///
+  /// [install], when given, keeps the enrolment — the link screen installs
+  /// it into this device's vault ([installEnrollment]) — before the ceremony
+  /// acknowledges it: the existing device lists this one on that
+  /// acknowledgement, so it then means this device holds its account, and an
+  /// install that fails leaves this device unlisted. [margin] is what the
+  /// enrolment is allowed beyond [timeout] to arrive in
+  /// (`RelayPairing.enrolmentMargin`).
   Future<PairingResult?> run({
     required String relayUrl,
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
+    Duration margin = RelayPairing.enrolmentMargin,
+    Future<void> Function(PairingResult result)? install,
   }) async {
     final v2 = _v2;
     if (v2 != null) {
-      return RelayPairing.runNewDeviceV2(
+      final result = await RelayPairing.runNewDeviceV2(
           relayUrl: relayUrl, n: v2, confirm: confirm, timeout: timeout);
+      if (result != null && install != null) await install(result);
+      return result;
     }
     final n = _v3!;
     try {
       return await RelayPairing.runNewDeviceV3(
-          relayUrl: relayUrl, n: n, confirm: confirm, timeout: timeout);
+          relayUrl: relayUrl,
+          n: n,
+          confirm: confirm,
+          timeout: timeout,
+          margin: margin,
+          install: install);
     } finally {
       if (n.opened) {
         _v3 = await PairingInitiatorV3.create(sealKey: sealingKey.ek);

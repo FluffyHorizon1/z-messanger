@@ -58,7 +58,20 @@
 //      holds it — as an HA relay's sweep does — says nothing: the laptop's
 //      person says the digits differ and the phone's that they match, and
 //      the phone sends nothing and links nothing, the reply left at the
-//      relay unacknowledged.
+//      relay unacknowledged;
+//  11. a phone whose person confirms the digits more than its timeout after
+//      the laptop's — inside the margin, while the laptop still waits, or
+//      past the laptop's whole wait — sends nothing and lists nothing, and
+//      the relay holds what it held before; within the timeout the laptop
+//      is linked;
+//  12. an enrolment that reaches the laptop after it stopped waiting is not
+//      acknowledged: the phone lists nothing, and the enrolment alone waits
+//      at the relay;
+//  13. an enrolment the laptop cannot open — spoiled on its way — is not
+//      acknowledged, and the phone lists nothing;
+//  14. nor is one the laptop cannot install: the link screen installs the
+//      enrolment into the vault before the ceremony acknowledges it, and an
+//      install that fails leaves the laptop unlisted.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -356,6 +369,26 @@ void main() {
     ];
   }
 
+  /// What the relay charges an envelope whose payload is [payload] against
+  /// its store (`server.js`, `envelopeSize`): the payload as the store holds
+  /// it, JSON-escaped, and 256 bytes for the entry around it.
+  int charged(String payload) => jsonEncode(payload).length - 2 + 256;
+
+  /// The kinds of what [left] holds, in order.
+  List<Object?> kinds(List<RelayInbound> left) =>
+      [for (final e in left) (jsonDecode(e.payload) as Map)['k']];
+
+  /// [frame], a relay `msg` carrying `enroll-v3`, with one base64 character
+  /// of its sealed blob changed, so the enrolment no longer opens.
+  String spoiled(String frame) {
+    final f = (jsonDecode(frame) as Map).cast<String, Object?>();
+    final p = (jsonDecode(f['payload'] as String) as Map).cast<String, Object?>();
+    final blob = p['blob'] as String;
+    final i = blob.length ~/ 2;
+    p['blob'] = blob.replaceRange(i, i + 1, blob[i] == 'A' ? 'B' : 'A');
+    return jsonEncode({...f, 'payload': jsonEncode(p)});
+  }
+
   /// The four mailboxes a ceremony on [code] can leave anything in: v3's
   /// two, and the older ones the existing device listens on.
   Future<List<ZIdentity>> ceremonyMailboxes(PairingCode code) async => [
@@ -631,9 +664,11 @@ void main() {
     Object? waited;
     try {
       await n.run(
-          relayUrl: relayUrl(),
-          confirm: (_) async => true,
-          timeout: const Duration(seconds: 6));
+        relayUrl: relayUrl(),
+        confirm: (_) async => true,
+        timeout: const Duration(seconds: 6),
+        margin: const Duration(seconds: 1),
+      );
     } catch (e) {
       waited = e;
     }
@@ -944,5 +979,215 @@ void main() {
     } finally {
       await tap.close();
     }
+  });
+
+  test(
+      "11. a phone whose person confirms too long after the laptop's sends "
+      'nothing and lists nothing; within the timeout the laptop is linked',
+      () async {
+    final alice = await person('Alice11');
+    await connected([alice]);
+    const timeout = Duration(seconds: 3), margin = Duration(seconds: 2);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    // The people's delays are the scenario: each stands for a person
+    // deliberating, not for a wait on anything.
+    for (final (after, linked) in [
+      (const Duration(milliseconds: 3500), false), // inside the margin
+      (const Duration(milliseconds: 5500), false), // past the laptop's wait
+      (const Duration(milliseconds: 1500), true), // within the timeout
+    ]) {
+      final before = await held();
+      final n = await NewDeviceLink.create();
+      final code = PairingCode.parse(n.code);
+      DateTime? laptopAt;
+      final hosted = alice.svc
+          .hostDeviceLink(n.code, confirmSas: (_) async {
+            await waitUntil(() => laptopAt != null,
+                what: "the laptop's person confirmed");
+            await Future<void>.delayed(
+                laptopAt!.add(after).difference(DateTime.now()));
+            return true;
+          })
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final laptop = await n
+          .run(
+            relayUrl: relayUrl(),
+            confirm: (_) async {
+              laptopAt = DateTime.now();
+              return true;
+            },
+            timeout: timeout,
+            margin: margin,
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final phone = await hosted;
+      final what = "the phone's person ${after.inMilliseconds} ms after the "
+          "laptop's";
+      if (linked) {
+        expect(laptop, isA<PairingResult>(), reason: what);
+        expect(phone, isTrue, reason: what);
+        expect(await alice.svc.linkedDevices(), hasLength(1), reason: what);
+        continue;
+      }
+      expect(laptop, isA<TimeoutException>(),
+          reason: '$what: the laptop stopped waiting');
+      expect(phone, isA<PairingAbort>(),
+          reason: '$what: the phone sends nothing and lists nothing');
+      expect('$phone', contains('stopped waiting'), reason: what);
+      expect(await alice.svc.linkedDevices(), isEmpty, reason: what);
+      expect(await alice.svc.ownDeviceListVersion(), listBefore, reason: what);
+      await waitFor(() async => await held() == before,
+          what: '$what: the relay to hold what it held before');
+      // ignore: avoid_print
+      print('$what: the relay held $before before and ${await held()} after '
+          '(envelopes, bytes)');
+      for (final who in await ceremonyMailboxes(code)) {
+        expect(await peek(who), isEmpty, reason: what);
+      }
+    }
+  });
+
+  test(
+      '12. an enrolment that reaches the laptop after it stopped waiting is '
+      'not acknowledged, and the phone lists nothing', () async {
+    final alice = await person('Alice12');
+    await connected([alice]);
+    // The phone believes the laptop waits longer than it does — six seconds
+    // and a margin of one, against the laptop's two and half of one — and
+    // its person confirms three seconds after the laptop's.
+    alice.svc.linkTimeout = const Duration(seconds: 6);
+    alice.svc.linkMargin = const Duration(seconds: 1);
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    final before = await held();
+    final n = await NewDeviceLink.create();
+    final code = PairingCode.parse(n.code);
+    DateTime? laptopAt;
+    final hosted = alice.svc
+        .hostDeviceLink(n.code, confirmSas: (_) async {
+          await waitUntil(() => laptopAt != null,
+              what: "the laptop's person confirmed");
+          await Future<void>.delayed(laptopAt!
+              .add(const Duration(seconds: 3))
+              .difference(DateTime.now()));
+          return true;
+        })
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final laptop = await n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async {
+            laptopAt = DateTime.now();
+            return true;
+          },
+          timeout: const Duration(seconds: 2),
+          margin: const Duration(milliseconds: 500),
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    expect(laptop, isA<TimeoutException>(),
+        reason: 'the laptop stopped waiting for the enrolment');
+    final phone = await hosted;
+    expect(phone, isA<PairingAbort>(),
+        reason: 'the phone lists nothing: the laptop never said it installed '
+            'the enrolment');
+    expect('$phone', contains('did not finish linking'));
+    expect(await alice.svc.linkedDevices(), isEmpty);
+    expect(await alice.svc.ownDeviceListVersion(), listBefore);
+    final left = await peek(await RelayPairing.relayIdentityV3(code, 'i'));
+    expect(kinds(left), ['enroll-v3'],
+        reason: 'the enrolment waits at the relay, unacknowledged');
+    final now = await held();
+    // ignore: avoid_print
+    print('an enrolment that came too late: the relay held $before before '
+        'and $now after (envelopes, bytes)');
+    expect(now, (before.$1 + 1, before.$2 + charged(left.single.payload)),
+        reason: 'the enrolment alone, for QUEUE_TTL_HOURS');
+  });
+
+  test(
+      '13. an enrolment the laptop cannot open is not acknowledged, and the '
+      'phone lists nothing', () async {
+    final alice = await person('Alice13');
+    await connected([alice]);
+    alice.svc.linkTimeout = const Duration(seconds: 3);
+    alice.svc.linkMargin = const Duration(seconds: 1);
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    // The laptop connects through a front that spoils the sealed blob on its
+    // way: one base64 character changed.
+    final tap = await Recorder.start(relayUrl(),
+        hand: (f) => [Recorder.kindOf(f) == 'enroll-v3' ? spoiled(f) : f]);
+    try {
+      final n = await NewDeviceLink.create();
+      final code = PairingCode.parse(n.code);
+      final hosted = alice.svc
+          .hostDeviceLink(n.code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final laptop = await n
+          .run(
+            relayUrl: tap.url,
+            confirm: (_) async => true,
+            timeout: const Duration(seconds: 3),
+            margin: const Duration(seconds: 1),
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      expect(laptop, isNot(isA<PairingResult>()),
+          reason: 'the spoiled enrolment does not open');
+      final phone = await hosted;
+      expect(phone, isA<PairingAbort>(),
+          reason: 'the phone lists nothing: the laptop never said it '
+              'installed the enrolment');
+      expect('$phone', contains('did not finish linking'));
+      expect(await alice.svc.linkedDevices(), isEmpty);
+      expect(await alice.svc.ownDeviceListVersion(), listBefore);
+      expect(kinds(await peek(await RelayPairing.relayIdentityV3(code, 'i'))),
+          ['enroll-v3'],
+          reason: 'the enrolment waits at the relay, unacknowledged');
+    } finally {
+      await tap.close();
+    }
+  });
+
+  test(
+      '14. an enrolment the laptop cannot install is not acknowledged, and '
+      'the phone lists nothing', () async {
+    final alice = await person('Alice14');
+    await connected([alice]);
+    alice.svc.linkTimeout = const Duration(seconds: 3);
+    alice.svc.linkMargin = const Duration(seconds: 1);
+    final listBefore = await alice.svc.ownDeviceListVersion();
+    final n = await NewDeviceLink.create();
+    final code = PairingCode.parse(n.code);
+    final hosted = alice.svc
+        .hostDeviceLink(n.code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    // The link screen installs the enrolment as the ceremony's last step;
+    // here the vault refuses the write.
+    var installing = false;
+    final laptop = await n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+          install: (result) async {
+            installing = true;
+            throw const FileSystemException('the vault refused the write');
+          },
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    expect(installing, isTrue, reason: 'the enrolment opened, and came to '
+        'be installed');
+    expect(laptop, isA<FileSystemException>());
+    final phone = await hosted;
+    expect(phone, isA<PairingAbort>(),
+        reason: 'the phone lists nothing: the laptop never said it installed '
+            'the enrolment');
+    expect('$phone', contains('did not finish linking'));
+    expect(await alice.svc.linkedDevices(), isEmpty);
+    expect(await alice.svc.ownDeviceListVersion(), listBefore);
+    expect(kinds(await peek(await RelayPairing.relayIdentityV3(code, 'i'))),
+        ['enroll-v3'],
+        reason: 'the enrolment waits at the relay, unacknowledged');
   });
 }

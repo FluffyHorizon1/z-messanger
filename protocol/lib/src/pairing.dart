@@ -364,6 +364,31 @@ class PairingNoAnswer extends PairingAbort {
             'updated');
 }
 
+/// A v3 existing device's person confirmed the digits too long after the new
+/// device's (§10.2): the new device acknowledged the reply when its person
+/// confirmed, and waits for the enrolment for the ceremony's timeout and the
+/// enrolment's margin from then (`RelayPairing.enrolmentMargin`), so one
+/// sent now would reach it, if at all, after it stopped. Nothing is sent and
+/// nothing linked. [since] is how long before this device's person confirmed
+/// the relay reported that acknowledgement.
+class PairingPeerGaveUp extends PairingAbort {
+  final Duration since;
+  const PairingPeerGaveUp(this.since)
+      : super('the new device has stopped waiting for this one, or will '
+            'before the enrolment could reach it');
+}
+
+/// A v3 existing device sent the enrolment, and the relay did not report
+/// the new device's acknowledgement of it within the time the new device
+/// can take (§10.2). The new device acknowledges the enrolment once it has
+/// opened and installed it, so it did not finish linking — it stopped
+/// waiting first, or could not open or install what it was sent — and the
+/// existing device links nothing.
+class PairingPeerUnfinished extends PairingAbort {
+  const PairingPeerUnfinished()
+      : super('the new device did not finish linking');
+}
+
 /// A rendezvous frame's fixed-width field: a string that decodes to exactly
 /// [length] bytes, or the ceremony aborts.
 ///

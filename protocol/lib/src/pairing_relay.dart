@@ -27,12 +27,14 @@ import 'util.dart';
 /// existing device keeps its connection until the relay reports the new
 /// device's acknowledgement of the enrolment, so that the relay's receipt
 /// for it is handed over rather than queued at a mailbox nobody reads again.
-/// One frame is acknowledged later: in v3 the new device acknowledges the
-/// reply only once its person has said the digits match, and the existing
-/// device sends the enrolment only once the relay has reported that. A copy
-/// of a frame that the relay delivers again is dropped and never
-/// acknowledged ([_Mailbox]). The v1 runners are left as builds before v2
-/// ran them.
+/// Two frames are acknowledged later in v3, and each acknowledgement is a
+/// signal: the new device acknowledges the reply only once its person has
+/// said the digits match, and the existing device sends the enrolment only
+/// once the relay has reported that; and it acknowledges the enrolment only
+/// once it has installed it, and the existing device links it only on that
+/// report. A copy of a frame that the relay delivers again is dropped and
+/// never acknowledged ([_Mailbox]). The v1 runners are left as builds before
+/// v2 ran them.
 
 const String _relayCtx = 'z-pair-relay:';
 // v2 (§10.1) derives its throwaway mailboxes from a different context, so a
@@ -43,11 +45,12 @@ const String _relayCtxV2 = 'z-pair-relay-v2:';
 // v3 (§10.2) the same way again: v3 transacts only on its own mailboxes.
 const String _relayCtxV3 = 'z-pair-relay-v3:';
 
-/// The longest an existing device waits, once its enrolment is sent, for the
-/// relay to report that the new device acknowledged it. The new device
+/// The longest a v2 existing device waits, once its enrolment is sent, for
+/// the relay to report that the new device acknowledged it. A v2 new device
 /// acknowledges the moment it reads the frame, so the report comes back
-/// within a poll or two; a new device that is gone never acknowledges, and
-/// the wait ends here rather than at the ceremony's timeout.
+/// within a poll or two; one that is gone never acknowledges, and the wait
+/// ends here rather than at the ceremony's timeout. v3 waits longer, and
+/// links on the report alone ([RelayPairing.runExistingDeviceV3]).
 const Duration _enrolmentReceiptWait = Duration(seconds: 10);
 
 /// One completed enrollment on the new device.
@@ -58,6 +61,26 @@ class PairingResult {
 }
 
 class RelayPairing {
+  /// What v3 allows an enrolment, beyond the ceremony's timeout, to be
+  /// sealed, to cross the relay, and to be opened and installed (§10.2):
+  /// fifteen seconds. The new device waits for the enrolment the timeout and
+  /// this margin from its person's confirmation, and the existing device
+  /// sends one only if its own person confirmed within the timeout of that,
+  /// so the margin is all an enrolment has to arrive in.
+  ///
+  /// The enrolment is one relay frame: the app cuts the contacts' state to
+  /// 600 KiB of plaintext, and the relay refuses a frame over 1 000 000
+  /// bytes (§12.4). Signing the certificate and the `pqdc` and sealing take
+  /// well under a second; the rest is the frame going up from the existing
+  /// device and then down to the new one, through a relay that holds it whole
+  /// before it passes it on. Fifteen seconds moves a frame of the cap's size
+  /// at about 1.1 Mbit/s each way, and one of a quarter of it — an account of
+  /// some fifty contacts — at about 270 kbit/s. Too little, and an enrolment
+  /// arrives after the new device stopped waiting: it is not acknowledged,
+  /// and nothing is linked. Too much, and the existing device keeps the
+  /// person waiting longer when the new device has gone.
+  static const Duration enrolmentMargin = Duration(seconds: 15);
+
   /// A throwaway relay identity for one side of a pairing, derived from the
   /// shared code. role is 'i' (initiator / new device) or 'r' (responder /
   /// existing device).
@@ -268,7 +291,9 @@ class RelayPairing {
       await _sendEnrolment(box,
           to: iMailbox,
           payload: jsonEncode({'k': 'enroll-v2', 'blob': b64(sealed)}),
-          timeout: timeout);
+          wait: timeout < _enrolmentReceiptWait
+              ? timeout
+              : _enrolmentReceiptWait);
       return newDeviceCert;
     } finally {
       await box?.close();
@@ -286,11 +311,20 @@ class RelayPairing {
   /// and opens no second ceremony. That reply is acknowledged once [confirm]
   /// says the digits match, and not otherwise: the existing device sends
   /// nothing of the account before the relay reports the acknowledgement.
+  ///
+  /// The enrolment is waited for [timeout] and [margin] from then, and
+  /// acknowledged only once it is opened and installed — and, with
+  /// [install], kept wherever the caller keeps it: the existing device links
+  /// this one on the relay's report of that acknowledgement, so the report
+  /// means this device has its account. Anything that fails before it leaves
+  /// the enrolment unacknowledged, and the existing device links nothing.
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
+    Duration margin = enrolmentMargin,
+    Future<void> Function(PairingResult result)? install,
   }) async {
     final box =
         await _Mailbox.open(relayUrl, await relayIdentityV3(n.code, 'i'));
@@ -321,10 +355,14 @@ class RelayPairing {
       if (!await confirm(session.sas)) return null;
       box.acknowledge(replied.$2);
 
-      final env = await _awaitFrame(box, 'enroll-v3', timeout);
-      final data = await session.openEnrollment(unb64(env['blob'] as String));
-      final account = await n.installFromData(data);
-      return PairingResult(account, data);
+      final enrolment =
+          await _awaitFrameHeld(box, 'enroll-v3', timeout + margin);
+      final data = await session
+          .openEnrollment(unb64(enrolment.$1['blob'] as String));
+      final result = PairingResult(await n.installFromData(data), data);
+      if (install != null) await install(result);
+      box.acknowledge(enrolment.$2);
+      return result;
     } finally {
       await box.close();
     }
@@ -344,13 +382,24 @@ class RelayPairing {
   /// Once [confirm] says the digits match it waits, up to [timeout], for the
   /// relay to report that the new device acknowledged its reply, which the
   /// new device does only once its own person has said they match; without
-  /// that it sends nothing and returns null, as a cancelled link.
+  /// that it sends nothing and returns null, as a cancelled link. When that
+  /// report came more than [timeout] before this device's person confirmed,
+  /// the new device — which waits [timeout] and [margin] from its own
+  /// person's confirmation — would have stopped before an enrolment reached
+  /// it: nothing is sent ([PairingPeerGaveUp]).
   ///
   /// [attest] is asked, once both people have said so, for the new device's
   /// `pqdc` (ADR 0033 §1) — the root's signature over what the session says
   /// the new device opened — and its answer is sealed into the enrolment as
   /// it is; null, or no [attest], sends none. The enrolment never carries
   /// the account root.
+  ///
+  /// The certificate is returned — the caller links the device — only once
+  /// the relay reports the new device's acknowledgement of the enrolment,
+  /// which it makes once it has opened and installed it: waited for as long
+  /// as that can take, the new device's [timeout] and twice [margin]. With
+  /// none, the new device did not finish, and nothing is linked
+  /// ([PairingPeerUnfinished]).
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -362,6 +411,7 @@ class RelayPairing {
     Future<Uint8List?> Function(PairingSessionV3 session)? attest,
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
+    Duration margin = enrolmentMargin,
   }) async {
     // The three connections are made inside the try, one after another, so
     // a relay that refuses the second or the third still has the ones
@@ -399,6 +449,12 @@ class RelayPairing {
       if (!await _awaitAcknowledged(box, 'z-pair-reply', timeout)) {
         return null;
       }
+      // The new device has waited for the enrolment since it acknowledged
+      // the reply, and goes on for [timeout] and [margin] from then. If that
+      // was more than [timeout] before this device's person confirmed, an
+      // enrolment sent now has less than the margin to reach it: none is.
+      final since = box.sinceAcknowledged('z-pair-reply')!;
+      if (since > timeout) throw PairingPeerGaveUp(since);
 
       final newDeviceCert = await session.signedPeerCert(me);
       final sealed = await session.sealEnrollment(me,
@@ -407,10 +463,12 @@ class RelayPairing {
           contactState: contactState,
           hostBundle: hostBundle,
           pqdc: attest == null ? null : await attest(session));
-      await _sendEnrolment(box,
+      if (!await _sendEnrolment(box,
           to: iMailbox,
           payload: jsonEncode({'k': 'enroll-v3', 'blob': b64(sealed)}),
-          timeout: timeout);
+          wait: timeout + margin * 2)) {
+        throw const PairingPeerUnfinished();
+      }
       return newDeviceCert;
     } finally {
       await box?.close();
@@ -491,26 +549,24 @@ class RelayPairing {
   }
 
   /// The existing device's last frame: the enrolment, sent, and then the
-  /// connection held — while it is open, for at most [_enrolmentReceiptWait]
-  /// or [timeout], whichever is shorter — until the relay reports that the
-  /// new device acknowledged it. The relay's receipt for that acknowledgement
-  /// is then handed to this side as it is made, instead of being queued for a
-  /// mailbox nobody reads again. Returns either way: this side's part is
-  /// done once the relay holds the enrolment.
-  static Future<void> _sendEnrolment(_Mailbox box,
+  /// connection held — while it is open, for at most [wait] — until the
+  /// relay reports that the new device acknowledged it; whether it did. The
+  /// relay's receipt for that acknowledgement is handed to this side as it
+  /// is made, instead of being queued for a mailbox nobody reads again. v2
+  /// waits briefly and ignores the answer; v3 links on it.
+  static Future<bool> _sendEnrolment(_Mailbox box,
       {required String to,
       required String payload,
-      required Duration timeout}) async {
+      required Duration wait}) async {
     const id = 'z-pair-enroll';
     await box.client.send(to: to, id: id, payload: payload);
-    final wait =
-        timeout < _enrolmentReceiptWait ? timeout : _enrolmentReceiptWait;
     final deadline = DateTime.now().add(wait);
     while (!box.acknowledged(id) &&
         box.client.isOpen &&
         DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
+    return box.acknowledged(id);
   }
 
   /// Waits for a frame of [kind] (the v1 ceremony's runners).
@@ -555,9 +611,10 @@ class RelayPairing {
 /// not waiting for. Nothing of a ceremony is left on the relay for
 /// `QUEUE_TTL_HOURS` by the side that read it, but a frame taken to be
 /// acknowledged later ([takeHeld]) and never acknowledged — v3's reply, at a
-/// new device whose person said the digits differ — and a frame whose
-/// acknowledgement tells the other device something ([_signals]), which
-/// closing never acknowledges.
+/// new device whose person said the digits differ; v3's enrolment, at one
+/// that could not open or install it — and a frame whose acknowledgement
+/// tells the other device something ([_signals]), which closing never
+/// acknowledges, whatever kept it from being taken.
 ///
 /// A relay delivers at least once (§12.5): it sends a mailbox again on a
 /// new connection, and an HA relay sends one again on a live connection when
@@ -573,19 +630,25 @@ class _Mailbox {
   final RelayClient client;
   final _inbox = <RelayInbound>[];
   final _handedOut = <String>{};
-  final _acknowledged = <String>{};
+
+  /// When the relay reported each of this side's frames acknowledged, by its
+  /// id, on [_clock]: the first report, which is when it was made.
+  final _acknowledged = <String, Duration>{};
+  final _clock = Stopwatch()..start();
   late final StreamSubscription<RelayInbound> _frames;
   late final StreamSubscription<DeliveredReceipt> _receipts;
 
   /// The kinds whose acknowledgement is a signal to the other device: v3's
   /// reply, which the new device acknowledges once its person has said the
-  /// digits match (§10.2). Acknowledged only by the step that means it;
+  /// digits match, and v3's enrolment, which it acknowledges once it has
+  /// installed it (§10.2). Acknowledged only by the step that means it;
   /// closing never acknowledges one.
-  static const _signals = {'reply-v3'};
+  static const _signals = {'reply-v3', 'enroll-v3'};
 
   _Mailbox._(this.client) {
     _frames = client.messages.listen(_arrived);
-    _receipts = client.delivered.listen((r) => _acknowledged.add(r.id));
+    _receipts = client.delivered
+        .listen((r) => _acknowledged.putIfAbsent(r.id, () => _clock.elapsed));
   }
 
   /// A frame by what the relay knows it by: its id and its sender.
@@ -645,7 +708,14 @@ class _Mailbox {
 
   /// Whether the relay has reported that the frame this side sent as [id]
   /// was acknowledged by the mailbox it went to.
-  bool acknowledged(String id) => _acknowledged.contains(id);
+  bool acknowledged(String id) => _acknowledged.containsKey(id);
+
+  /// How long ago the relay reported the frame this side sent as [id]
+  /// acknowledged; null while it has not.
+  Duration? sinceAcknowledged(String id) {
+    final at = _acknowledged[id];
+    return at == null ? null : _clock.elapsed - at;
+  }
 
   void _ack(RelayInbound frame) {
     try {

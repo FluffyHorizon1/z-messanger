@@ -207,6 +207,16 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
       final result = await n.run(
         relayUrl: url,
         confirm: (sas) => confirmSasDialog(context, sas),
+        // Installed before the enrolment is acknowledged: the phone lists
+        // this device on that acknowledgement (§10.2), so a device whose
+        // install failed is not listed. The account, the device that linked
+        // us, every contact as the phone holds them, this device's sealing
+        // key and the `pqdc` that verifies for it (§10; `enrollment.dart`).
+        install: (result) async {
+          await setRelayUrl(widget.vault, url, acceptedInsecure: true);
+          await installEnrollment(widget.vault, result,
+              sealingKey: n.sealingKey);
+        },
       );
       if (result == null) {
         setState(() {
@@ -216,11 +226,6 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
         });
         return;
       }
-      await setRelayUrl(widget.vault, url, acceptedInsecure: true);
-      // The account, the device that linked us, every contact as the phone
-      // holds them, this device's sealing key and the `pqdc` that verifies
-      // for it (§10, §10.2; `enrollment.dart`).
-      await installEnrollment(widget.vault, result, sealingKey: n.sealingKey);
       await widget.onDone();
     } catch (e) {
       setState(() {

@@ -2080,10 +2080,17 @@ acknowledgement. An existing device acknowledges the first frame of an
 older new device it recognises (§10.1 rule 4, rule 6 above) and sends
 nothing else for it: the relay drops the frame, and the older device is
 answered with nothing. The existing device keeps its connection after
-sending its enrollment until the relay's `delivered` for it arrives — at
-most ten seconds — so that the receipt for the new device's acknowledgement
-(§12.5 item 3) is handed to it, not queued for a mailbox nobody reads
-again. So a finished ceremony leaves nothing on the relay. Until 2026‑10‑28 neither side
+sending its enrollment until the relay's `delivered` for it arrives — in
+v2 at most ten seconds, in v3, which links on it, as long as the new device
+can take (below) — so that the receipt for the new device's
+acknowledgement (§12.5 item 3) is handed to it, not queued for a mailbox
+nobody reads again. So a finished ceremony leaves nothing on the relay. A
+v3 ceremony that stops part‑way can leave one thing, for
+`QUEUE_TTL_HOURS`: the `reply-v3` of a link the new device's user refused
+(1 530 bytes); an enrollment that reached a new device that had stopped
+waiting, or could not open or install it; or the relay's receipt (192
+bytes) for a reply the new device acknowledged after the existing device
+had stopped waiting for it. Until 2026‑10‑28 neither side
 acknowledged any frame: all four stayed queued until `QUEUE_TTL_HOURS` (72),
 the enrollment among them — 10 479 bytes of the relay's store for an account
 with one contact, measured through the app at 4.7.2. A frame sent to a side
@@ -2114,6 +2121,38 @@ sent nothing, where until this change the enrollment waited for it at the
 relay — as a new device whose user confirms first has always waited that
 long for the enrollment. No frame changes, and the reference client's v2
 runners are left as they were.
+
+**Linked on the enrollment's acknowledgement (v3).** The new device takes
+`enroll-v3` to be acknowledged later, and acknowledges it only once it has
+opened the enrollment and installed it — the reference client installs it
+into its vault first — so the relay's `delivered` for it says that the new
+device holds its account. The existing device links the new device on that
+report alone: it waits for it as long as the new device can take, and with
+none it links nothing, as for a new device that stopped waiting or could
+not open or install what it was sent. The new device waits for the
+enrollment its timeout and a margin from its user's confirmation; the
+existing device sends one only when its own user confirmed within its
+timeout of the relay's report of that confirmation, since later the
+enrollment would have less than the margin to reach the new device, and
+otherwise it sends nothing. So each user has the timeout — forty seconds
+in the reference client — after the other's confirmation, in either order.
+The reference client's margin is fifteen seconds
+(`RelayPairing.enrolmentMargin`): the enrollment is one relay frame, at most
+1 000 000 bytes (§12.4), and fifteen seconds moves one of that size up from
+the existing device and down to the new one at about 1.1 Mbit/s each way;
+it waits for the report the timeout and twice the margin. What this leaves
+is an installed but unlisted new device, when the report of an
+acknowledgement it made does not reach the existing device — its
+connection drops, or the relay restarts, between the two. That device
+holds the account and the contacts the enrollment carried, and no history;
+its account's list never names it, so its contacts drop what it sends, as
+from a device they do not know, and nothing reaches it; and having learned
+no list version it raises no alarm (ADR 0026). The existing device's
+screen says the new device did not finish linking. The reference client
+does not check for itself that its account lists it: the check needs a
+timeout, and one that fired while the phone was merely offline would
+report a fault where there is none. Reinstalling the app on the new device
+and linking again is the way out. No frame changes.
 
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.

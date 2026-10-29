@@ -455,7 +455,15 @@ encrypted, and since this version post-quantum too, so a recording of it
 will not open even to a future quantum computer — and the matching code on
 both screens is what shows nobody is in between. Nothing of it stays at the
 relay once the link is done; until this version all of it stayed for three
-days.
+days. A link that stops part-way can leave one piece there for those three
+days: your phone's answer, if the new device's person said the codes
+differ, or the account your phone sealed for the new device, if it had
+stopped waiting or could not install it — sealed under a key that neither
+device keeps. Your phone adds the new device only once the new device says
+it has installed your account. If your phone says the new device did not
+finish linking while the new device shows your account anyway, the new
+device is not on your account: nothing it sends is delivered. Reinstall Z
+on it, then link it again.
 
 A newly linked device knows your contacts as your phone does: each one shows
 the same safety number, the same tick if you verified them, the same

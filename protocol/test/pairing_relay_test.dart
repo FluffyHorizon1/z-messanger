@@ -436,6 +436,181 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // The new device acknowledges the enrolment only once it has opened and
+    // installed it, and the existing device links on the relay's report of
+    // that alone. Here a front spoils the sealed blob on its way to the new
+    // device — one base64 character changed — so it does not open: it is
+    // not acknowledged, and the existing device, with no report, links
+    // nothing.
+    test('an enrolment the new device cannot open is not acknowledged, and '
+        'the existing device links nothing', () async {
+      final before = await held();
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      var enrolCharge = 0;
+      final tap = await front(url, (frame) {
+        if (kindOfFrame(frame) != 'enroll-v3') return [frame];
+        final f = (jsonDecode(frame) as Map).cast<String, Object?>();
+        final payload = f['payload'] as String;
+        enrolCharge = charged(payload);
+        final p = (jsonDecode(payload) as Map).cast<String, Object?>();
+        final blob = p['blob'] as String;
+        final i = blob.length ~/ 2;
+        p['blob'] = blob.replaceRange(i, i + 1, blob[i] == 'A' ? 'B' : 'A');
+        return [jsonEncode({...f, 'payload': jsonEncode(p)})];
+      });
+      try {
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(laptop, isNot(isA<PairingResult>()),
+            reason: 'the spoiled enrolment does not open');
+        final outcome = await host;
+        expect(outcome, isA<PairingAbort>(),
+            reason: 'the existing device links nothing: the new device '
+                'never said it installed the enrolment');
+        expect('$outcome', contains('did not finish linking'));
+        expect(await held(), (before.$1 + 1, before.$2 + enrolCharge),
+            reason: 'the enrolment waits at the relay, unacknowledged, and '
+                'nothing else does');
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // The new device acknowledges the reply when its person confirms, and
+    // waits for the enrolment the ceremony's timeout and the margin from
+    // then. An existing device whose person confirms more than the timeout
+    // after that sends nothing: the margin is what an enrolment needs to be
+    // sealed and to reach the new device, and it would arrive, if at all,
+    // after the new device stopped. Inside the margin as past it; within the
+    // timeout the link is made. The people's delays are the scenario: each
+    // stands for a person deliberating, not for a wait on anything.
+    test('an existing device whose person confirms too long after the new '
+        "device's sends nothing", () async {
+      const timeout = Duration(seconds: 3), margin = Duration(seconds: 2);
+      for (final (after, linked) in [
+        (const Duration(milliseconds: 3500), false), // inside the margin
+        (const Duration(milliseconds: 5500), false), // past its whole wait
+        (const Duration(milliseconds: 1500), true), // within the timeout
+      ]) {
+        final before = await held();
+        final code = PairingCode.generate();
+        final desktop = await PairingInitiatorV3.create(
+            code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+        DateTime? acknowledgedAt;
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async {
+            await waitUntil(() => acknowledgedAt != null,
+                what: "the new device's person confirmed");
+            await Future<void>.delayed(
+                acknowledgedAt!.add(after).difference(DateTime.now()));
+            return true;
+          },
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async {
+            acknowledgedAt = DateTime.now();
+            return true;
+          },
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final outcome = await host;
+        final what = "the existing device's person ${after.inMilliseconds} "
+            "ms after the new device's";
+        if (linked) {
+          expect(laptop, isA<PairingResult>(), reason: what);
+          expect(outcome, isA<DeviceCertificate>(), reason: what);
+          await heldAgain(before, what);
+        } else {
+          expect(laptop, isA<TimeoutException>(),
+              reason: '$what: the new device stopped waiting');
+          expect(outcome, isA<PairingAbort>(),
+              reason: '$what: the existing device sends nothing and links '
+                  'nothing');
+          expect('$outcome', contains('stopped waiting'), reason: what);
+          await heldAgain(before, what);
+        }
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // The other side of the same race: an existing device that believes the
+    // new device waits longer than it does — here the new device waits two
+    // seconds and the margin half of one, and the existing device's person
+    // confirms three seconds after its — sends the enrolment, which arrives
+    // after the new device stopped. It is not acknowledged, and the existing
+    // device, with no report, links nothing.
+    test('an enrolment that arrives after the new device stopped waiting is '
+        'not acknowledged, and the existing device links nothing', () async {
+      final before = await held();
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      DateTime? acknowledgedAt;
+      final host = RelayPairing.runExistingDeviceV3(
+        relayUrl: url,
+        code: code,
+        me: await AccountIdentity.generate(),
+        contacts: const [],
+        attest: (s) async => randomBytes(3309),
+        confirm: (s) async {
+          await waitUntil(() => acknowledgedAt != null,
+              what: "the new device's person confirmed");
+          await Future<void>.delayed(acknowledgedAt!
+              .add(const Duration(seconds: 3))
+              .difference(DateTime.now()));
+          return true;
+        },
+        timeout: const Duration(seconds: 6),
+        margin: const Duration(seconds: 1),
+      ).then<Object?>((r) => r, onError: (Object e) => e);
+      final laptop = await RelayPairing.runNewDeviceV3(
+        relayUrl: url,
+        n: desktop,
+        confirm: (s) async {
+          acknowledgedAt = DateTime.now();
+          return true;
+        },
+        timeout: const Duration(seconds: 2),
+        margin: const Duration(milliseconds: 500),
+      ).then<Object?>((r) => r, onError: (Object e) => e);
+      expect(laptop, isA<TimeoutException>(),
+          reason: 'the new device stopped waiting for the enrolment');
+      final outcome = await host;
+      expect(outcome, isA<PairingAbort>(),
+          reason: 'the existing device links nothing: no report came');
+      expect('$outcome', contains('did not finish linking'));
+      final now = await held();
+      expect(now.$1, before.$1 + 1,
+          reason: 'the enrolment, unacknowledged, and nothing else waits at '
+              'the relay');
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {

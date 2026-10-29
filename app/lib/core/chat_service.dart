@@ -8824,13 +8824,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// digits are confirmed on both devices ([_attestLinkedDevice]): the new
   /// device says its person confirmed by acknowledging this one's reply, and
   /// without that nothing of the account is sent and nothing is linked
-  /// (`RelayPairing.runExistingDeviceV3`). The first `pqseal` the device
-  /// then announces its key in is not answered with a second `pqdc`
-  /// ([_enrolledPqdc]). A new device on an older
-  /// version speaks a ceremony this one only listens for: it is recognised
-  /// by its first frame and answered with nothing — [PairingPeerOutdated],
-  /// naming the version it spoke, so the screen can say to update that
-  /// device.
+  /// (`RelayPairing.runExistingDeviceV3`). It lists the device only on the
+  /// relay's report that the new device acknowledged the enrolment, which
+  /// it does once it has installed it: one that did not finish is not listed
+  /// ([PairingPeerUnfinished]), and one whose person confirmed more than
+  /// [linkTimeout] before this one's is sent nothing, as it would have
+  /// stopped waiting before the enrolment arrived ([PairingPeerGaveUp]).
+  /// The first `pqseal` the device then announces its key in is not
+  /// answered with a second `pqdc` ([_enrolledPqdc]). A new device on an
+  /// older version speaks a ceremony this one only listens for: it is
+  /// recognised by its first frame and answered with nothing —
+  /// [PairingPeerOutdated], naming the version it spoke, so the screen can
+  /// say to update that device.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -8873,6 +8878,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                 enrolledPqdc = await _attestLinkedDevice(session),
             confirm: confirmSas,
             timeout: linkTimeout,
+            margin: linkMargin,
           );
     if (linked == null) return false;
     // Before the device is added: its first `pqseal` can arrive as soon as
@@ -8888,6 +8894,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// Tests shorten it.
   @visibleForTesting
   Duration linkTimeout = const Duration(seconds: 40);
+
+  /// What [hostDeviceLink] allows its enrolment, beyond the new device's
+  /// wait, to be sealed, to cross the relay and to be installed: fifteen
+  /// seconds (`RelayPairing.enrolmentMargin`), as the new device allows it.
+  /// Tests shorten both.
+  @visibleForTesting
+  Duration linkMargin = RelayPairing.enrolmentMargin;
 
   /// 44.4 (§10.2 rule 7, ADR 0033 §1): the `pqdc` of the device [session]
   /// is linking — the account's ML-DSA signature over the account key and
