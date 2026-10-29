@@ -397,11 +397,16 @@ class RelayClient {
   /// send to an introduction mailbox carries one, and the relay refuses it
   /// with [RelayPowRequired] when it does not do the work the mailbox's
   /// owner asked for. Every other send carries none.
+  ///
+  /// [timeout] is how long the relay has to say it took the envelope, which
+  /// it says once the whole frame has arrived: twenty seconds, unless the
+  /// caller allows a frame longer to go up.
   Future<void> send({
     required String to,
     required String id,
     required String payload,
     String? pow,
+    Duration timeout = const Duration(seconds: 20),
   }) {
     final completer = Completer<void>();
     _sendAcks[id] = completer;
@@ -412,7 +417,7 @@ class RelayClient {
       'payload': payload,
       if (pow != null) 'pow': pow,
     });
-    return completer.future.timeout(const Duration(seconds: 20), onTimeout: () {
+    return completer.future.timeout(timeout, onTimeout: () {
       _sendAcks.remove(id);
       throw RelayException('send timeout');
     });

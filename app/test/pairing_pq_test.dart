@@ -75,7 +75,12 @@
 //  15. a phone whose person confirms first, and a laptop whose person
 //      confirms after the phone stopped waiting: each screen says why the
 //      link stopped, nothing is linked, and the relay keeps the receipt for
-//      the laptop's late acknowledgement — 192 bytes — and nothing else.
+//      the laptop's late acknowledgement — 192 bytes — and nothing else;
+//  16. a phone that never hears the relay say it took the enrolment: one
+//      whose connection closed once the enrolment had gone up says the
+//      laptop did not finish — not that the connection was lost — and lists
+//      nothing, the laptop having installed it; one whose connection stays
+//      links the laptop on its report.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -112,7 +117,9 @@ typedef Person = ({
 /// and keeps the payload of each pairing frame — what the relay carries —
 /// by its kind (`k`). [hand], when given, says what the client is handed for
 /// each frame the relay sends it: the frame, a copy of it too, another
-/// frame, or nothing.
+/// frame, or nothing. [cut], when given, names the frame from the relay at
+/// which that connection closes instead, both ways: the client is not
+/// handed it, and the relay sees the connection go.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
@@ -121,7 +128,8 @@ class Recorder {
   String get url => 'ws://127.0.0.1:${_server.port}';
 
   static Future<Recorder> start(String relayUrl,
-      {List<String> Function(String frame)? hand}) async {
+      {List<String> Function(String frame)? hand,
+      bool Function(String frame)? cut}) async {
     final r =
         Recorder._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     r._server.listen((req) async {
@@ -130,12 +138,21 @@ class Recorder {
       // authentication against the address the client dialled.
       final up = await WebSocket.connect(relayUrl,
           headers: {'host': req.headers.value('host') ?? ''});
+      var gone = false;
       down.listen((d) {
+        if (gone) return;
         r._note(d, 'send');
         up.add(d);
       }, onDone: () => up.close(), onError: (Object _) => up.close());
       up.listen((d) {
+        if (gone) return;
         r._note(d, 'msg');
+        if (cut != null && d is String && cut(d)) {
+          gone = true;
+          down.close();
+          up.close();
+          return;
+        }
         if (hand == null || d is! String) {
           down.add(d);
         } else {
@@ -170,6 +187,17 @@ class Recorder {
       final k = (jsonDecode(payload) as Map)['k'];
       if (k is String) (frames[k] ??= []).add(payload);
     } catch (_) {}
+  }
+
+  /// Whether [frame], from the relay, is its `sent` for the envelope [id] —
+  /// its word that it took that envelope.
+  static bool sentFor(String frame, String id) {
+    try {
+      final f = jsonDecode(frame);
+      return f is Map && f['t'] == 'sent' && f['id'] == id;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> close() => _server.close(force: true);
@@ -260,9 +288,11 @@ void main() {
   }
 
   /// A service over the vault in [dir], whose identity is the one the vault
-  /// holds. The log is off: what is under test is not the log. Receipts
-  /// leave within a second, so a relay that has gone quiet does so soon.
-  Future<Person> boot(Directory dir, String name, {Vault? vault}) async {
+  /// holds, connecting to the relay — or to [url], a front before it. The
+  /// log is off: what is under test is not the log. Receipts leave within a
+  /// second, so a relay that has gone quiet does so soon.
+  Future<Person> boot(Directory dir, String name,
+      {Vault? vault, String? url}) async {
     final v = vault ?? await Vault.open(rootOverride: dir);
     final id = await ZIdentity.fromJson(
         (jsonDecode((await v.kvGet('identity'))!) as Map)
@@ -271,7 +301,7 @@ void main() {
         vault: v,
         identity: id,
         displayName: await v.kvGet('display_name') ?? name,
-        transport: Transport(identity: id, serverUrl: relayUrl()),
+        transport: Transport(identity: id, serverUrl: url ?? relayUrl()),
         ktConfig: KtConfig.off,
         receiptTiming: const ReceiptTiming(
             floor: Duration(milliseconds: 100),
@@ -283,13 +313,13 @@ void main() {
     return x;
   }
 
-  Future<Person> person(String name) async {
+  Future<Person> person(String name, {String? url}) async {
     final dir = await tempDir(name);
     final vault = await Vault.open(rootOverride: dir);
     await vault.kvPut(
         'identity', jsonEncode((await ZIdentity.generate()).toJson()));
     await vault.kvPut('display_name', name);
-    return boot(dir, name, vault: vault);
+    return boot(dir, name, vault: vault, url: url);
   }
 
   Future<void> waitUntil(bool Function() cond,
@@ -1328,5 +1358,56 @@ void main() {
     print('a laptop that confirmed after the phone stopped waiting: the '
         'relay held $before before and $now after (envelopes, bytes)');
     expect(now, (before.$1 + 1, before.$2 + 192));
+  });
+
+  test(
+      '16. a phone that never hears the relay take its enrolment says the '
+      "laptop did not finish when its connection has gone, and links on the "
+      "laptop's report when it has not", () async {
+    // A front before the phone drops the relay's `sent` for the enrolment,
+    // as a slow connection that takes longer than a send's twenty seconds to
+    // put the enrolment up keeps it from the phone in time; the first time
+    // it closes the phone's connection with it, once the enrolment has gone
+    // up.
+    for (final cut in [true, false]) {
+      final what =
+          cut ? 'its connection closed with the `sent`' : 'no `sent`';
+      final rec = await Recorder.start(relayUrl(),
+          hand: (f) => Recorder.sentFor(f, 'z-pair-enroll') ? const [] : [f],
+          cut: cut ? (f) => Recorder.sentFor(f, 'z-pair-enroll') : null);
+      try {
+        final alice = await person('Alice16${cut ? 'a' : 'b'}', url: rec.url);
+        await connected([alice]);
+        alice.svc.linkTimeout = const Duration(seconds: 3);
+        alice.svc.linkMargin = const Duration(seconds: 1);
+        final n = await NewDeviceLink.create();
+        final hosted = alice.svc
+            .hostDeviceLink(n.code, confirmSas: (_) async => true)
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await n
+            .run(
+              relayUrl: relayUrl(),
+              confirm: (_) async => true,
+              timeout: const Duration(seconds: 3),
+              margin: const Duration(seconds: 1),
+            )
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        expect(laptop, isA<PairingResult>(),
+            reason: '$what: the laptop installed the enrolment, and said so');
+        final phone = await hosted;
+        if (cut) {
+          expect(phoneScreen(phone), phoneUnfinished,
+              reason: '$what: the phone cannot tell whether the laptop '
+                  'finished, and says what it says of any enrolment with no '
+                  'report — not that the connection was lost');
+          expect(await alice.svc.linkedDevices(), isEmpty, reason: what);
+          continue;
+        }
+        expect(phone, isTrue, reason: '$what: the report links the laptop');
+        expect(await alice.svc.linkedDevices(), hasLength(1), reason: what);
+      } finally {
+        await rec.close();
+      }
+    }
   });
 }

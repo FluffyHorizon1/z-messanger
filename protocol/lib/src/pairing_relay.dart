@@ -402,9 +402,13 @@ class RelayPairing {
   /// The certificate is returned — the caller links the device — only once
   /// the relay reports the new device's acknowledgement of the enrolment,
   /// which it makes once it has opened and installed it: waited for as long
-  /// as that can take, the new device's [timeout] and twice [margin]. With
-  /// none, the new device did not finish, and nothing is linked
-  /// ([PairingPeerUnfinished]).
+  /// as that can take, the new device's [timeout] and twice [margin], and
+  /// whether or not the relay has said it took the enrolment. With none,
+  /// the new device did not finish, and nothing is linked
+  /// ([PairingPeerUnfinished]) — and so too when this side's connection
+  /// closes once the enrolment has started up it, or the relay refuses it:
+  /// the report cannot come then, and the new device may hold its account
+  /// all the same, which a lost connection would not say.
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -468,7 +472,7 @@ class RelayPairing {
           contactState: contactState,
           hostBundle: hostBundle,
           pqdc: attest == null ? null : await attest(session));
-      if (!await _sendEnrolment(box,
+      if (!await _sendEnrolmentV3(box,
           to: iMailbox,
           payload: jsonEncode({'k': 'enroll-v3', 'blob': b64(sealed)}),
           wait: timeout + margin * 2)) {
@@ -553,12 +557,13 @@ class RelayPairing {
     return true;
   }
 
-  /// The existing device's last frame: the enrolment, sent, and then the
-  /// connection held — while it is open, for at most [wait] — until the
+  /// v2's last frame from the existing device: the enrolment, sent, and then
+  /// the connection held — while it is open, for at most [wait] — until the
   /// relay reports that the new device acknowledged it; whether it did. The
   /// relay's receipt for that acknowledgement is handed to this side as it
   /// is made, instead of being queued for a mailbox nobody reads again. v2
-  /// waits briefly and ignores the answer; v3 links on it.
+  /// waits briefly and ignores the answer; v3 links on it
+  /// ([_sendEnrolmentV3]).
   static Future<bool> _sendEnrolment(_Mailbox box,
       {required String to,
       required String payload,
@@ -567,6 +572,46 @@ class RelayPairing {
     await box.client.send(to: to, id: id, payload: payload);
     final deadline = DateTime.now().add(wait);
     while (!box.acknowledged(id) &&
+        box.client.isOpen &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    return box.acknowledged(id);
+  }
+
+  /// v3's last frame from the existing device: the enrolment, sent, and the
+  /// connection then held — while it is open, for at most [wait] — until the
+  /// relay reports that the new device acknowledged it; whether it did.
+  ///
+  /// The report is all that counts, and the relay's `sent` for the frame is
+  /// not waited for: it says only that the relay took the frame, once the
+  /// whole of it had arrived, and the enrolment can be installed and
+  /// acknowledged without this side ever hearing it. An enrolment near the
+  /// frame cap on a slow connection takes longer than
+  /// [RelayClient.send]'s twenty seconds to go up, and the new device, which
+  /// waits the margin for it, installs it all the same; and a connection
+  /// that closes once the frame has gone up takes its `sent` with it. Both
+  /// used to throw out of here as a lost connection, with the new device
+  /// installed and nothing listed. Now the wait goes on while the
+  /// connection is open, and stops without a report when the relay refuses
+  /// the frame or the connection closes: the caller then links nothing and
+  /// says the new device did not finish ([PairingPeerUnfinished]).
+  static Future<bool> _sendEnrolmentV3(_Mailbox box,
+      {required String to,
+      required String payload,
+      required Duration wait}) async {
+    const id = 'z-pair-enroll';
+    var refused = false;
+    // A connection that has already closed refuses the frame as it is handed
+    // over, and that throws from here: nothing of the enrolment left, and
+    // the connection is as lost as at any other step. A refusal after it
+    // has started up fails the send's future, and ends the wait.
+    unawaited(box.client
+        .send(to: to, id: id, payload: payload, timeout: wait)
+        .then<void>((_) {}, onError: (Object _) => refused = true));
+    final deadline = DateTime.now().add(wait);
+    while (!box.acknowledged(id) &&
+        !refused &&
         box.client.isOpen &&
         DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 25));

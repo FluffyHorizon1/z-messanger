@@ -2140,7 +2140,19 @@ The reference client's margin is fifteen seconds
 (`RelayPairing.enrolmentMargin`): the enrollment is one relay frame, at most
 1 000 000 bytes (§12.4), and fifteen seconds moves one of that size up from
 the existing device and down to the new one at about 1.1 Mbit/s each way;
-it waits for the report the timeout and twice the margin. What this leaves
+it waits for the report the timeout and twice the margin. It waits for the
+report alone, and not for the relay's `sent` for the enrollment, which says
+only that the relay holds the whole frame: on a slow connection an
+enrollment near that size takes longer than the reference client's
+twenty‑second send timeout to go up, and the new device installs it within
+the margin all the same, so the existing device waits on while its
+connection is open. When its connection closes once the enrollment has
+started up, or the relay refuses the frame, no report can reach it: it
+links nothing and says the new device did not finish, not that the
+connection was lost, since the new device may hold its account all the
+same. Until 2026‑10‑29 a `sent` that came late or not at all ended the link
+on the existing device as a lost connection, while the new device installed
+the enrollment, unlisted. What this leaves
 is an installed but unlisted new device, when the report of an
 acknowledgement it made does not reach the existing device — its
 connection drops, or the relay restarts, between the two. That device

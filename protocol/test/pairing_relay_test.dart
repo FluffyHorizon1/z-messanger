@@ -615,6 +615,94 @@ void main() {
               'the relay');
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // The existing device links on the relay's report of the new device's
+    // acknowledgement alone. It does not wait for the relay's `sent` for the
+    // enrolment, nor give up when that is late or never comes: an enrolment
+    // near the frame cap, on a slow connection, takes longer than a send's
+    // twenty seconds to go up, and the new device installs it all the same.
+    // Here a front before the existing device drops the relay's `sent` for
+    // the enrolment, and the connection stays: the report alone links.
+    test('an existing device that never hears the relay take its enrolment '
+        'links on the report', () async {
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      var dropped = 0;
+      final tap = await front(url, (frame) {
+        if (!isSentFor(frame, 'z-pair-enroll')) return [frame];
+        dropped++;
+        return const [];
+      });
+      try {
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(laptop, isA<PairingResult>(),
+            reason: 'the new device installed the enrolment and said so');
+        expect(await host, isA<DeviceCertificate>(),
+            reason: 'the existing device links on the report, with no `sent`');
+        expect(dropped, 1, reason: "the relay's `sent` never reached it");
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // And when the connection closes with the `sent`, once the enrolment has
+    // gone up, the report cannot reach the existing device. It cannot tell
+    // whether the new device installed the enrolment — which it did — and
+    // says the new device did not finish, as it does for any enrolment with
+    // no report, not that the connection was lost, and links nothing.
+    test('an existing device whose connection closes once its enrolment has '
+        'gone up says the new device did not finish', () async {
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final tap = await front(url, (frame) => [frame],
+          cut: (frame) => isSentFor(frame, 'z-pair-enroll'));
+      try {
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(laptop, isA<PairingResult>(),
+            reason: 'the enrolment reached the new device, which installed '
+                'it: the residual §10.2 names');
+        final outcome = await host;
+        expect(outcome, isA<PairingAbort>(),
+            reason: 'the existing device links nothing: no report came');
+        expect('$outcome', contains('did not finish linking'));
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {
@@ -654,24 +742,47 @@ void main() {
 /// A front before the relay at [relayUrl] for one client: every frame passes
 /// both ways, and [down] says what the client is handed for each frame the
 /// relay sends it — the frame, a copy of it too, something else, or
-/// nothing. The Host header passes through, so the relay checks each
-/// authentication against the address the client dialled.
+/// nothing. [cut], when given, names the frame from the relay at which the
+/// connection closes instead, both ways: the client is not handed it, and
+/// the relay sees the connection go. The Host header passes through, so the
+/// relay checks each authentication against the address the client dialled.
 Future<HttpServer> front(
-    String relayUrl, List<String> Function(String frame) down) async {
+    String relayUrl, List<String> Function(String frame) down,
+    {bool Function(String frame)? cut}) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   server.listen((req) async {
     final client = await WebSocketTransformer.upgrade(req);
     final relay = await WebSocket.connect(relayUrl,
         headers: {'host': req.headers.value('host') ?? ''});
-    client.listen(relay.add,
-        onDone: () => relay.close(), onError: (Object _) => relay.close());
+    var gone = false;
+    client.listen((d) {
+      if (!gone) relay.add(d);
+    }, onDone: () => relay.close(), onError: (Object _) => relay.close());
     relay.listen((d) {
+      if (gone) return;
+      if (cut != null && cut(d as String)) {
+        gone = true;
+        client.close();
+        relay.close();
+        return;
+      }
       for (final f in down(d as String)) {
         client.add(f);
       }
     }, onDone: () => client.close(), onError: (Object _) => client.close());
   });
   return server;
+}
+
+/// Whether [frame], from the relay, is its `sent` for the envelope [id] —
+/// its word that it took that envelope.
+bool isSentFor(String frame, String id) {
+  try {
+    final f = jsonDecode(frame);
+    return f is Map && f['t'] == 'sent' && f['id'] == id;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// What the relay charges an envelope whose payload is [payload] against
