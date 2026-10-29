@@ -289,6 +289,37 @@ void main() {
         reason: 'and still kept');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test('a contact deleted and added back in the same run comes back without '
+      'the banner the deleted one had', () async {
+    // Raised as above. Then Alice deletes Ben and adds him back from his
+    // code without restarting: the row the banner stood in went with him
+    // (`pql_alert_`), and until 2026-10-29 the banner itself stayed in
+    // memory and came back with him.
+    final (alice, ben) =
+        await pairWithDevice('s7', 's8', mode: PqListSuppression.claimOnly);
+    var pinging = true;
+    final pings = () async {
+      for (var i = 0; pinging && i < 60; i++) {
+        try {
+          await ben.sendText(alice.myRid, 'ping $i');
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+    }();
+    addTearDown(() => pinging = false);
+    await waitUntil(() => alice.pqListAlerts[ben.myRid] != null,
+        timeout: const Duration(seconds: 40),
+        what: 'alice is told the signature never arrives');
+    pinging = false;
+    await pings;
+
+    await alice.deleteContact(ben.myRid);
+    expect(await alice.vault.kvGet('pql_alert_${ben.myRid}'), isNull);
+    await alice.addContactFromCode(await ben.myContactCode());
+    expect(alice.pqListAlerts[ben.myRid], isNull,
+        reason: 'a contact added back starts from nothing');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   // 4.7.1: the claim judged where there is a list to judge it over. An
   // account still at list version 1 — as a new one that has never linked a
   // device is — never sends its list: a contact computes that baseline from the code,

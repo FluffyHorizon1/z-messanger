@@ -3059,6 +3059,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _pokeSentMs.remove(rid);
     _heardFrom.remove(rid);
     _dlResent.remove(rid);
+    // 7.7a (§3.6, §18.9): and what this process held of what their devices
+    // claimed about their list — the claims, a check waiting out its grace,
+    // the two banners — whose rows (`cdl_claims_`, `cdl_alert_`,
+    // `pql_alert_`) went with the families above. Kept, a contact deleted
+    // and added back in the same run came back with the banner the deleted
+    // one had, and the next claim judged against the old ones wrote them back
+    // ([_saveClaims]).
+    _contactClaims.remove(rid);
+    _pendingContact.remove(rid);
+    contactDevlistAlerts.remove(rid);
+    pqListAlerts.remove(rid);
     // ADR 0026: what this device asked them about my account, what they
     // handed over, and what it counted against them.
     _pendingOwnerEcho.remove(rid);

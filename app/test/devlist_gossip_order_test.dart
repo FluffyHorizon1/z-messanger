@@ -70,7 +70,12 @@
 //      dl_rollback, which stays until the contact next writes);
 //   6. and nothing either when the list has been read and acted on before
 //      the texts arrive (on ef550b5 they raise dl_rollback; on 4a716af too,
-//      where a claim was recorded once its message had been acted on).
+//      where a claim was recorded once its message had been acted on);
+//   7. a contact deleted and added back in the same run starts from
+//      nothing: the banner the deleted one had and the claims behind it are
+//      gone, and what their device claims from then on is judged on its own
+//      (on ef550b5 the banner comes back with them, in memory, and the old
+//      claims are written back with the next one).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -311,6 +316,60 @@ void main() {
     return s == null ? null : (jsonDecode(s) as Map)['k'] as String?;
   }
 
+  /// Bob links a device (version 2) and a backup of his account is taken;
+  /// he links another (version 3), and his device says so to Vic; then it
+  /// goes quiet, and the backup comes up as it and says something to Vic.
+  /// Returns Vic and the backup — Bob, to her — once she has read it. Vic
+  /// waits an hour for a list a device claims and nobody hands her: nothing
+  /// raised here can be that (§3.6), only the rollback rule's.
+  Future<(ChatService, ChatService)> backupSpeaks(String n) async {
+    final vic = await start('vic$n');
+    final bob = await start('bob$n');
+    vic.devlistGrace = const Duration(hours: 1);
+    await introduce(vic, bob);
+    await link(bob, await deviceOf(bob, 'tablet'));
+    await waitUntil(
+        () async => await vic.heldContactListVersion(bob.myRid) == 2,
+        what: "Vic installs Bob's version 2");
+
+    // Bob's backup as it stands now — the device's identity, the account's
+    // root, its devices at version 2 — in someone else's hands.
+    final identity = (await bob.vault.kvGet('identity'))!;
+    final account = jsonEncode((await bob.accountIdentity()).toJson());
+    final devices = (await bob.vault.kvGet('my_devices'))!;
+
+    // Bob moves on, and his device says so to Vic.
+    await link(bob, await deviceOf(bob, 'phone2'));
+    await waitUntil(
+        () async => await vic.heldContactListVersion(bob.myRid) == 3,
+        what: "Vic installs Bob's version 3");
+    await heard(bob, vic, 'at version 3');
+    expect(vic.contactDevlistAlerts[bob.myRid], isNull);
+
+    // Bob's device goes quiet, and the backup comes up as it.
+    await stop(bob);
+    final dir = dirs['bob${n}backup'] =
+        await Directory.systemTemp.createTemp('z_ord_bob${n}backup');
+    final vault = await Vault.open(rootOverride: dir);
+    await vault.kvPut('identity', identity);
+    await vault.kvPut('account', account);
+    await vault.kvPut('my_devices', devices, sensitive: false);
+    await vault.kvPut('my_devlist_version', '2', sensitive: false);
+    final backup = await run(
+        'bob${n}backup',
+        vault,
+        await ZIdentity.fromJson(
+            (jsonDecode(identity) as Map).cast<String, Object?>()));
+    expect(backup.myRid, bob.myRid, reason: "it speaks as Bob's device");
+    expect(await backup.ownDeviceListVersion(), 2);
+    await waitUntil(() => linked(backup), what: 'the backup connected');
+    await add(backup, await vic.myContactCode());
+    await say(backup, vic.myRid, 'still me');
+    await waitUntil(() => received(vic, bob.myRid, 'still me'),
+        what: 'Vic reads the backup, as Bob');
+    return (vic, backup);
+  }
+
   /// Vic, and Bob sending through a [_HoldingTransport]. While Vic is away
   /// Bob says two things, his list at version 1, and what he sends her waits
   /// for her, as the relay keeps it. She comes back, and while her backlog is
@@ -442,53 +501,7 @@ void main() {
       '2. a backup of the account from before its last list, speaking as its '
       'device after that device claimed the newer one, raises dl_rollback',
       () async {
-    final vic = await start('vic2');
-    final bob = await start('bob2');
-    // Nothing waits out a grace here: what is raised is the rollback rule's,
-    // and an unconfirmed list's (§3.6) cannot be.
-    vic.devlistGrace = const Duration(hours: 1);
-    await introduce(vic, bob);
-    await link(bob, await deviceOf(bob, 'tablet'));
-    await waitUntil(
-        () async => await vic.heldContactListVersion(bob.myRid) == 2,
-        what: "Vic installs Bob's version 2");
-
-    // Bob's backup as it stands now — the device's identity, the account's
-    // root, its devices at version 2 — in someone else's hands.
-    final identity = (await bob.vault.kvGet('identity'))!;
-    final account = jsonEncode((await bob.accountIdentity()).toJson());
-    final devices = (await bob.vault.kvGet('my_devices'))!;
-
-    // Bob moves on, and his device says so to Vic.
-    await link(bob, await deviceOf(bob, 'phone2'));
-    await waitUntil(
-        () async => await vic.heldContactListVersion(bob.myRid) == 3,
-        what: "Vic installs Bob's version 3");
-    await heard(bob, vic, 'at version 3');
-    expect(vic.contactDevlistAlerts[bob.myRid], isNull);
-
-    // Bob's device goes quiet, and the backup comes up as it.
-    await stop(bob);
-    final dir = dirs['bob2backup'] =
-        await Directory.systemTemp.createTemp('z_ord_bob2backup');
-    final vault = await Vault.open(rootOverride: dir);
-    await vault.kvPut('identity', identity);
-    await vault.kvPut('account', account);
-    await vault.kvPut('my_devices', devices, sensitive: false);
-    await vault.kvPut('my_devlist_version', '2', sensitive: false);
-    final backup = await run(
-        'bob2backup',
-        vault,
-        await ZIdentity.fromJson(
-            (jsonDecode(identity) as Map).cast<String, Object?>()));
-    expect(backup.myRid, bob.myRid, reason: "it speaks as Bob's device");
-    expect(await backup.ownDeviceListVersion(), 2);
-    await waitUntil(() => linked(backup), what: 'the backup connected');
-    await add(backup, await vic.myContactCode());
-    await say(backup, vic.myRid, 'still me');
-    await waitUntil(() => received(vic, bob.myRid, 'still me'),
-        what: 'Vic reads the backup, as Bob');
-
+    final (vic, bob) = await backupSpeaks('2');
     await waitUntil(() => vic.contactDevlistAlerts[bob.myRid] != null,
         what: "Vic says Bob's device list went back");
     expect(alertKind(vic, bob.myRid), 'dl_rollback',
@@ -638,5 +651,39 @@ void main() {
     }
     await Future.wait([for (final e in kept.sublist(0, backlog)) hand(vic, e)]);
     await nothingWentBack(vic, bob, read);
+  });
+
+  test(
+      '7. a contact deleted and added back in the same run starts from '
+      'nothing: no banner and no claims of the one deleted', () async {
+    final (vic, bob) = await backupSpeaks('7');
+    await waitUntil(() => vic.contactDevlistAlerts[bob.myRid] != null,
+        what: "Vic says Bob's device list went back");
+    String? banner() => vic.contactDevlistAlerts[bob.myRid];
+
+    // Vic deletes Bob, and adds him back from his code, in the same run.
+    await inside(vic, () => vic.deleteContact(bob.myRid));
+    expect(await vic.vault.kvGet('cdl_alert_${bob.myRid}'), isNull);
+    expect(await vic.vault.kvGet('cdl_claims_${bob.myRid}'), isNull);
+    await add(vic, await bob.myContactCode());
+    expect(banner(), isNull,
+        reason: 'a contact added back starts from nothing: the banner went '
+            'with the one deleted');
+
+    // They speak again. What his device claims now — version 2, as before
+    // — is the first claim of his this contact has seen.
+    await heard(vic, bob, 'back again');
+    await heard(bob, vic, 'still me, again');
+    Future<Map<String, Object?>?> stored() async {
+      final s = await vic.vault.kvGet('cdl_claims_${bob.myRid}');
+      return s == null ? null : (jsonDecode(s) as Map).cast<String, Object?>();
+    }
+
+    await waitUntil(() async => (await stored()) != null,
+        what: "Vic writes down Bob's device's claim");
+    expect((await stored())![bob.myRid], containsPair('mx', 2),
+        reason: 'the highest it has claimed is the one it claims now, not '
+            "the deleted contact's version 3");
+    expect(banner(), isNull);
   });
 }
