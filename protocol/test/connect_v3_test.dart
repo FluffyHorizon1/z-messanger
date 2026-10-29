@@ -98,7 +98,12 @@ import 'package:z_protocol/z_protocol.dart';
 //     to the same ceremony: one string, messages 2 and 3 each one message —
 //     one encapsulation, one decapsulation — and the mailboxes left empty
 //     but for the second message 4 that dying before acknowledging message
-//     3 leaves, which the finished inviter never reads;
+//     3 leaves, which the finished inviter never reads. One that dies just
+//     after any of them comes back from it to the same ceremony, the
+//     mailboxes left empty but for what the round that reached the digits
+//     read, when the write it died after was that round's: a run holding
+//     its session never connects again to acknowledge it — message 3 in the
+//     acceptor's mailbox, message 4 in the inviter's;
 // 15. a message 2 or 3 its app could not write down before its post — the
 //     vault refusing that write, and the one after the round threw — is
 //     written down before the next round posts it again, so an app that
@@ -1392,9 +1397,11 @@ void main() {
       // [persist] made or, once a round is over, the run as it then is.
       // With [dieAt], the app dies at that write — it throws there, and
       // nothing after it in the round happens — and comes back from the
-      // record before it. What was written, where it ended, and what the
-      // relay was asked to carry and still holds.
-      Future<(List<String>, String)> ceremony({int? dieAt}) async {
+      // record before it; with [after] too, it dies just after that write,
+      // and comes back from it. What was written, where it ended, and what
+      // the relay was asked to carry and still holds, by mailbox.
+      Future<(List<String>, String)> ceremony(
+          {int? dieAt, bool after = false}) async {
         seen.clear();
         final start = await ConnectRunV3.invite(
             me: alice.id, sealKey: alice.sealKey, pqKey: alice.pqKey);
@@ -1424,17 +1431,17 @@ void main() {
             writes.add(held is Map
                 ? '$side before posting ${held['id']}'
                 : '$side before acknowledging');
-            if (writes.length - 1 == dieAt) {
-              throw StateError('the app died here');
-            }
+            final dies = writes.length - 1 == dieAt;
+            if (dies && !after) throw StateError('the app died here');
             record[side] = jsonEncode(r.toJson());
+            if (dies) throw StateError('the app died just after');
           }
 
           try {
             await r.step(relayUrl: url, poll: p, persist: persist);
             record[side] = jsonEncode(r.toJson());
           } on StateError {
-            // Killed: what it comes back to is the record as it was.
+            // Killed: what it comes back to is the record as it was left.
           }
           run[side] = await back(side);
         }
@@ -1443,8 +1450,11 @@ void main() {
               for (final f in seen)
                 if (f['t'] == 'send' && f['id'] == id) f['payload']
             };
-        final left = [...await peek(code, 'i'), ...await peek(code, 'r')]
-            .where((e) => e.id.startsWith('z-connect-c'));
+        final left = [
+          for (final role in const ['i', 'r'])
+            for (final e in await peek(code, role))
+              if (e.id.startsWith('z-connect-c')) '$role:${e.id}'
+        ];
         final both = inv.session != null &&
             acc.session != null &&
             inv.session!.sas == acc.session!.sas &&
@@ -1454,7 +1464,7 @@ void main() {
           writes,
           '${both ? 'one string' : 'no string'}; messages 2: '
               '${messages('z-connect-c2').length}, 3: '
-              '${messages('z-connect-c3').length}; left: ${left.length}'
+              '${messages('z-connect-c3').length}; left: $left'
         );
       }
 
@@ -1467,7 +1477,7 @@ void main() {
         'r before acknowledging',
         'i before acknowledging',
       ]);
-      expect(whole, 'one string; messages 2: 1, 3: 1; left: 0');
+      expect(whole, 'one string; messages 2: 1, 3: 1; left: []');
       expect([
         for (var at = 0; at < writes.length; at++)
           (await ceremony(dieAt: at)).$2
@@ -1477,9 +1487,23 @@ void main() {
           // acceptor has posted its message 4 and does the round again from
           // message 3, which the relay still holds: the same digits, and a
           // second message 4 the inviter, already finished, never reads.
-          'one string; messages 2: 1, 3: 1; left: ${at == 4 ? 1 : 0}'
+          'one string; messages 2: 1, 3: 1; left: '
+              '${at == 4 ? '[i:z-connect-c4]' : '[]'}'
       ]);
-    }, timeout: const Timeout(Duration(minutes: 4)));
+      // Killed just after the write that the round reaching the digits
+      // makes before acknowledging what it read, the app comes back to a
+      // run that holds its session, and that never connects again: what the
+      // round read stays at the relay unacknowledged — message 3 in the
+      // acceptor's mailbox, message 4 in the inviter's (§20.5).
+      const leftAfter = {4: '[r:z-connect-c3]', 5: '[i:z-connect-c4]'};
+      expect([
+        for (var at = 0; at < writes.length; at++)
+          (await ceremony(dieAt: at, after: true)).$2
+      ], [
+        for (var at = 0; at < writes.length; at++)
+          'one string; messages 2: 1, 3: 1; left: ${leftAfter[at] ?? '[]'}'
+      ]);
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('15. a message 2 or 3 its app could not write down before its post '
         'is written down before it is posted again', () async {

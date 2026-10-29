@@ -5239,8 +5239,8 @@ the round, and the one after — the next round posted it over the record from
 before it was drawn, and an app that died then came back to that record and
 drew the message again.
 
-What can still be left is a copy at the relay that nobody reads, in two
-ways. Message 4, posted in the round that completes the ceremony, is not
+What can still be left at the relay is a ceremony frame nobody reads, in
+three ways. Message 4, posted in the round that completes the ceremony, is not
 held: an app that dies after the relay took it and before that round is
 written down does the round again from message 3, which the relay still
 holds — the same reveal under the same channel, so the same digits — and if
@@ -5252,7 +5252,13 @@ Once a post of a held message lands it is not posted again, so a failed post
 leaves at most one such copy. A copy of message 2 is not left: the acceptor
 posts it again only before it has message 3, so the copy reaches the
 inviter's mailbox before message 4 does, and the inviter acknowledges it in
-the round that reads message 4. Each is a frame the relay has already
+the round that reads message 4. And the round that reaches the digits
+acknowledges what it read only once it has written the run down: an app that
+dies, or whose link drops, between that write and its acknowledgements
+reaching the relay leaves what that round read — message 3 in the acceptor's
+mailbox, message 4 in the inviter's — since a run that holds its session
+does not connect again. That one is not a copy but the frame itself, read
+and kept by the side it was for. Each is a frame the relay has already
 carried. The messages are the same bytes as before; only a failed post adds
 a post.
 
@@ -5264,7 +5270,12 @@ both mailboxes as the relay, and completes both legs (20.8).
 A client MUST acknowledge (§12.3) every ceremony envelope it has consumed, and
 MUST acknowledge whatever remains in its mailbox once the ceremony completes.
 Otherwise the transcript stays in relay RAM for the queue lifetime, where a
-party who later obtains the code can replay it.
+party who later obtains the code can replay it. The reference client sends
+the acknowledgements of the round that reaches the digits — what that round
+read, and everything else its mailbox then holds — at the end of that round,
+once it has written the run down, and never again: an app that dies before
+they are sent, or a link that drops before they reach the relay, leaves them
+undone — the third way above.
 
 An invite's lifetime is **24 hours** and is enforced by the clients, not by
 the relay: it is well inside `QUEUE_TTL_HOURS`, and the relay is never told.
