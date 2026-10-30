@@ -104,7 +104,12 @@
 //      few messages of the reset, and neither announces again;
 //  21. a device whose stored seed no longer reads as one draws a new key,
 //      and what it held of devices holding the old one goes with it: it
-//      announces the new key, and its contact ends holding it.
+//      announces the new key, and its contact ends holding it;
+//  22. a contact whose store of the restored device's first envelope
+//      fails, and is done again from the relay's redelivery, writes down
+//      that the restored device no longer holds its key, so that after a
+//      restart it still announces its key there, and the restored device
+//      ends holding it.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -263,7 +268,14 @@ void main() {
   tearDownAll(() async {
     log.kill();
     for (final d in temps) {
-      if (d.existsSync()) d.deleteSync(recursive: true);
+      // Best-effort: a stopped service's last write can still be closing its
+      // journal while the directory goes, and a file gone first is no
+      // failure of anything under test.
+      try {
+        if (d.existsSync()) d.deleteSync(recursive: true);
+      } on FileSystemException {
+        // Left for the system's own temp cleanup.
+      }
     }
   });
 
@@ -1892,5 +1904,51 @@ void main() {
       return holdsKey(bob, again.myRid, newKey) &&
           again.debugHoldsMySealKey(bob.myRid);
     }, what: "Bob holding Alice's new key, and saying so");
+  });
+
+  test(
+      "22. a contact whose store of a restored device's first envelope fails "
+      'and is done again writes down that the device holds none of its key: '
+      'after a restart it still announces it there', () async {
+    final (alice, _) = await fresh('alice22');
+    final (bob, bobDir) = await fresh('bob22');
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    final aliceKey = alice.debugSealingKey!;
+
+    // Bob's phone is lost and restored; the archive carries no other
+    // device's key, so the restored device holds none of Alice's. Alice's
+    // next store of an envelope from him fails, as a busy vault's does.
+    final (file, code) = await backup(bob, 'bob22');
+    await lose(bob, bobDir);
+    alice.debugFailInboundStores = 1;
+    final revived = await boot(await restoreInto(bobDir, file, code), 'bob22');
+    await waitUntil(() => up(revived), what: 'the restored device up');
+    expect(revived.debugPqSealOf(alice.myRid), isNull,
+        reason: "the premise: no key of Alice's");
+    await revived.sendText(alice.myRid, 'back');
+    await waitUntil(() => alice.debugFailInboundStores == 0,
+        what: 'the store failing once');
+    // The envelope stayed with the relay, which hands it over again when
+    // her link comes back.
+    await alice.transport.stop();
+    await waitUntil(() => !alice.transport.isConnected,
+        what: 'alice offline');
+    alice.transport.start();
+    await waitUntil(() => texts(alice, revived.myRid).contains('back'),
+        what: "'back' delivered again");
+
+    // Her app restarts at once, before anything else of Bob's is written.
+    final again = await restart(alice, 'alice22');
+    expect(again.debugHoldsMySealKey(revived.myRid), isFalse,
+        reason: 'the new session forgot that he holds her key, on disk');
+    again.pqOfferRetry = 300;
+    revived.pqOfferRetry = 300;
+    var m = 0;
+    await waitFor(() async {
+      await exchange(revived, again, 'after${m++}');
+      return holdsKey(revived, again.myRid, aliceKey) &&
+          again.debugHoldsMySealKey(revived.myRid);
+    }, what: "the restored device holding Alice's key, and saying so");
   });
 }

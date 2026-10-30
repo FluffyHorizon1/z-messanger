@@ -4378,6 +4378,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     });
   }
 
+  /// [_saveSeals] for a contact's record by a caller that holds that
+  /// contact's lock already — the doors their devices come in by — in
+  /// [txn] when given, the step that writes the session.
+  Future<void> _writeSealsLocked(String rid, {DatabaseExecutor? txn}) async {
+    final rec = _contactSeals[rid];
+    if (rec == null || !contacts.containsKey(rid) || _disposed) return;
+    await vault.kvPut('cseal_$rid', rec.encode(), txn: txn);
+  }
+
   /// This device's `pqseal` has gone to [deviceRids], [owner]'s devices or
   /// (null) mine: the clock and the bound run from now.
   Future<void> _noteSealsSent(String? owner, List<String> deviceRids) async {
@@ -4454,7 +4463,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// and within its bound ([_owesPqSeal]), and the next `pqs:1` from that
   /// device ends it as the first did — beside this device's announcement
   /// there, which a new session does not forget ([_keepSeal]). In memory;
-  /// whether anything changed.
+  /// whether anything changed. 4.8.1: on a session the other device opened,
+  /// each door writes it down with that session or before it
+  /// ([_writeSealsLocked]) — written after, a store that failed between the
+  /// two left it in memory alone, and the relay's redelivery found nothing
+  /// left to forget, so a restart brought back the stamp of a device that
+  /// no longer held the key.
   bool _forgetHeldMine(String? owner, String deviceRid) {
     final d = (owner == null ? _ownSeals : _contactSeals[owner])
         ?.devices[deviceRid];
@@ -5759,7 +5773,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // 44.3 (§18.11): a session their device opened — a restore, a
         // re-add — forgets that it holds this device's sealing key, here, in
         // the order the ratchet decrypts, whatever this message turns out to
-        // hold ([_forgetHeldMine]).
+        // hold ([_forgetHeldMine]) — and (4.8.1) written down in the step
+        // that writes the session, below.
         if (dec.createdNewSession &&
             !debugBuildBeforeSealingKeys &&
             _forgetHeldMine(contact.rid, contact.rid)) {
@@ -5806,11 +5821,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         }
         try {
           await vault.db.transaction((txn) async {
+            if (debugFailInboundStores > 0) {
+              debugFailInboundStores--;
+              throw StateError(
+                  "debugFailInboundStores: the contact door's store");
+            }
             // Persist the advanced ratchet before acting on content — and
             // its skipped-key cache in the SAME transaction, because `nr`
             // advancing without the keys it stepped over would lose those
             // messages when they arrive.
             await _saveConv(contact.rid, txn: txn);
+            // 4.8.1: and, on a session their device opened, what this one
+            // holds of it with the forgetting above ([_forgetHeldMine]).
+            if (dec.createdNewSession && !debugBuildBeforeSealingKeys) {
+              await _writeSealsLocked(contact.rid, txn: txn);
+            }
             // Only when the cache changed. An in-order message — the common
             // case — neither adds a key nor consumes one, and re-sealing an
             // unchanged cache cost 13.7 ms per receive at the cap (measured,
@@ -9727,6 +9752,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         if (!debugBuildBeforeSealingKeys && _forgetHeldMine(null, deviceRid)) {
           unawaited(_saveSeals(null).then((_) {}, onError: (_) {}));
         }
+      },
+      // 4.8.1: one my device opened, the forgetting written down before
+      // the session is ([_forgetHeldMine]) — whether or not this reading
+      // of the envelope found anything left to forget, since an earlier
+      // one may have, and failed to write it.
+      onNewSession: (deviceRid) async {
+        if (debugBuildBeforeSealingKeys) return;
+        _forgetHeldMine(null, deviceRid);
+        await _saveSeals(null);
       },
       replacing: _sync,
     );
@@ -15542,6 +15576,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   bool debugFailExtraStore = false;
 
+  /// The same seam on a contact's own door: the next [debugFailInboundStores]
+  /// stores of an envelope from the device they were added from fail as a
+  /// full or busy vault does — the ratchet put back, the envelope left with
+  /// the relay for its redelivery.
+  @visibleForTesting
+  int debugFailInboundStores = 0;
+
   Future<void> _saveExtra(String rid) async {
     if (debugFailExtraStore) {
       throw StateError('debugFailExtraStore: the extra-device session store');
@@ -15772,6 +15813,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // Their device's session predates ours; nothing advanced.
         outcome = kUndecryptable;
         return;
+      }
+      // 44.3 (§18.11): a session that device opened forgets that it holds
+      // this one's key ([_forgetHeldMine]) — and (4.8.1) that is written
+      // down before the session is: if the session's write fails, the
+      // envelope opens it again on the relay's redelivery; were the
+      // forgetting written after a session that was, nothing would.
+      if (dec.createdNewSession && !debugBuildBeforeSealingKeys) {
+        _forgetHeldMine(rid, fromDeviceRid);
+        try {
+          await _writeSealsLocked(rid);
+        } catch (_) {
+          await _restoreExtra(rid, snapshot);
+          outcome = kUnpersisted;
+          return;
+        }
       }
       try {
         await _saveExtra(rid);

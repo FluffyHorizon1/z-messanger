@@ -74,6 +74,15 @@ class DeviceSyncService {
   /// open does ([onSealNews]).
   final void Function(String deviceRid)? onSessionOpened;
 
+  /// 4.8.1: a session my device [deviceRid] has just opened, told before
+  /// the session is written down, so that what the owner forgets of it
+  /// ([onSealNews]'s `newSession`) is written first: if the session's write
+  /// then fails, the envelope opens it again on its redelivery, where a
+  /// forgetting written after a session that was could be lost with nothing
+  /// to do it again. Whatever it throws is that write failing, and the
+  /// envelope is left with the relay as for the session's own.
+  final Future<void> Function(String deviceRid)? onNewSession;
+
   /// The session with my other devices and the lock every step on it takes:
   /// this service's own, or those of the service it took over from.
   final _SyncState _state;
@@ -100,6 +109,7 @@ class DeviceSyncService {
     this.onPqSealSent,
     this.onSealNews,
     this.onSessionOpened,
+    this.onNewSession,
     DeviceSyncService? replacing,
   })  : advertiseReaderLevel = advertiseReaderLevel ?? _always,
         _state = replacing?._state ?? _SyncState();
@@ -490,6 +500,7 @@ class DeviceSyncService {
       // memory, unsaved, and the message was lost from the relay and from
       // this device both.
       try {
+        if (dec.createdNewSession) await onNewSession?.call(fromDeviceRid);
         await _saveInbound();
       } catch (_) {
         _session = await AccountSession.fromJson(

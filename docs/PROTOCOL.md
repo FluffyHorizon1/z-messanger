@@ -4413,7 +4413,9 @@ The members that carry them, a new kind and two optional members (§14):
   and a device linked again each begin one, and none keeps the keys other
   devices announced, so a stamp kept across it could leave that device never
   hearing this one's key again. Its re‑sending then resumes on the same clock
-  and within the same bound, until the next `pqs:1`. And from 4.8.1 a device
+  and within the same bound, until the next `pqs:1`; a forgetting that does
+  not outlast a restart is none, and the reference client writes it down
+  with the session, or before it (4.8.1). And from 4.8.1 a device
   **MUST NOT** take a device's `pqs:1` for its holding this device's key
   until this device has given that one the key it holds now — announced it
   there, or handed it over in the reveal of a CONNECT ceremony of version 3
