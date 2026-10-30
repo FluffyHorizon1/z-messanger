@@ -518,8 +518,16 @@ class AppLocalizationsEn extends AppLocalizations {
       'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.';
 
   @override
+  String get linkEnrolmentInterrupted =>
+      'This device\'s connection to the relay dropped while it was sending your account, before the new device said it had it, so this device has not added it: your account may or may not have reached the new device. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.';
+
+  @override
+  String get linkEnrolmentRefused =>
+      'The relay did not take your account for the new device, so nothing was sent and this device has not added it. Start again on both devices in a little while.';
+
+  @override
   String get linkNoEnrolment =>
-      'Your other device did not send your account in time: its person may have said the codes differ, or confirmed too late. Start again on both devices, and confirm on both within about forty seconds of each other.';
+      'Your other device did not send your account in time: its person may have said the codes differ or confirmed too late, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.';
 
   @override
   String get linkTimedOut =>

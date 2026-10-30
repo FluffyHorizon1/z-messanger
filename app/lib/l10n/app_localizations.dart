@@ -932,10 +932,22 @@ abstract class AppLocalizations {
   /// **'The new device did not finish linking, and this device has not added it. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.'**
   String get linkPeerUnfinished;
 
-  /// On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait — its person said the codes differ, confirmed too late, or it stopped. Nothing was installed.
+  /// On the existing device, when its own connection to the relay closed after it began sending the account and before the new device reported it installed. This device cannot tell whether the account reached the relay, so the new device may have it or may be waiting for it; nothing was added. A new device that shows the person's chats anyway is not on the account, and is wiped (Settings → Wipe everything, as stWipe words it) before it is linked again.
   ///
   /// In en, this message translates to:
-  /// **'Your other device did not send your account in time: its person may have said the codes differ, or confirmed too late. Start again on both devices, and confirm on both within about forty seconds of each other.'**
+  /// **'This device\'s connection to the relay dropped while it was sending your account, before the new device said it had it, so this device has not added it: your account may or may not have reached the new device. Start again on both devices. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.'**
+  String get linkEnrolmentInterrupted;
+
+  /// On the existing device, when the relay refused the frame that carries the account to the new device — its store was full, or it was taking too much from this device at once. Nothing reached the new device and nothing was added.
+  ///
+  /// In en, this message translates to:
+  /// **'The relay did not take your account for the new device, so nothing was sent and this device has not added it. Start again on both devices in a little while.'**
+  String get linkEnrolmentRefused;
+
+  /// On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait — its person said the codes differ or confirmed too late, or it stopped, or its connection to the relay dropped while it sent the account, or the relay did not take it. Nothing was installed.
+  ///
+  /// In en, this message translates to:
+  /// **'Your other device did not send your account in time: its person may have said the codes differ or confirmed too late, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.'**
   String get linkNoEnrolment;
 
   /// On either linking screen, when a wait ran out that no other message explains: the other device, or the relay, did not answer in time.

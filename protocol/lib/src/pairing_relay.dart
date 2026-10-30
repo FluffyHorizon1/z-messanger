@@ -435,13 +435,15 @@ class RelayPairing {
   /// as that can take, the new device's [timeout] and twice [margin], and
   /// whether or not the relay has said it took the enrolment. With none,
   /// the new device did not finish, and nothing is linked
-  /// ([PairingPeerUnfinished]) — and so too when this side's connection
-  /// closes once the enrolment has started up it, or the relay refuses it:
-  /// the report cannot come then, and the new device may hold its account
-  /// all the same, which a lost connection would not say. Every other wait
-  /// ends at once when the connection closes, and any of them, that one
-  /// too, in [PairingTakenOver] when the relay closed it because another
-  /// connection logged in as this device's mailbox.
+  /// ([PairingPeerUnfinished]). When this side's connection closes first,
+  /// once the enrolment has been handed over, nothing is linked either, and
+  /// the attempt says what happened rather than blame the new device: the
+  /// enrolment may or may not have reached it ([PairingEnrolmentInterrupted]).
+  /// When the relay refuses the frame, nothing reached it
+  /// ([PairingEnrolmentRefused]). Every other wait ends at once when the
+  /// connection closes, and any of them, that one too, in
+  /// [PairingTakenOver] when the relay closed it because another connection
+  /// logged in as this device's mailbox.
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -505,14 +507,24 @@ class RelayPairing {
           contactState: contactState,
           hostBundle: hostBundle,
           pqdc: attest == null ? null : await attest(session));
-      if (!await _sendEnrolmentV3(box,
+      final (sent, refusal) = await _sendEnrolmentV3(box,
           to: iMailbox,
           payload: jsonEncode({'k': 'enroll-v3', 'blob': b64(sealed)}),
-          wait: timeout + margin * 2)) {
-        if (_takenOver(box)) throw const PairingTakenOver();
-        throw const PairingPeerUnfinished();
+          wait: timeout + margin * 2);
+      switch (sent) {
+        case _Sent.reported:
+          return newDeviceCert;
+        case _Sent.cut:
+          // This side's connection went before the report, and with it any
+          // way of telling whether the enrolment got to the relay: said as
+          // that, and not as the new device's failure.
+          if (_takenOver(box)) throw const PairingTakenOver();
+          throw const PairingEnrolmentInterrupted();
+        case _Sent.refused:
+          throw PairingEnrolmentRefused(refusal ?? 'refused');
+        case _Sent.unreported:
+          throw const PairingPeerUnfinished();
       }
-      return newDeviceCert;
     } finally {
       await box?.close();
       await v2?.close();
@@ -635,7 +647,9 @@ class RelayPairing {
 
   /// v3's last frame from the existing device: the enrolment, sent, and the
   /// connection then held — while it is open, for at most [wait] — until the
-  /// relay reports that the new device acknowledged it; whether it did.
+  /// relay reports that the new device acknowledged it. What ended the wait:
+  /// that report; the time running out with none; the relay's refusal of the
+  /// frame, with its code; or the connection closing first.
   ///
   /// The report is all that counts, and the relay's `sent` for the frame is
   /// not waited for: it says only that the relay took the frame, once the
@@ -643,35 +657,42 @@ class RelayPairing {
   /// acknowledged without this side ever hearing it. An enrolment near the
   /// frame cap on a slow connection takes longer than
   /// [RelayClient.send]'s twenty seconds to go up, and the new device, which
-  /// waits the margin for it, installs it all the same; and a connection
-  /// that closes once the frame has gone up takes its `sent` with it. Both
-  /// used to throw out of here as a lost connection, with the new device
-  /// installed and nothing listed. Now the wait goes on while the
-  /// connection is open, and stops without a report when the relay refuses
-  /// the frame or the connection closes: the caller then links nothing and
-  /// says the new device did not finish ([PairingPeerUnfinished]).
-  static Future<bool> _sendEnrolmentV3(_Mailbox box,
+  /// waits the margin for it, installs it all the same. A connection that
+  /// closes once the frame has been handed over may have taken all of it to
+  /// the relay, and its `sent` with it, or only part: this side cannot tell,
+  /// and the caller says so ([PairingEnrolmentInterrupted]).
+  static Future<(_Sent, String?)> _sendEnrolmentV3(_Mailbox box,
       {required String to,
       required String payload,
       required Duration wait}) async {
     const id = 'z-pair-enroll';
-    var refused = false;
+    String? refused;
     // A connection that has already closed would refuse the frame as it is
     // handed over: nothing of the enrolment leaves, and the step ends as any
     // other does when its connection has gone ([_closed]). A refusal after
-    // the frame has started up fails the send's future, and ends the wait.
+    // the frame has been handed over fails the send's future, and ends the
+    // wait; so does the connection closing, which fails it too.
     if (!box.client.isOpen) throw _closed(box);
+    // The send's own timeout is twice the wait, so that it never ends the
+    // wait: a `sent` that has not come by the deadline is no refusal.
     unawaited(box.client
-        .send(to: to, id: id, payload: payload, timeout: wait)
-        .then<void>((_) {}, onError: (Object _) => refused = true));
+        .send(to: to, id: id, payload: payload, timeout: wait * 2)
+        .then<void>((_) {}, onError: (Object e) {
+      refused = e is RelayException ? e.message : '$e';
+    }));
     final deadline = DateTime.now().add(wait);
     while (!box.acknowledged(id) &&
-        !refused &&
+        refused == null &&
         box.client.isOpen &&
         DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 25));
     }
-    return box.acknowledged(id);
+    if (box.acknowledged(id)) return (_Sent.reported, null);
+    // A closed connection fails the send too, so it is asked first: the
+    // relay refused the frame only if the connection is still there.
+    if (!box.client.isOpen) return (_Sent.cut, null);
+    if (refused != null) return (_Sent.refused, refused);
+    return (_Sent.unreported, null);
   }
 
   /// Waits for a frame of [kind] (the v1 ceremony's runners).
@@ -703,6 +724,21 @@ class RelayPairing {
     }
     return null;
   }
+}
+
+/// How a v3 enrolment's send ended ([RelayPairing._sendEnrolmentV3]).
+enum _Sent {
+  /// The relay reported the new device's acknowledgement of it.
+  reported,
+
+  /// The wait ran out with no report, the connection open throughout.
+  unreported,
+
+  /// The relay refused the frame.
+  refused,
+
+  /// This side's connection closed first.
+  cut,
 }
 
 /// One of a ceremony's mailboxes, as one side holds it (v2 and v3): the

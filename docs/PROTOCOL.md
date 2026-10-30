@@ -2159,12 +2159,22 @@ enrollment near that size takes longer than the reference client's
 twenty‑second send timeout to go up, and the new device installs it within
 the margin all the same, so the existing device waits on while its
 connection is open. When its connection closes once the enrollment has
-started up, or the relay refuses the frame, no report can reach it: it
-links nothing and says the new device did not finish, not that the
-connection was lost, since the new device may hold its account all the
-same. Until 2026‑10‑29 a `sent` that came late or not at all ended the link
-on the existing device as a lost connection, while the new device installed
-the enrollment, unlisted. Every other wait, on either side, ends as soon as
+been handed over, no report can reach it, and it cannot tell whether the
+frame reached the relay whole or not at all — a connection that drops just
+after the relay took the frame, and one that drops while the frame is still
+going up, look the same from this side. It links nothing and says that its
+connection dropped while it sent the account, which may or may not have
+arrived: the new device may hold its account, or may wait out its wait and
+be sent nothing. When the relay refuses the frame, nothing reached the new
+device, and it says the relay refused it. Neither is put down to the new
+device, and the new device, sent nothing, names among its reasons the other
+device's failing to get the account to the relay, beside its user's saying
+the digits differ or confirming too late. Until 2026‑10‑29 a `sent` that came
+late or not at all ended the link on the existing device as a lost
+connection, while the new device installed the enrollment, unlisted; and
+until 2026‑10‑30 every one of these said the new device did not finish,
+while the new device said the other's user had refused or was late. Every other
+wait, on either side, ends as soon as
 that side's connection closes, and says so; a new device whose connection
 dropped used to wait out the whole of its wait for the enrollment, and
 then say that the other device had sent nothing. And an enrollment the new
@@ -2185,7 +2195,8 @@ contacts the enrollment carried, and no history; its account's list never
 names it, so its contacts drop what it sends, as from a device they do not
 know, and nothing reaches it; and having learned no list version it raises
 no alarm (ADR 0026). The existing device's screen says the new device did
-not finish linking. The reference client does not check for itself that its
+not finish linking, or that its own connection dropped while it sent the
+account. The reference client does not check for itself that its
 account lists it: the check needs a timeout, and one that fired while the
 phone was merely offline would report a fault where there is none. The way
 out needs no reinstall: wiping the new device — Settings → Wipe everything,

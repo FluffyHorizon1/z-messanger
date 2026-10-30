@@ -663,11 +663,12 @@ void main() {
 
     // And when the connection closes with the `sent`, once the enrolment has
     // gone up, the report cannot reach the existing device. It cannot tell
-    // whether the new device installed the enrolment — which it did — and
-    // says the new device did not finish, as it does for any enrolment with
-    // no report, not that the connection was lost, and links nothing.
+    // whether the enrolment got through — here it did, and the new device
+    // installed it — and says its own connection closed while it sent the
+    // enrolment, rather than that the new device did not finish, and links
+    // nothing.
     test('an existing device whose connection closes once its enrolment has '
-        'gone up says the new device did not finish', () async {
+        'gone up says so, and not that the new device failed', () async {
       final code = PairingCode.generate();
       final desktop = await PairingInitiatorV3.create(
           code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
@@ -697,7 +698,93 @@ void main() {
         final outcome = await host;
         expect(outcome, isA<PairingAbort>(),
             reason: 'the existing device links nothing: no report came');
-        expect('$outcome', contains('did not finish linking'));
+        expect('$outcome', contains('connection to the relay closed while'),
+            reason: 'it says its own connection went, not that the new '
+                'device did not finish');
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // The other side of the same race: the connection goes as the enrolment
+    // is put up, and the frame never reaches the relay. The existing device
+    // cannot tell that from the case above, and says the same; the new
+    // device, sent nothing, waits out its wait. Both used to blame the other
+    // device: the existing device said the new one did not finish, and the
+    // new one that the other's person said the codes differ or was late.
+    test('an existing device whose connection drops as it puts the enrolment '
+        'up says so, and the new device is sent nothing', () async {
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final tap = await front(url, (frame) => [frame],
+          cutUp: (frame) => isSendOf(frame, 'z-pair-enroll'));
+      try {
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final outcome = await host;
+        expect('$outcome', contains('connection to the relay closed while'),
+            reason: 'the existing device says its own connection went');
+        expect(laptop, isA<PairingAbort>(),
+            reason: 'the new device was sent nothing, and stopped waiting');
+        expect('$laptop', contains('no "enroll-v3" frame arrived'));
+      } finally {
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // A relay that refuses the enrolment — here `store_full`, which names
+    // the frame — has taken nothing to the new device, and the existing
+    // device says the relay refused it: neither that the new device did not
+    // finish, as it did, nor that its connection was lost.
+    test('an existing device whose enrolment the relay refuses says so',
+        () async {
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final tap = await front(url, (frame) => [frame],
+          refuseUp: (frame) => isSendOf(frame, 'z-pair-enroll')
+              ? jsonEncode(
+                  {'t': 'error', 'code': 'store_full', 'id': 'z-pair-enroll'})
+              : null);
+      try {
+        final host = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 3),
+          margin: const Duration(seconds: 1),
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final outcome = await host;
+        expect('$outcome', contains('the relay refused the enrolment: '
+            'store_full'));
+        expect(laptop, isA<PairingAbort>(),
+            reason: 'nothing reached the new device');
       } finally {
         await tap.close(force: true);
       }
@@ -859,11 +946,17 @@ void main() {
 /// relay sends it — the frame, a copy of it too, something else, or
 /// nothing. [cut], when given, names the frame from the relay at which the
 /// connection closes instead, both ways: the client is not handed it, and
-/// the relay sees the connection go. The Host header passes through, so the
-/// relay checks each authentication against the address the client dialled.
+/// the relay sees the connection go. [cutUp] does the same for a frame from
+/// the client, which never reaches the relay. [refuseUp], when it answers a
+/// frame from the client, keeps that frame from the relay and hands the
+/// client its answer as if the relay had sent it. The Host header passes
+/// through, so the relay checks each authentication against the address the
+/// client dialled.
 Future<HttpServer> front(
     String relayUrl, List<String> Function(String frame) down,
-    {bool Function(String frame)? cut}) async {
+    {bool Function(String frame)? cut,
+    bool Function(String frame)? cutUp,
+    String? Function(String frame)? refuseUp}) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   server.listen((req) async {
     final client = await WebSocketTransformer.upgrade(req);
@@ -871,7 +964,19 @@ Future<HttpServer> front(
         headers: {'host': req.headers.value('host') ?? ''});
     var gone = false;
     client.listen((d) {
-      if (!gone) relay.add(d);
+      if (gone) return;
+      if (cutUp != null && cutUp(d as String)) {
+        gone = true;
+        client.close();
+        relay.close();
+        return;
+      }
+      final answer = refuseUp?.call(d as String);
+      if (answer != null) {
+        client.add(answer);
+        return;
+      }
+      relay.add(d);
     }, onDone: () => relay.close(), onError: (Object _) => relay.close());
     relay.listen((d) {
       if (gone) return;
@@ -895,6 +1000,16 @@ bool isSentFor(String frame, String id) {
   try {
     final f = jsonDecode(frame);
     return f is Map && f['t'] == 'sent' && f['id'] == id;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Whether [frame], from a client, is its `send` of the envelope [id].
+bool isSendOf(String frame, String id) {
+  try {
+    final f = jsonDecode(frame);
+    return f is Map && f['t'] == 'send' && f['id'] == id;
   } catch (_) {
     return false;
   }

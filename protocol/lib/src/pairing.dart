@@ -409,6 +409,29 @@ class PairingPeerUnfinished extends PairingAbort {
       : super('the new device did not finish linking');
 }
 
+/// A v3 existing device's connection to the relay closed once its enrolment
+/// had been handed over, and before the relay reported the new device's
+/// acknowledgement of it (§10.2): the enrolment may have reached the relay
+/// whole, or not at all, and this device cannot tell which. Nothing is
+/// linked. The new device may hold the account all the same — the relay
+/// had the frame, and its report went to a mailbox nobody reads again — or
+/// it may wait out its wait and be sent nothing.
+class PairingEnrolmentInterrupted extends PairingAbort {
+  const PairingEnrolmentInterrupted()
+      : super("this device's connection to the relay closed while it sent "
+            'the enrolment, before the new device said it had it');
+}
+
+/// The relay refused a v3 existing device's enrolment (§10.2, §12.2): an
+/// error naming the frame, such as `store_full`, or one about what was just
+/// sent, such as `rate_limited`. Nothing reached the new device, and nothing
+/// is linked. [code] is the relay's.
+class PairingEnrolmentRefused extends PairingAbort {
+  final String code;
+  PairingEnrolmentRefused(this.code)
+      : super('the relay refused the enrolment: $code');
+}
+
 /// A v3 new device was sent an enrolment and could not open or install it
 /// (§10.2): it did not open under the channel key — spoiled on its way —
 /// or broke a rule every enrolment keeps, such as carrying the account root,

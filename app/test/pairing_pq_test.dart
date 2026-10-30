@@ -80,17 +80,24 @@
 //      link stopped, nothing is linked, and the relay keeps the receipt for
 //      the laptop's late acknowledgement — 192 bytes — and nothing else;
 //  16. a phone that never hears the relay say it took the enrolment: one
-//      whose connection closed once the enrolment had gone up says the
-//      laptop did not finish — not that the connection was lost — and lists
-//      nothing, the laptop having installed it; one whose connection stays
-//      links the laptop on its report;
+//      whose connection closed once the enrolment had gone up says its
+//      connection dropped while it sent the account, which may or may not
+//      have arrived — not that the connection was lost, nor that the laptop
+//      did not finish — in both languages, and lists nothing, the laptop
+//      having installed it; one whose connection stays links the laptop on
+//      its report;
 //  17. a laptop whose connection to the relay closes while it waits for the
 //      enrolment says the connection was lost, at once and in both
 //      languages, where it used to wait out its timer and blame the phone;
 //  18. a laptop whose mailbox someone else holding the code logs in as —
 //      while its person compares the digits, or before any reply — says
 //      another connection took the link over, at once and in both
-//      languages, and shows a new code.
+//      languages, and shows a new code;
+//  19. a phone whose connection drops as it puts the enrolment up, before
+//      the relay has it, says its connection dropped while it sent the
+//      account, which may or may not have arrived, and the laptop, sent
+//      nothing, names that among its reasons: neither screen blames the
+//      other device alone, in either language, and nothing is linked.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -129,7 +136,8 @@ typedef Person = ({
 /// each frame the relay sends it: the frame, a copy of it too, another
 /// frame, or nothing. [cut], when given, names the frame from the relay at
 /// which that connection closes instead, both ways: the client is not
-/// handed it, and the relay sees the connection go.
+/// handed it, and the relay sees the connection go. [cutUp] does the same
+/// for a frame from the client, which never reaches the relay.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
@@ -139,7 +147,8 @@ class Recorder {
 
   static Future<Recorder> start(String relayUrl,
       {List<String> Function(String frame)? hand,
-      bool Function(String frame)? cut}) async {
+      bool Function(String frame)? cut,
+      bool Function(String frame)? cutUp}) async {
     final r =
         Recorder._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     r._server.listen((req) async {
@@ -151,6 +160,12 @@ class Recorder {
       var gone = false;
       down.listen((d) {
         if (gone) return;
+        if (cutUp != null && d is String && cutUp(d)) {
+          gone = true;
+          down.close();
+          up.close();
+          return;
+        }
         r._note(d, 'send');
         up.add(d);
       }, onDone: () => up.close(), onError: (Object _) => up.close());
@@ -215,6 +230,16 @@ class Recorder {
     }
   }
 
+  /// Whether [frame], from a client, is its `send` of the envelope [id].
+  static bool sendOf(String frame, String id) {
+    try {
+      final f = jsonDecode(frame);
+      return f is Map && f['t'] == 'send' && f['id'] == id;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> close() => _server.close(force: true);
 }
 
@@ -243,9 +268,27 @@ void main() {
       'device shows your chats anyway, it is not on your account: on it, '
       'open Settings → Wipe everything, then link it again.';
   const laptopNoEnrolment = 'Your other device did not send your account in '
-      'time: its person may have said the codes differ, or confirmed too '
-      'late. Start again on both devices, and confirm on both within about '
-      'forty seconds of each other.';
+      'time: its person may have said the codes differ or confirmed too '
+      'late, or it could not get your account to the relay. Start again on '
+      'both devices, and confirm on both within about forty seconds of each '
+      'other.';
+  const laptopNoEnrolmentEs = 'Tu otro dispositivo no envió tu cuenta a '
+      'tiempo: puede que allí dijeran que los códigos no coinciden o que '
+      'confirmaran demasiado tarde, o que no pudiera hacer llegar tu cuenta '
+      'al relay. Vuelve a empezar en los dos dispositivos y confirma en ambos '
+      'con menos de unos cuarenta segundos de diferencia.';
+  const phoneInterrupted = "This device's connection to the relay dropped "
+      'while it was sending your account, before the new device said it had '
+      'it, so this device has not added it: your account may or may not have '
+      'reached the new device. Start again on both devices. If the new device '
+      'shows your chats anyway, it is not on your account: on it, open '
+      'Settings → Wipe everything, then link it again.';
+  const phoneInterruptedEs = 'La conexión de este dispositivo con el relay '
+      'se cortó mientras enviaba tu cuenta, antes de que el dispositivo nuevo '
+      'dijera que la tenía, así que este no lo ha añadido: puede que tu cuenta '
+      'le haya llegado o no. Vuelve a empezar en los dos dispositivos. Si aun '
+      'así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en '
+      'él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
   const laptopInstallFailed = 'This device could not open or install the '
       'account your other device sent, so it is not linked. Check that this '
       'device has space free, then start again on both devices.';
@@ -1008,6 +1051,12 @@ void main() {
           l.linkTakenOver);
       expect(hostLinkFailureText(l, const PairingTakenOver()),
           l.linkHostTakenOver);
+      // The phone's own connection gone while it sent the account, and the
+      // relay refusing it: neither is the new device's doing.
+      expect(hostLinkFailureText(l, const PairingEnrolmentInterrupted()),
+          l.linkEnrolmentInterrupted);
+      expect(hostLinkFailureText(l, PairingEnrolmentRefused('store_full')),
+          l.linkEnrolmentRefused);
     }
     expect(en.linkPeerUnconfirmed, phoneUnconfirmed);
     expect(en.linkPeerGaveUp, phoneGaveUp);
@@ -1017,6 +1066,9 @@ void main() {
     expect(es.linkInstallFailed, laptopInstallFailedEs);
     expect(en.linkTakenOver, laptopTakenOver);
     expect(es.linkTakenOver, laptopTakenOverEs);
+    expect(es.linkNoEnrolment, laptopNoEnrolmentEs);
+    expect(en.linkEnrolmentInterrupted, phoneInterrupted);
+    expect(es.linkEnrolmentInterrupted, phoneInterruptedEs);
     for (final (a, b) in [
       (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
       (es.linkPeerGaveUp, en.linkPeerGaveUp),
@@ -1027,6 +1079,8 @@ void main() {
       (es.linkInstallFailed, en.linkInstallFailed),
       (es.linkTakenOver, en.linkTakenOver),
       (es.linkHostTakenOver, en.linkHostTakenOver),
+      (es.linkEnrolmentInterrupted, en.linkEnrolmentInterrupted),
+      (es.linkEnrolmentRefused, en.linkEnrolmentRefused),
     ]) {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
@@ -1037,6 +1091,8 @@ void main() {
     for (final l in [en, es]) {
       expect(l.linkPeerUnfinished, contains('${l.stSettings} → ${l.stWipe}'));
       expect(l.linkHostTakenOver, contains('${l.stSettings} → ${l.stWipe}'));
+      expect(l.linkEnrolmentInterrupted,
+          contains('${l.stSettings} → ${l.stWipe}'));
       expect(l.linkTakenOver,
           contains('${l.stSettings} → ${l.stLinkedDevices}'));
     }
@@ -1448,9 +1504,9 @@ void main() {
   });
 
   test(
-      '16. a phone that never hears the relay take its enrolment says the '
-      "laptop did not finish when its connection has gone, and links on the "
-      "laptop's report when it has not", () async {
+      '16. a phone that never hears the relay take its enrolment says its '
+      'connection dropped while it sent the account when its connection has '
+      "gone, and links on the laptop's report when it has not", () async {
     // A front before the phone drops the relay's `sent` for the enrolment,
     // as a slow connection that takes longer than a send's twenty seconds to
     // put the enrolment up keeps it from the phone in time; the first time
@@ -1483,10 +1539,12 @@ void main() {
             reason: '$what: the laptop installed the enrolment, and said so');
         final phone = await hosted;
         if (cut) {
-          expect(phoneScreen(phone), phoneUnfinished,
-              reason: '$what: the phone cannot tell whether the laptop '
-                  'finished, and says what it says of any enrolment with no '
-                  'report — not that the connection was lost');
+          expect(phoneScreen(phone), phoneInterrupted,
+              reason: '$what: the phone cannot tell whether the account got '
+                  'through, and says its connection dropped while it sent '
+                  'it — not that the laptop did not finish');
+          expect(hostLinkFailureText(es, phone!), phoneInterruptedEs,
+              reason: '$what: and in Spanish');
           expect(await alice.svc.linkedDevices(), isEmpty, reason: what);
           continue;
         }
@@ -1625,6 +1683,48 @@ void main() {
         await other.close();
         await tap.close();
       }
+    }
+  });
+
+  test(
+      '19. a phone whose connection drops as it puts the enrolment up says '
+      'so, and the laptop names that among its reasons', () async {
+    // The phone connects through a front that closes its connection as it
+    // sends the enrolment: the frame never reaches the relay.
+    final rec = await Recorder.start(relayUrl(),
+        cutUp: (f) => Recorder.sendOf(f, 'z-pair-enroll'));
+    try {
+      final alice = await person('Alice19', url: rec.url);
+      await connected([alice]);
+      const timeout = Duration(seconds: 3), margin = Duration(seconds: 1);
+      alice.svc.linkTimeout = timeout;
+      alice.svc.linkMargin = margin;
+      final listBefore = await alice.svc.ownDeviceListVersion();
+      final n = await NewDeviceLink.create();
+      final hosted = alice.svc
+          .hostDeviceLink(n.code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final laptop = await n
+          .run(
+            relayUrl: relayUrl(),
+            confirm: (_) async => true,
+            timeout: timeout,
+            margin: margin,
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      final phone = await hosted;
+      expect(phoneScreen(phone), phoneInterrupted,
+          reason: 'the phone says its own connection dropped while it sent '
+              'the account, not that the laptop did not finish');
+      expect(hostLinkFailureText(es, phone!), phoneInterruptedEs);
+      expect(laptopScreen(laptop), laptopNoEnrolment,
+          reason: 'the laptop, sent nothing, names a dropped connection '
+              "among the reasons, and not only the phone's person");
+      expect(newDeviceLinkFailureText(es, laptop!), laptopNoEnrolmentEs);
+      expect(await alice.svc.linkedDevices(), isEmpty);
+      expect(await alice.svc.ownDeviceListVersion(), listBefore);
+    } finally {
+      await rec.close();
     }
   });
 }

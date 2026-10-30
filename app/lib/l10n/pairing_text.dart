@@ -3,6 +3,8 @@ import 'dart:async' show TimeoutException;
 import 'package:z_protocol/z_protocol.dart'
     show
         PairingAbort,
+        PairingEnrolmentInterrupted,
+        PairingEnrolmentRefused,
         PairingInstallFailed,
         PairingNoAnswer,
         PairingNoEnrolment,
@@ -26,8 +28,12 @@ import 'app_localizations.dart';
 // link stops on time — one person's confirmation not answered by the
 // other's, an enrolment that never came or was never installed — has words
 // of its own, and so do an enrolment that came and could not be opened or
-// installed, a mailbox someone else holding the code logged in as, a
-// timeout and a lost connection: none of them is a raw exception in English.
+// installed, one the phone's own lost connection cut short or the relay
+// refused, a mailbox someone else holding the code logged in as, a timeout
+// and a lost connection: none of them is a raw exception in English. A
+// phone whose connection drops while it sends the account cannot tell
+// whether the account got through, and says that, not that the new device
+// failed; the new device, sent nothing, names that among the reasons.
 
 /// The existing device's screen (`HostLinkScreen`): the new device spoke an
 /// older ceremony, so it is the new device that needs updating.
@@ -37,6 +43,8 @@ String hostLinkFailureText(AppLocalizations l, Object error) =>
       PairingPeerUnconfirmed() => l.linkPeerUnconfirmed,
       PairingPeerGaveUp() => l.linkPeerGaveUp,
       PairingPeerUnfinished() => l.linkPeerUnfinished,
+      PairingEnrolmentInterrupted() => l.linkEnrolmentInterrupted,
+      PairingEnrolmentRefused() => l.linkEnrolmentRefused,
       PairingTakenOver() => l.linkHostTakenOver,
       PairingAbort(:final message) => l.linkFailed(message),
       TimeoutException() => l.linkTimedOut,

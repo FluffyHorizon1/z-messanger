@@ -524,8 +524,16 @@ class AppLocalizationsEs extends AppLocalizations {
       'El dispositivo nuevo no terminó de vincularse y este no lo ha añadido. Vuelve a empezar en los dos dispositivos. Si aun así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
 
   @override
+  String get linkEnrolmentInterrupted =>
+      'La conexión de este dispositivo con el relay se cortó mientras enviaba tu cuenta, antes de que el dispositivo nuevo dijera que la tenía, así que este no lo ha añadido: puede que tu cuenta le haya llegado o no. Vuelve a empezar en los dos dispositivos. Si aun así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
+
+  @override
+  String get linkEnrolmentRefused =>
+      'El relay no aceptó tu cuenta para el dispositivo nuevo, así que no se le envió nada y este no lo ha añadido. Vuelve a empezar en los dos dispositivos dentro de un rato.';
+
+  @override
   String get linkNoEnrolment =>
-      'Tu otro dispositivo no envió tu cuenta a tiempo: puede que allí dijeran que los códigos no coinciden, o que confirmaran demasiado tarde. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
+      'Tu otro dispositivo no envió tu cuenta a tiempo: puede que allí dijeran que los códigos no coinciden o que confirmaran demasiado tarde, o que no pudiera hacer llegar tu cuenta al relay. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
 
   @override
   String get linkTimedOut =>
