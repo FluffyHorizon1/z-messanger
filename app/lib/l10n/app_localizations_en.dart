@@ -501,9 +501,15 @@ class AppLocalizationsEn extends AppLocalizations {
       'This device now shows a new code: enter it on your other device to try again.';
 
   @override
-  String linkFailed(String error) {
-    return 'Link failed: $error';
-  }
+  String get linkFailedOther => 'The link failed. Start again on both devices.';
+
+  @override
+  String get linkRelayUnreachable =>
+      'This device could not reach the relay. Check that it is online and that the relay address is right, then start again on both devices.';
+
+  @override
+  String get linkNotACode =>
+      'That is not a pairing code. Enter the whole code the new device shows, then try again.';
 
   @override
   String get linkPeerUnconfirmed =>

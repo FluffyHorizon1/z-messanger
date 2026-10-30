@@ -507,9 +507,16 @@ class AppLocalizationsEs extends AppLocalizations {
       'Este dispositivo muestra ahora un código nuevo: introdúcelo en tu otro dispositivo para intentarlo de nuevo.';
 
   @override
-  String linkFailed(String error) {
-    return 'La vinculación falló: $error';
-  }
+  String get linkFailedOther =>
+      'La vinculación falló. Vuelve a empezar en los dos dispositivos.';
+
+  @override
+  String get linkRelayUnreachable =>
+      'Este dispositivo no pudo conectar con el relay. Comprueba que tiene conexión y que la dirección del relay es correcta, y vuelve a empezar en los dos dispositivos.';
+
+  @override
+  String get linkNotACode =>
+      'Eso no es un código de emparejamiento. Introduce el código completo que muestra el dispositivo nuevo y vuelve a intentarlo.';
 
   @override
   String get linkPeerUnconfirmed =>

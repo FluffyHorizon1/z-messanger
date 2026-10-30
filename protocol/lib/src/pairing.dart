@@ -89,7 +89,7 @@ class PairingCode {
     // FormatException (the 2026-09-14 review's finding 43; `connect.dart`
     // parses with the right `< 10`).
     if (secret.length < 10) {
-      throw const FormatException('pairing code too short');
+      throw const PairingCodeInvalid('pairing code too short');
     }
     return PairingCode(Uint8List.fromList(secret.sublist(0, 10)));
   }
@@ -329,6 +329,14 @@ Future<String> _deriveSas(
   final n = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) & 0x7fffffff;
   final digits = (n % 1000000).toString().padLeft(6, '0');
   return '${digits.substring(0, 3)} ${digits.substring(3)}';
+}
+
+/// What [PairingCode.parse] throws for text that is not a pairing code: a
+/// [FormatException] still, so that whatever caught one goes on catching
+/// it, and a type of its own, so that a screen can say "that is not a
+/// pairing code" without reading the message.
+class PairingCodeInvalid extends FormatException {
+  const PairingCodeInvalid(super.message);
 }
 
 /// Thrown when the ceremony cannot go on: the peer is on another version, or

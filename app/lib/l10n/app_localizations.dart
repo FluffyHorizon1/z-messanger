@@ -908,11 +908,23 @@ abstract class AppLocalizations {
   /// **'This device now shows a new code: enter it on your other device to try again.'**
   String get linkNewCode;
 
-  /// Pairing failed; {error} is the underlying message.
+  /// On either linking screen, when the link stopped for a reason no other message names: the other device broke a rule of the ceremony, or something this device did not expect went wrong. Never followed by the error's own text, which is in English and means nothing to the reader.
   ///
   /// In en, this message translates to:
-  /// **'Link failed: {error}'**
-  String linkFailed(String error);
+  /// **'The link failed. Start again on both devices.'**
+  String get linkFailedOther;
+
+  /// On either linking screen, when this device could not open its connection to the relay at all: no network, nothing listening at the relay's address, an address that answers but is not a relay, or a secure connection that could not be made.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not reach the relay. Check that it is online and that the relay address is right, then start again on both devices.'**
+  String get linkRelayUnreachable;
+
+  /// On the existing device (Link a device), when what was typed into the pairing code field cannot be a pairing code: too short, or too few of its characters are ones a code has. Nothing was sent.
+  ///
+  /// In en, this message translates to:
+  /// **'That is not a pairing code. Enter the whole code the new device shows, then try again.'**
+  String get linkNotACode;
 
   /// On the existing device, after its person confirmed the codes match: the new device never said its person confirmed too — they said the codes differ, or did not answer within the wait (about forty seconds). The account was not sent and nothing was linked; the person starts again on both devices.
   ///

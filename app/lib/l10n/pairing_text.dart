@@ -1,8 +1,10 @@
 import 'dart:async' show TimeoutException;
+import 'dart:io'
+    show HttpException, SocketException, TlsException, WebSocketException;
 
 import 'package:z_protocol/z_protocol.dart'
     show
-        PairingAbort,
+        PairingCodeInvalid,
         PairingEnrolmentInterrupted,
         PairingEnrolmentRefused,
         PairingInstallFailed,
@@ -29,11 +31,29 @@ import 'app_localizations.dart';
 // other's, an enrolment that never came or was never installed — has words
 // of its own, and so do an enrolment that came and could not be opened or
 // installed, one the phone's own lost connection cut short or the relay
-// refused, a mailbox someone else holding the code logged in as, a timeout
-// and a lost connection: none of them is a raw exception in English. A
-// phone whose connection drops while it sends the account cannot tell
-// whether the account got through, and says that, not that the new device
-// failed; the new device, sent nothing, names that among the reasons.
+// refused, a mailbox someone else holding the code logged in as, a relay
+// this device could not reach, a code that is not one, a timeout and a lost
+// connection. A phone whose connection drops while it sends the account
+// cannot tell whether the account got through, and says that, not that the
+// new device failed; the new device, sent nothing, names that among the
+// reasons.
+//
+// Nothing here shows an exception's own text. Whatever no case names — a
+// rule of the ceremony the other device broke, or something nobody expected
+// — is one line in the reader's language. Until 2026-10-30 those, a relay
+// that could not be reached and a mistyped code all showed "Link failed: "
+// and the exception, in English whatever the language: "SocketException:
+// Connection refused (OS Error: …)".
+
+/// Whether [error] is this device failing to open its connection to the
+/// relay at all: no network or nothing listening (a socket error), an
+/// address that answers but does not upgrade to a WebSocket, or a secure
+/// connection that could not be made (TLS and its handshake).
+bool _unreachable(Object error) =>
+    error is SocketException ||
+    error is WebSocketException ||
+    error is TlsException ||
+    error is HttpException;
 
 /// The existing device's screen (`HostLinkScreen`): the new device spoke an
 /// older ceremony, so it is the new device that needs updating.
@@ -46,10 +66,11 @@ String hostLinkFailureText(AppLocalizations l, Object error) =>
       PairingEnrolmentInterrupted() => l.linkEnrolmentInterrupted,
       PairingEnrolmentRefused() => l.linkEnrolmentRefused,
       PairingTakenOver() => l.linkHostTakenOver,
-      PairingAbort(:final message) => l.linkFailed(message),
+      PairingCodeInvalid() => l.linkNotACode,
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,
-      _ => l.linkFailed('$error'),
+      _ when _unreachable(error) => l.linkRelayUnreachable,
+      _ => l.linkFailedOther,
     };
 
 /// The new device's screen (`NewDeviceLinkScreen`): nothing answered, so the
@@ -60,8 +81,8 @@ String newDeviceLinkFailureText(AppLocalizations l, Object error) =>
       PairingNoEnrolment() => l.linkNoEnrolment,
       PairingInstallFailed() => l.linkInstallFailed,
       PairingTakenOver() => l.linkTakenOver,
-      PairingAbort(:final message) => l.linkFailed(message),
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,
-      _ => l.linkFailed('$error'),
+      _ when _unreachable(error) => l.linkRelayUnreachable,
+      _ => l.linkFailedOther,
     };

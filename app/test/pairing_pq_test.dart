@@ -97,7 +97,11 @@
 //      the relay has it, says its connection dropped while it sent the
 //      account, which may or may not have arrived, and the laptop, sent
 //      nothing, names that among its reasons: neither screen blames the
-//      other device alone, in either language, and nothing is linked.
+//      other device alone, in either language, and nothing is linked;
+//  20. a relay that cannot be reached — nothing listening, an address that
+//      is not a relay, a secure connection that cannot be made — says so on
+//      both screens, and a mistyped code on the phone says it is not one, in
+//      both languages and with no exception text in any of them.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -289,6 +293,17 @@ void main() {
       'le haya llegado o no. Vuelve a empezar en los dos dispositivos. Si aun '
       'así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en '
       'él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
+  const relayUnreachable = 'This device could not reach the relay. Check '
+      'that it is online and that the relay address is right, then start '
+      'again on both devices.';
+  const relayUnreachableEs = 'Este dispositivo no pudo conectar con el '
+      'relay. Comprueba que tiene conexión y que la dirección del relay es '
+      'correcta, y vuelve a empezar en los dos dispositivos.';
+  const notACode = 'That is not a pairing code. Enter the whole code the new '
+      'device shows, then try again.';
+  const notACodeEs = 'Eso no es un código de emparejamiento. Introduce el '
+      'código completo que muestra el dispositivo nuevo y vuelve a '
+      'intentarlo.';
   const laptopInstallFailed = 'This device could not open or install the '
       'account your other device sent, so it is not linked. Check that this '
       'device has space free, then start again on both devices.';
@@ -1003,12 +1018,48 @@ void main() {
       // The new device's screen: the device it links from may be older.
       expect(newDeviceLinkFailureText(l, const PairingNoAnswer()),
           l.linkHostMayBeOlder);
-      // Anything else stops a link as a failure, never as a version: a
-      // timeout, too, in words of its own (below).
-      const abort = PairingAbort('the opening does not match the commitment');
-      expect(hostLinkFailureText(l, abort), l.linkFailed(abort.message));
-      expect(newDeviceLinkFailureText(l, abort), l.linkFailed(abort.message));
+      // Anything else stops a link as a failure, never as a version, and
+      // in one line of the reader's language with no exception text in it:
+      // a broken rule of the ceremony, or something nobody expected.
+      for (final other in [
+        const PairingAbort('the opening does not match the commitment'),
+        StateError('something nobody expected'),
+      ]) {
+        for (final text in [
+          hostLinkFailureText(l, other),
+          newDeviceLinkFailureText(l, other)
+        ]) {
+          expect(text, l.linkFailedOther);
+          expect(text, isNot(contains('commitment')));
+          expect(text, isNot(contains('nobody expected')));
+        }
+      }
+      // A relay this device could not reach at all, on either screen: no
+      // network or nothing listening, an address that is not a relay, a
+      // secure connection that could not be made.
+      for (final unreachable in <Object>[
+        const SocketException('Connection refused'),
+        const WebSocketException('was not upgraded to websocket'),
+        const HandshakeException('Handshake error in client'),
+        const TlsException('certificate'),
+        const HttpException('Connection closed before full header'),
+      ]) {
+        expect(hostLinkFailureText(l, unreachable), l.linkRelayUnreachable,
+            reason: '$unreachable');
+        expect(newDeviceLinkFailureText(l, unreachable),
+            l.linkRelayUnreachable,
+            reason: '$unreachable');
+      }
+      // What was typed on the phone is not a pairing code.
+      expect(
+          hostLinkFailureText(l, const PairingCodeInvalid('too short')),
+          l.linkNotACode);
     }
+    // The pairing code's parser says so in a type of its own, and a
+    // FormatException still.
+    expect(() => PairingCode.parse('ABCD'),
+        throwsA(isA<PairingCodeInvalid>().having(
+            (e) => e, 'a FormatException', isA<FormatException>())));
     // The words name the device: the one being added, on the phone; the one
     // linked from, on the new device. And each locale has its own.
     expect(en.linkNewDeviceOlder(2), contains('Update Z on that device'));
@@ -1069,6 +1120,10 @@ void main() {
     expect(es.linkNoEnrolment, laptopNoEnrolmentEs);
     expect(en.linkEnrolmentInterrupted, phoneInterrupted);
     expect(es.linkEnrolmentInterrupted, phoneInterruptedEs);
+    expect(en.linkRelayUnreachable, relayUnreachable);
+    expect(es.linkRelayUnreachable, relayUnreachableEs);
+    expect(en.linkNotACode, notACode);
+    expect(es.linkNotACode, notACodeEs);
     for (final (a, b) in [
       (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
       (es.linkPeerGaveUp, en.linkPeerGaveUp),
@@ -1081,6 +1136,9 @@ void main() {
       (es.linkHostTakenOver, en.linkHostTakenOver),
       (es.linkEnrolmentInterrupted, en.linkEnrolmentInterrupted),
       (es.linkEnrolmentRefused, en.linkEnrolmentRefused),
+      (es.linkRelayUnreachable, en.linkRelayUnreachable),
+      (es.linkNotACode, en.linkNotACode),
+      (es.linkFailedOther, en.linkFailedOther),
     ]) {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
@@ -1725,6 +1783,66 @@ void main() {
       expect(await alice.svc.ownDeviceListVersion(), listBefore);
     } finally {
       await rec.close();
+    }
+  });
+
+  test(
+      '20. a relay that cannot be reached, and a code that is not one, say so '
+      'on their screens in both languages, with no exception text', () async {
+    // A port nothing listens on; a server that answers HTTP and is not a
+    // relay; and a secure connection asked of that same plain server.
+    final closed = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final deadPort = closed.port;
+    await closed.close();
+    final http = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    http.listen((r) {
+      r.response.statusCode = 200;
+      r.response.write('hello');
+      r.response.close();
+    });
+    bool raw(String s) =>
+        RegExp(r'Exception|Error|errno|pairing:').hasMatch(s);
+    try {
+      for (final (what, name, url) in [
+        ('nothing listening', 'Alice20a', 'ws://127.0.0.1:$deadPort'),
+        ('an address that is not a relay', 'Alice20b',
+            'ws://127.0.0.1:${http.port}'),
+        ('no secure connection to be had', 'Alice20c',
+            'wss://127.0.0.1:${http.port}'),
+      ]) {
+        final alice = await person(name, url: url);
+        final hosted = await alice.svc
+            .hostDeviceLink(PairingCode.generate().text,
+                confirmSas: (_) async => true)
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        final n = await NewDeviceLink.create();
+        final joined = await n
+            .run(relayUrl: url, confirm: (_) async => true)
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        final words = [
+          phoneScreen(hosted),
+          hostLinkFailureText(es, hosted!),
+          laptopScreen(joined),
+          newDeviceLinkFailureText(es, joined!),
+        ];
+        expect(words, [
+          relayUnreachable,
+          relayUnreachableEs,
+          relayUnreachable,
+          relayUnreachableEs
+        ], reason: '$what: each screen says it could not reach the relay');
+        expect(words.where(raw), isEmpty, reason: what);
+      }
+      // A code too short to be one, typed on the phone: nothing is sent.
+      final alice = await person('Alice20d');
+      final typed = await alice.svc
+          .hostDeviceLink('ABCD', confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      expect([phoneScreen(typed), hostLinkFailureText(es, typed!)],
+          [notACode, notACodeEs],
+          reason: 'what was typed is not a pairing code');
+    } finally {
+      await http.close(force: true);
     }
   });
 }

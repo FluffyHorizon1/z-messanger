@@ -2179,7 +2179,10 @@ that side's connection closes, and says so; a new device whose connection
 dropped used to wait out the whole of its wait for the enrollment, and
 then say that the other device had sent nothing. And an enrollment the new
 device cannot open, or cannot install, ends its attempt in words of their
-own in the reference client, not in the error that stopped it.
+own in the reference client, not in the error that stopped it; so do a
+relay neither device could reach and, on the existing device, a code that
+is not one, and whatever no words name ends in one line of the reader's
+language. Neither screen shows an exception's own text.
 
 What this leaves is an installed but unlisted new device, whenever the new
 device installs the enrollment and the existing device never hears that it

@@ -653,14 +653,17 @@
   "@linkNewCode": {
     "description": "On the new device, after an attempt that got as far as the other device's answer. Each attempt past that point is spent and the next one needs a new code, which the screen now shows; the person must enter the new one, not the old."
   },
-  "linkFailed": "Link failed: {error}",
-  "@linkFailed": {
-    "description": "Pairing failed; {error} is the underlying message.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
+  "linkFailedOther": "The link failed. Start again on both devices.",
+  "@linkFailedOther": {
+    "description": "On either linking screen, when the link stopped for a reason no other message names: the other device broke a rule of the ceremony, or something this device did not expect went wrong. Never followed by the error's own text, which is in English and means nothing to the reader."
+  },
+  "linkRelayUnreachable": "This device could not reach the relay. Check that it is online and that the relay address is right, then start again on both devices.",
+  "@linkRelayUnreachable": {
+    "description": "On either linking screen, when this device could not open its connection to the relay at all: no network, nothing listening at the relay's address, an address that answers but is not a relay, or a secure connection that could not be made."
+  },
+  "linkNotACode": "That is not a pairing code. Enter the whole code the new device shows, then try again.",
+  "@linkNotACode": {
+    "description": "On the existing device (Link a device), when what was typed into the pairing code field cannot be a pairing code: too short, or too few of its characters are ones a code has. Nothing was sent."
   },
   "linkPeerUnconfirmed": "The new device did not confirm the code in time, or its person said the codes differ, so nothing was sent to it. Start again on both devices, and confirm on both within about forty seconds of each other.",
   "@linkPeerUnconfirmed": {
