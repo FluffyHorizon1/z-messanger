@@ -20,8 +20,9 @@
 //     beside the seed;
 //   * `cseal_<rid>` — one [SealRecord] per contact: each of their devices'
 //     sealing key and `pqdc` as announced, whether that device has said it
-//     holds this one's (`pqs:1`) and when this one last announced its own to
-//     it. Gone with the contact (`ChatService.contactKvFamilies`);
+//     holds this one's (`pqs:1`), when this one last announced its own to
+//     it, and whether it has started over since it announced its own. Gone
+//     with the contact (`ChatService.contactKvFamilies`);
 //   * `oseal` — the same for this account's own other devices.
 //
 // Neither of the last two is in the archive. A device that lost them — a
@@ -76,12 +77,21 @@ class DeviceSeal {
   /// different key from the device clears it, as it clears [pqdc].
   bool byCeremony;
 
+  /// 44.5 (§18.11): that device has started over since it last announced
+  /// its key, so the key held may no longer be its key, and this device does
+  /// not say `pqs:1` to it until it announces one again. Through 4.8.0 the
+  /// stamp went on regardless: a device restored onto a new sealing key heard
+  /// "I hold your key" of its old one, took it for its new one, and never
+  /// announced the new one here.
+  bool stale;
+
   DeviceSeal(
       {this.ek,
       this.pqdc,
       this.holdsMine = false,
       this.announcedMs = 0,
-      this.byCeremony = false});
+      this.byCeremony = false,
+      this.stale = false});
 
   Map<String, Object?> toJson() => {
         if (ek != null) 'ek': b64(ek!),
@@ -89,6 +99,7 @@ class DeviceSeal {
         if (holdsMine) 'pqs': 1,
         if (announcedMs > 0) 'at': announcedMs,
         if (byCeremony && ek != null) 'c3': 1,
+        if (stale && ek != null) 'st': 1,
       };
 
   /// Each member held to the shape it must have — a key FIPS 203 §7.2
@@ -115,6 +126,7 @@ class DeviceSeal {
     if (at is int && at > 0) out.announcedMs = at;
     // Only beside the key it was said of.
     out.byCeremony = out.ek != null && raw['c3'] == 1;
+    out.stale = out.ek != null && raw['st'] == 1;
     return out;
   }
 }

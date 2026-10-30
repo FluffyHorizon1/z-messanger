@@ -79,7 +79,15 @@
 //      device: its root forgets over self-sync, and its account's contact
 //      forgets on the door it takes a contact's other device by, and both
 //      announce again; all three end holding one another's keys and having
-//      heard that the others hold theirs.
+//      heard that the others hold theirs;
+//  16. (44.5, PROTOCOL §18.11) a device restored onto a NEW sealing key — an
+//      archive that carried none, as every one from before 44.3 — is heard:
+//      its contact, which held its old key and said so on everything it
+//      sent, stops saying so once the restored device's new session reaches
+//      it, and so the restored device announces its new key, which the
+//      contact ends holding. Through 4.8.0 the contact went on saying it,
+//      the restored device took that for its new key, and announced
+//      nothing.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -1568,5 +1576,47 @@ void main() {
         reason: 'the root announced its key again, over self-sync');
     expect(carol.debugPqSealSends, greaterThan(carolBefore),
         reason: "Carol announced hers again, to her contact's other device");
+  });
+
+  test(
+      '16. a device restored onto a new sealing key is heard: its contact '
+      'stops saying it holds the old one, and ends holding the new', () async {
+    final (alice, aliceDir) = await fresh('alice16');
+    final (bob, _) = await fresh('bob16');
+    await befriend(alice, bob);
+    var n = 0;
+    await waitFor(() async {
+      await exchange(alice, bob, 'k${n++}');
+      return alice.debugPqSealOf(bob.myRid) != null &&
+          bob.debugPqSealOf(alice.myRid) != null &&
+          alice.debugHoldsMySealKey(bob.myRid) &&
+          bob.debugHoldsMySealKey(alice.myRid);
+    }, what: 'keys exchanged and stamped both ways');
+    final oldKey = alice.debugSealingKey!;
+
+    // Alice's phone is lost, and restored from an archive with no sealing
+    // key in it: her first start draws a new one.
+    final (file, code) = await backup(alice, 'alice16');
+    await lose(alice, aliceDir);
+    final vault = await restoreInto(aliceDir, file, code);
+    await vault.kvDelete('seal_seed');
+    await vault.kvDelete('pqdc');
+    final revived = await boot(vault, 'alice16');
+    await waitUntil(() => up(revived), what: 'the restored device up');
+    final newKey = revived.debugSealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key');
+    expect(bob.debugPqSealOf(revived.myRid), oldKey,
+        reason: 'the premise: Bob holds the old one, and has said so');
+    revived.pqOfferRetry = 300;
+    bob.pqOfferRetry = 300;
+    var m = 0;
+    await waitFor(() async {
+      await exchange(revived, bob, 'after${m++}');
+      final held = bob.debugPqSealOf(revived.myRid);
+      return held != null &&
+          constantTimeEquals(held, newKey) &&
+          revived.debugHoldsMySealKey(bob.myRid);
+    }, what: "Bob holding the restored device's new key, and saying so");
+    expect(bob.debugPqSealOf(revived.myRid), newKey);
   });
 }

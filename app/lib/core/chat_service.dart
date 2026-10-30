@@ -4270,12 +4270,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
 
   /// Whether what this device sends [deviceRid] — one of [owner]'s, or
   /// (null) one of mine — says `pqs:1`: it holds that device's sealing key.
+  /// 44.5: not to a contact's device that has started over since it last
+  /// announced its key ([DeviceSeal.stale]), which may be another key now.
   bool _stampsPqsTo(String? owner, String deviceRid) {
     if (debugBuildBeforeSealingKeys) return false;
-    return (owner == null ? _ownSeals : _contactSeals[owner])
-            ?.devices[deviceRid]
-            ?.ek !=
-        null;
+    final d = (owner == null ? _ownSeals : _contactSeals[owner])
+        ?.devices[deviceRid];
+    return d?.ek != null && !d!.stale;
   }
 
   /// [owner]'s record — null for mine — made when first needed; null for a
@@ -4338,13 +4339,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   static bool _keepSeal(
       DeviceSeal d, Uint8List? ek, Uint8List? pqdc, bool stamped) {
     var changed = false;
-    if (ek != null && !(d.ek != null && constantTimeEquals(d.ek!, ek))) {
-      if (d.ek != null) {
-        d.pqdc = null;
-        d.byCeremony = false;
+    if (ek != null) {
+      if (!(d.ek != null && constantTimeEquals(d.ek!, ek))) {
+        if (d.ek != null) {
+          d.pqdc = null;
+          d.byCeremony = false;
+        }
+        d.ek = ek;
+        changed = true;
       }
-      d.ek = ek;
-      changed = true;
+      // Its key, announced since it started over: said to be held again.
+      if (d.stale) {
+        d.stale = false;
+        changed = true;
+      }
     }
     if (pqdc != null &&
         !(d.pqdc != null && constantTimeEquals(d.pqdc!, pqdc))) {
@@ -4375,6 +4383,28 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     return true;
   }
 
+  /// 44.5: whether [dec] came on a session [conv]'s peer opened while this
+  /// side held another that had carried its traffic — the protocol's own
+  /// rule for a peer that lost its state, which it pins (`Conversation`'s
+  /// decrypt): a restore, a reinstall, a session it reset. Not the first
+  /// session of a pair, nor two opened at once, which convergence settles.
+  static bool _peerStartedOver(Conversation conv, DecryptResult dec) =>
+      dec.createdNewSession &&
+      conv.sessions.values.any((s) => s.sid != dec.sid && s.receivedAny);
+
+  /// 44.5 (§18.11): [deviceRid], one of [owner]'s devices, has started over
+  /// ([_peerStartedOver]). It may have lost its seed, and so its sealing key:
+  /// this device stops saying it holds its key until it announces one again
+  /// ([DeviceSeal.stale]). In memory, in the order the ratchet decrypts;
+  /// whether anything changed.
+  bool _startedOver(String owner, String deviceRid) {
+    if (debugBuildBeforeSealingKeys) return false;
+    final d = _contactSeals[owner]?.devices[deviceRid];
+    if (d == null || d.ek == null || d.stale) return false;
+    d.stale = true;
+    return true;
+  }
+
   /// 44.3 (§18.11): what [inner], from [deviceRid] — one of [owner]'s
   /// devices — says about sealing keys, taken in memory: the key its
   /// `pqseal` announces ([_announcedSealKey]), from then on stamped back as
@@ -4386,13 +4416,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// in the order the ratchet decrypted the messages — on the contact's
   /// door under the conversation's lock, on their other devices' in the
   /// dispatch's turn — so a stamp said on the old session cannot land after
-  /// the new one has forgotten it. Kept, not judged: whether a `pqdc`
-  /// verifies under the contact's established key is 44.5's question.
-  /// Whether anything changed, for the caller to write ([_saveSeals]).
+  /// the new one has forgotten it. [startedOver]: that device has started
+  /// over ([_peerStartedOver]), which is taken first too ([_startedOver]).
+  /// Kept, not judged: whether a `pqdc` verifies under the contact's
+  /// established key is 44.5's question. Whether anything changed, for the
+  /// caller to write ([_saveSeals]).
   bool _sealNews(String owner, String deviceRid, InnerMessage inner,
-      {bool newSession = false}) {
+      {bool newSession = false, bool startedOver = false}) {
     if (debugBuildBeforeSealingKeys) return false;
-    final forgot = newSession && _forgetHeldMine(owner, deviceRid);
+    var forgot = newSession && _forgetHeldMine(owner, deviceRid);
+    // 44.5: and, when that device has started over, this one stops saying
+    // it holds its key ([_startedOver]).
+    if (startedOver && _startedOver(owner, deviceRid)) forgot = true;
     final ek = _announcedSealKey(inner);
     final pqdc = inner.pqidAttestation;
     final stamped = inner.saysHoldsSealKey;
@@ -4405,8 +4440,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// [_sealNews] for [contact]'s device [deviceRid], written down.
   Future<void> _takeSealNews(
       Contact contact, String deviceRid, InnerMessage inner,
-      {bool newSession = false}) async {
-    if (_sealNews(contact.rid, deviceRid, inner, newSession: newSession)) {
+      {bool newSession = false, bool startedOver = false}) async {
+    if (_sealNews(contact.rid, deviceRid, inner,
+        newSession: newSession, startedOver: startedOver)) {
       await _saveSeals(contact.rid);
     }
   }
@@ -5671,6 +5707,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         if (dec.createdNewSession &&
             !debugBuildBeforeSealingKeys &&
             _forgetHeldMine(contact.rid, contact.rid)) {
+          sealsChanged = true;
+        }
+        // 44.5: and, when their device has started over, it is not told this
+        // device holds its key until it announces one again ([_startedOver]).
+        if (_peerStartedOver(conv, dec) &&
+            _startedOver(contact.rid, contact.rid)) {
           sealsChanged = true;
         }
 
@@ -15559,8 +15601,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     String? offer;
     // 44.3: the envelope came on a ratchet session that device opened, kept
     // once the ratchet is written down ([_forgetHeldMine], in the dispatch's
-    // turn).
+    // turn). 44.5: and that device started over ([_peerStartedOver]).
     var newSession = false;
+    var startedOver = false;
     // The session as it was before the decrypt. Everything this method does
     // with `inner` below is a store, and the acknowledgement now waits for
     // all of it; if any of it throws, this is what puts the ratchet back so
@@ -15628,6 +15671,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         return;
       }
       newSession = dec.createdNewSession;
+      final conv = s.targetConversation(fromDeviceRid);
+      startedOver = conv != null && _peerStartedOver(conv, dec);
       try {
         inner = InnerMessage.fromBytes(dec.plaintext);
       } on FormatException {
@@ -15692,9 +15737,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // redelivery would end here too. (44.3: the session it opened stands,
       // so it forgets the stamp all the same.)
       transport.ackReceived(id: m.id, from: m.from);
-      if (newSession &&
+      var forgot = newSession &&
           !debugBuildBeforeSealingKeys &&
-          _forgetHeldMine(rid, fromDeviceRid)) {
+          _forgetHeldMine(rid, fromDeviceRid);
+      if (startedOver && _startedOver(rid, fromDeviceRid)) forgot = true;
+      if (forgot) {
         try {
           await _saveSeals(rid);
         } catch (_) {}
@@ -15704,7 +15751,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     try {
       if (before != null) await before;
       await _dispatchExtraInner(contact, rid, fromDeviceRid, inner!,
-          newSession: newSession);
+          newSession: newSession, startedOver: startedOver);
     } catch (e) {
       if (_isTransientInboundFailure(e)) {
         // Put the ratchet back and leave the envelope with the relay, exactly
@@ -15752,7 +15799,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// catch, before the acknowledgement rather than after it.
   Future<void> _dispatchExtraInner(
       Contact contact, String rid, String fromDeviceRid, InnerMessage message,
-      {bool newSession = false}) async {
+      {bool newSession = false, bool startedOver = false}) async {
     final inner = message;
     // 44.3 (§18.11): as on the primary path, for this one of their devices
     // — a session it opened forgetting a stamp first ([newSession]) — taken
@@ -15760,7 +15807,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // decrypted them in, so nothing below can keep it from being taken.
     try {
       await _takeSealNews(contact, fromDeviceRid, inner,
-          newSession: newSession);
+          newSession: newSession, startedOver: startedOver);
     } catch (_) {}
     // ADR 0029: what this device of theirs says it reads, before anything
     // below answers it — as on the primary door ([_onInbound]); and, as
