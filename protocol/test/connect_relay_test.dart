@@ -86,12 +86,21 @@ import 'package:z_protocol/z_protocol.dart';
 //     dies once the relay has it comes back to it: one string, one message
 //     under its id. Until 2026-10-29 a post again was not written first:
 //     the acceptor so killed came back to the record from before its
-//     message 2 and drew another, and the inviter made a second message 3.
+//     message 2 and drew another, and the inviter made a second message 3;
+// 13. an inviter whose round aborts — refusing the acceptor at message 4,
+//     or at a message 2 that does not open — writes the run down spent and
+//     then acknowledges what that round read, so its mailbox is left empty;
+//     refusing at message 4, its run read back is spent, and the acceptor's
+//     mailbox holds the receipt a completed ceremony leaves there; and when
+//     its link drops once that write is made, the round aborts all the
+//     same, message 4 left in its mailbox. An acceptor whose round aborts
+//     acknowledges nothing it read: the message 3 it refused stays in its
+//     mailbox, and no receipt for it reaches the inviter's. Until 2026-10-30
+//     neither side acknowledged anything an aborting round read.
 //
-// Criteria 5, 6, 7, 10, 11 and 12 are asserted against what the relay
-// actually saw, not against what the client meant to send: every frame
-// passes through a recording WebSocket tap standing between the clients and
-// the relay.
+// Criteria 5, 6, 7 and 10 to 13 are asserted against what the relay actually
+// saw, not against what the client meant to send: every frame passes through
+// a recording WebSocket tap standing between the clients and the relay.
 //
 // One more, unnumbered test covers the transport's half of 17.1's criterion
 // 2: what a refusal does to an invite once the frames are coming out of a
@@ -113,6 +122,11 @@ void main() {
   // relay has it, or, when `relayTakes`, once the relay has answered it and
   // before that answer reaches the client.
   ({String id, bool relayTakes})? drop;
+
+  // The links the tap carries now: each one's cut, and what completes once
+  // its client has closed its end — has read the close and answered it, so
+  // knows the link is gone (criterion 13).
+  final links = <({void Function() cut, Future<void> gone})>[];
 
   setUpAll(() async {
     final serverDir =
@@ -187,6 +201,14 @@ void main() {
         unawaited(upstream.close());
       }
 
+      final gone = Completer<void>();
+      final link = (cut: cut, gone: gone.future);
+      links.add(link);
+      void over() {
+        links.remove(link);
+        if (!gone.isCompleted) gone.complete();
+      }
+
       down.listen((d) {
         inOrder = inOrder.then((_) async {
           if (dead) return;
@@ -221,9 +243,13 @@ void main() {
             upstream.add(d);
           }
         });
-      },
-          onDone: () => inOrder = inOrder.then((_) => upstream.close()),
-          onError: (_) => inOrder = inOrder.then((_) => upstream.close()));
+      }, onDone: () {
+        over();
+        inOrder = inOrder.then((_) => upstream.close());
+      }, onError: (_) {
+        over();
+        inOrder = inOrder.then((_) => upstream.close());
+      });
       upstream.listen((d) {
         if (dead) return;
         note(d);
@@ -1006,6 +1032,199 @@ void main() {
     expect(ended, [
       'one string; z-connect-c2 messages: 1',
       'one string; z-connect-c3 messages: 1',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('13. an inviter whose round aborts leaves its mailbox empty once the '
+      'run is written down spent; an acceptor whose round aborts tells the '
+      'inviter nothing', () async {
+    final (alice, _) = await person('Alice');
+    final (bob, _) = await person('Bob');
+    Future<bool> isAlice(ConnectIdentity p) async =>
+        b64(p.accountEdPub) == b64(alice.accountEdPub);
+    Future<bool> isBob(ConnectIdentity p) async =>
+        b64(p.accountEdPub) == b64(bob.accountEdPub);
+
+    // What one of [code]'s mailboxes holds, frames and receipts both, read
+    // without acknowledging any of it: a marker posted behind it, and the
+    // mailbox read until the marker arrives (the relay flushes a mailbox in
+    // the order it was filled).
+    Future<List<String>> left(ConnectCode code, String role) async {
+      final who = await mailboxIdentity(code, role);
+      final marker = 'z-peek-${b64url(randomBytes(9))}';
+      final poster = await RelayClient.connect(url, await ZIdentity.generate());
+      await poster.send(to: await who.routingId(), id: marker, payload: '{}');
+      await poster.close();
+      final c = await RelayClient.connect(url, who);
+      final got = <String>[];
+      final arrived = Completer<void>();
+      final frames = c.messages.listen((e) {
+        if (e.id != marker) {
+          got.add(e.id);
+        } else if (!arrived.isCompleted) {
+          c.ackReceived(id: e.id, from: e.from);
+          arrived.complete();
+        }
+      });
+      final receipts = c.delivered.listen((d) => got.add('receipt ${d.id}'));
+      try {
+        await arrived.future.timeout(const Duration(seconds: 20));
+      } finally {
+        await frames.cancel();
+        await receipts.cancel();
+        await c.close();
+      }
+      return got;
+    }
+
+    // Each run written down when it is made, and then where its step asks,
+    // as the app writes it; and read back from that record alone.
+    final record = <String, String>{};
+    ConnectRun made(String key, ConnectRun r) {
+      record[key] = jsonEncode(r.toJson());
+      return r;
+    }
+
+    Future<void> Function() writes(String key, ConnectRun r) =>
+        () async => record[key] = jsonEncode(r.toJson());
+    Future<ConnectRun> back(String key) =>
+        ConnectRun.fromJson(jsonDecode(record[key]!) as Map<String, Object?>);
+    final ended = <String>[];
+
+    // Alice refuses Bob at message 4: her round reads his reveal and ends.
+    {
+      final inv = made('i', await ConnectRun.invite(me: alice));
+      final acc = made('r', ConnectRun.accept(me: bob, code: inv.code));
+      Future<ConnectProgress> alices() => inv.step(
+          relayUrl: url, poll: p, refusePeer: isBob, persist: writes('i', inv));
+      Future<ConnectProgress> bobs() =>
+          acc.step(relayUrl: url, poll: p, persist: writes('r', acc));
+      final rounds = [
+        await alices(),
+        await bobs(),
+        await alices(),
+        await bobs(),
+        await alices(),
+      ];
+      final again = await back('i');
+      final written = again.finished && again.abortReason != null;
+      final atInviter = await left(inv.code, 'i');
+      final atAcceptor = await left(inv.code, 'r');
+      // Read back and stepped as the app steps it, after a restart.
+      final readBack =
+          await again.step(relayUrl: url, poll: p, refusePeer: isBob);
+      ended.add('the inviter refusing at message 4: ${rounds.last.name}, its '
+          'last write spent $written, read back ${readBack.name}; left at the '
+          'inviter $atInviter, at the acceptor $atAcceptor');
+    }
+
+    // The same, and Alice's link drops once that round has written the run
+    // down spent, before its acknowledgements: every link the tap carries
+    // is cut there, and her write returns once each client has closed its
+    // end. The round aborts all the same, and what it read waits.
+    {
+      final inv = made('i4', await ConnectRun.invite(me: alice));
+      final acc = made('r4', ConnectRun.accept(me: bob, code: inv.code));
+      var link = 'never cut';
+      Future<void> alicesWrites() async {
+        await writes('i4', inv)();
+        if (!inv.finished) return;
+        final now = List.of(links);
+        for (final l in now) {
+          l.cut();
+        }
+        try {
+          await Future.wait(now.map((l) => l.gone))
+              .timeout(const Duration(seconds: 20));
+          link = 'cut and gone';
+        } on TimeoutException {
+          link = 'cut, and still open after 20 s';
+        }
+      }
+
+      Future<ConnectProgress> alices() => inv.step(
+          relayUrl: url, poll: p, refusePeer: isBob, persist: alicesWrites);
+      Future<ConnectProgress> bobs() =>
+          acc.step(relayUrl: url, poll: p, persist: writes('r4', acc));
+      await alices();
+      await bobs();
+      await alices();
+      await bobs();
+      String last;
+      try {
+        last = (await alices()).name;
+      } on RelayException catch (e) {
+        last = 'threw "${e.message}"';
+      }
+      final again = await back('i4');
+      ended.add('the inviter refusing at message 4, its link dropping as the '
+          'run is written down: $last, its last write spent '
+          '${again.finished && again.abortReason != null}, its link $link; '
+          'left at the inviter ${await left(inv.code, 'i')}, at the acceptor '
+          '${await left(inv.code, 'r')}');
+    }
+
+    // A message 2 that does not open, from anyone holding the code — who
+    // holds both mailbox keys: Alice's round reads it and ends.
+    {
+      final inv = made('i2', await ConnectRun.invite(me: alice));
+      await inv.step(relayUrl: url, poll: p, persist: writes('i2', inv));
+      final impostor =
+          await RelayClient.connect(url, await mailboxIdentity(inv.code, 'r'));
+      await impostor.send(
+        to: await (await mailboxIdentity(inv.code, 'i')).routingId(),
+        id: 'z-connect-c2',
+        payload: jsonEncode(
+            {'k': 'x2', 'ephx': b64(Uint8List(8)), 'c': b64(Uint8List(32))}),
+      );
+      await impostor.close();
+      final progress =
+          await inv.step(relayUrl: url, poll: p, persist: writes('i2', inv));
+      final again = await back('i2');
+      ended.add('the inviter at a message 2 that does not open: '
+          '${progress.name}, its last write spent '
+          '${again.finished && again.abortReason != null}; left at the '
+          'inviter ${await left(inv.code, 'i')}');
+    }
+
+    // Bob refuses Alice at message 3: his round reads her reveal and ends,
+    // before his own goes.
+    {
+      final inv = made('i3', await ConnectRun.invite(me: alice));
+      final acc = made('r3', ConnectRun.accept(me: bob, code: inv.code));
+      await inv.step(relayUrl: url, poll: p, persist: writes('i3', inv));
+      await acc.step(
+          relayUrl: url,
+          poll: p,
+          refusePeer: isAlice,
+          persist: writes('r3', acc));
+      await inv.step(relayUrl: url, poll: p, persist: writes('i3', inv));
+      final progress = await acc.step(
+          relayUrl: url,
+          poll: p,
+          refusePeer: isAlice,
+          persist: writes('r3', acc));
+      ended.add('the acceptor refusing at message 3: ${progress.name}; left '
+          'at the acceptor ${await left(inv.code, 'r')}, at the inviter '
+          '${await left(inv.code, 'i')}');
+    }
+
+    expect(ended, [
+      'the inviter refusing at message 4: aborted, its last write spent true, '
+          'read back spent; left at the inviter [], at the acceptor [receipt '
+          'z-connect-c4]',
+      // Message 4 stays, unacknowledged, as what the round that reaches the
+      // digits read stays when its link drops there (§20.5).
+      'the inviter refusing at message 4, its link dropping as the run is '
+          'written down: aborted, its last write spent true, its link cut and '
+          'gone; left at the inviter [z-connect-c4], at the acceptor []',
+      'the inviter at a message 2 that does not open: aborted, its last write '
+          'spent true; left at the inviter []',
+      // Its message 3 is left where it was, and no receipt for it reaches
+      // the inviter's mailbox: what a blocked inviter sees is what it sees
+      // of an acceptor not yet back.
+      'the acceptor refusing at message 3: aborted; left at the acceptor '
+          '[z-connect-c3], at the inviter []',
     ]);
   }, timeout: const Timeout(Duration(minutes: 3)));
 

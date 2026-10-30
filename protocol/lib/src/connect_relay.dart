@@ -294,23 +294,25 @@ class ConnectRun with _Unposted {
   /// again ([_Unposted]). Persist the run after each call, whether it
   /// returned or threw — see [toJson].
   ///
-  /// [persist]: write the run down, as [toJson] has it, and only then
-  /// return. It is called where a round needs the record to say already
-  /// what the relay may know: once a message 2 or 3 is drawn and held,
-  /// before its first post and before any post of it again; and once the
-  /// round has taken in what it read, before the relay is told to forget
-  /// it. So an app that dies anywhere in a round comes back to a record
-  /// holding any message 2 or 3 the relay may have from it, and posts that
-  /// message rather than drawing another — and never to a record from
-  /// before something it acknowledged. What the round that reaches the
-  /// digits read is left at the relay when the app dies between that
-  /// round's write and its acknowledgements: a run that holds its session
-  /// never connects again (§20.5). Until 2026-10-29 nothing was written
-  /// until the round was over, and an app that died after the relay took
-  /// its message 2 drew a second one, which the relay, holding the first
-  /// under its id, dropped: the invite was spent at message 3. A throw from
-  /// [persist] ends the round there, as a network failure does — nothing
-  /// more posted, nothing acknowledged.
+  /// [persist]: write the run down, as [toJson] has it, and only then return.
+  /// It is called where a round needs the record to say already what the
+  /// relay may know: once a message 2 or 3 is drawn and held, before its
+  /// first post and before any post of it again; and once the round has taken
+  /// in what it read, before the relay is told to forget it — an inviter's
+  /// aborting round among them, written down spent before what it read is
+  /// acknowledged. So an app that dies anywhere in a round comes back to a
+  /// record holding any message 2 or 3 the relay may have from it, and posts
+  /// that message rather than drawing another — and never to a record from
+  /// before something it acknowledged. What the round that reaches the digits
+  /// read is left at the relay when the app dies between that round's write
+  /// and its acknowledgements: a run that holds its session never connects
+  /// again (§20.5). Until 2026-10-29 nothing was written until the round was
+  /// over, and an app that died after the relay took its message 2 drew a
+  /// second one, which the relay, holding the first under its id, dropped:
+  /// the invite was spent at message 3. A throw from [persist] ends the round
+  /// there, as a network failure does — nothing more posted, nothing
+  /// acknowledged — but for an aborting round's: that round returns
+  /// [ConnectProgress.aborted] all the same, having acknowledged nothing.
   ///
   /// [refusePeer]: asked about the identity the other side revealed, the
   /// moment this side has it checked against its commitment — and, on the
@@ -380,6 +382,17 @@ class ConnectRun with _Unposted {
       abortReason = e.message;
       _spent = true;
       _unposted = null;
+      // What the round read is acknowledged as a completing round's is — by
+      // the inviter, and only once the run is written down spent
+      // ([_acknowledgeAbort]). The acceptor acknowledges nothing an
+      // aborting round read: the relay answers the acknowledgement of a
+      // ceremony frame with a `delivered` receipt for the mailbox that
+      // posted it (§12.5), so after message 1 it would tell whoever posted
+      // that the invite was opened, and after message 3 that this side read
+      // the inviter's reveal and went no further — which a refusal of a
+      // blocked inviter, at message 3, must not tell it (§20.8). What the
+      // acceptor read waits out the queue lifetime (§20.5).
+      if (inviter) await _acknowledgeAbort(client, spent, inbox, persist);
       return ConnectProgress.aborted;
     } finally {
       await sub.cancel();
@@ -527,6 +540,37 @@ Future<ZIdentity> mailboxIdentity(ConnectCode code, String role) async {
     edSeed: Uint8List.fromList(b.sublist(0, 32)),
     xSeed: Uint8List.fromList(b.sublist(32, 64)),
   );
+}
+
+/// What an inviter's aborting round read — what it took, and whatever else
+/// its mailbox delivered — acknowledged once [persist] has written the run
+/// down spent, so the relay forgets it only once nothing will read it again:
+/// a run that is spent never connects. A write refused here acknowledges
+/// nothing, and an app that dies before the write lands comes back to the
+/// record from before the round, reads the same frame and aborts on it again;
+/// a link that drops once the write is made leaves what it had not yet
+/// acknowledged at the relay, as the round that reaches the digits leaves
+/// what it read (§20.5); and a step given no [persist] acknowledges nothing
+/// either, since nothing then says the run was spent before the relay forgot
+/// why. None of them ends the round other than [ConnectProgress.aborted]: the
+/// run is spent by then, and a step of a spent run returns
+/// [ConnectProgress.spent] without connecting, so a round that threw here
+/// would leave its caller told of the link and never of the abort. Until
+/// 2026-10-30 an aborting round acknowledged nothing, and what it read waited
+/// out the queue lifetime (§20.5).
+Future<void> _acknowledgeAbort(RelayClient client, List<RelayInbound> spent,
+    List<RelayInbound> inbox, Future<void> Function()? persist) async {
+  final read = [...spent, ...inbox];
+  if (read.isEmpty || persist == null) return;
+  try {
+    await persist();
+  } catch (_) {
+    return;
+  }
+  for (final e in read) {
+    if (!client.isOpen) return;
+    client.ackReceived(id: e.id, from: e.from);
+  }
 }
 
 /// One side of a version-3 invite (§20.9), durable across restarts: the same
@@ -728,6 +772,9 @@ class ConnectRunV3 with _Unposted {
       abortReason = e.message;
       _spent = true;
       _unposted = null;
+      // As for version 2: the inviter acknowledges what its aborting round
+      // read once the run is written down spent; the acceptor, nothing.
+      if (inviter) await _acknowledgeAbort(client, spent, inbox, persist);
       return ConnectProgress.aborted;
     } finally {
       await sub.cancel();

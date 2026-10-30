@@ -5270,7 +5270,7 @@ before it was drawn, and an app that died then came back to that record and
 drew the message again.
 
 What can still be left at the relay is a ceremony frame nobody reads, in
-three ways. Message 4, posted in the round that completes the ceremony, is not
+four ways. Message 4, posted in the round that completes the ceremony, is not
 held: an app that dies after the relay took it and before that round is
 written down does the round again from message 3, which the relay still
 holds — the same reveal under the same channel, so the same digits — and if
@@ -5288,13 +5288,17 @@ dies, or whose link drops, between that write and its acknowledgements
 reaching the relay leaves what that round read — message 3 in the acceptor's
 mailbox, message 4 in the inviter's — since a run that holds its session
 does not connect again. That one is not a copy but the frame itself, read
-and kept by the side it was for. Each is a frame the relay has already
-carried. The messages are the same bytes as before; only a failed post adds
-a post. Beside the frames, a ceremony that completes can leave one receipt:
-the relay's `delivered` (192 bytes) for the inviter's acknowledgement of
-message 4, queued for the acceptor's mailbox when the acceptor is no longer
-connected, and nobody connects to that mailbox again (§12.5 item 3). It
-holds an id and a mailbox address, and nothing of a frame.
+and kept by the side it was for. An inviter whose round aborts (below) leaves
+what it read the same way, when its app dies or its link drops between that
+round's write and its acknowledgements — message 2 or message 4, in its own
+mailbox — since a run that is spent does not connect again either. And an
+acceptor whose round aborts leaves what that round read, on purpose (below).
+Each is a frame the relay has already carried. The messages are the same bytes
+as before; only a failed post adds a post. Beside the frames, a ceremony that
+completes can leave one receipt: the relay's `delivered` (192 bytes) for the
+inviter's acknowledgement of message 4, queued for the acceptor's mailbox when
+the acceptor is no longer connected, and nobody connects to that mailbox again
+(§12.5 item 3). It holds an id and a mailbox address, and nothing of a frame.
 
 Anyone holding the invite holds both mailbox key pairs — that is what makes
 the invite a bearer token (R23), and why it is one‑time and short‑lived. In
@@ -5302,14 +5306,31 @@ the middle of an invite of version 1 the relay needs neither: it writes into
 both mailboxes as the relay, and completes both legs (20.8).
 
 A client MUST acknowledge (§12.3) every ceremony envelope it has consumed, and
-MUST acknowledge whatever remains in its mailbox once the ceremony completes.
-Otherwise the transcript stays in relay RAM for the queue lifetime, where a
-party who later obtains the code can replay it. The reference client sends
-the acknowledgements of the round that reaches the digits — what that round
-read, and everything else its mailbox then holds — at the end of that round,
-once it has written the run down, and never again: an app that dies before
-they are sent, or a link that drops before they reach the relay, leaves them
-undone — the third way above.
+MUST acknowledge whatever remains in its mailbox once the ceremony completes —
+but for an acceptor whose round aborts, below. Otherwise the transcript stays
+in relay RAM for the queue lifetime, where a party who later obtains the code
+can replay it. The reference client sends the acknowledgements of the round
+that reaches the digits — what that round read, and everything else its
+mailbox then holds — at the end of that round, once it has written the run
+down, and never again: an app that dies before they are sent, or a link that
+drops before they reach the relay, leaves them undone — the third way above.
+
+An abort ends the ceremony too. An inviter whose round aborts — at a frame it
+cannot accept, or refusing the identity message 4 revealed (20.8) —
+acknowledges what that round read, and whatever else its mailbox then holds,
+once it has written the run down spent: a run that is spent never connects
+again, so nothing acknowledged can be read again by one that is not. Until
+2026‑10‑30 the reference client acknowledged nothing an aborting round read.
+An acceptor whose round aborts MUST NOT acknowledge what that round read. A
+ceremony frame is attributed, never sealed, and the relay answers its
+acknowledgement with a `delivered` receipt for the mailbox that posted it
+(§12.5 item 3): acknowledged, the message 1 an acceptor stops at would tell
+whoever posted it that the invite was opened, and the message 3 it stops at
+that it read the inviter's reveal and went no further — which a refusal of a
+blocked identity (20.8) must not tell it, since a block drops what comes from
+that identity without a trace (`adr/0011`, `adr/0024`). So what an aborting
+acceptor read, message 1 or the inviter's message 3, waits out the queue
+lifetime.
 
 An invite's lifetime is **24 hours** and is enforced by the clients, not by
 the relay: it is well inside `QUEUE_TTL_HOURS`, and the relay is never told.
