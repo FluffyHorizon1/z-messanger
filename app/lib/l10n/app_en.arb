@@ -645,9 +645,9 @@
       }
     }
   },
-  "linkHostMayBeOlder": "Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device's code was entered there.",
+  "linkHostMayBeOlder": "Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device's code was entered there. If it says another connection took over the link, someone else may have seen this code: go back, choose \"Link to an existing account\" again for a new code, and keep it to yourself.",
   "@linkHostMayBeOlder": {
-    "description": "On the new device, when nothing answered. The likeliest cause is that the device it is linking from runs an older version, which listens where an older pairing ceremony speaks; this version never falls back to it. Says which device to update \u2014 the one the person is linking from \u2014 and the other likely cause, a code not yet entered there."
+    "description": "On the new device, when nothing answered. The likeliest cause is that the device it is linking from runs an older version, which listens where an older pairing ceremony speaks; this version never falls back to it. Says which device to update \u2014 the one the person is linking from \u2014 and the other likely cause, a code not yet entered there. And the one this device cannot see: someone else who saw the code took the other device's side of the link over before this device got there, which that device then says; this device keeps its code across attempts, so the person gets a new one by going back and choosing \"Link to an existing account\" (onbLinkExisting) again."
   },
   "linkNewCode": "This device now shows a new code: enter it on your other device to try again.",
   "@linkNewCode": {
@@ -705,9 +705,13 @@
   "@linkTakenOver": {
     "description": "On the new device, when the relay closed its connection because another connection logged in as this link's mailbox. That mailbox comes from the pairing code alone, so whoever did it has seen the code. That connection can tell the other device that this one confirmed and installed the account, so the other device may list this one although it is not linked; the person revokes it there (Settings \u2192 Linked devices, as stSettings and stLinkedDevices word them). This device shows a new code for the next attempt."
   },
-  "linkHostTakenOver": "Another connection took over this link, so this device has not added the new one: someone else may have seen the code. Start again on both devices, and keep the code to yourself. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.",
+  "linkHostTakenOver": "Another connection took over this link, so this device has not added the new one: someone else may have seen the code, and this device will not use it again. Start again with a new code: if the new device still shows the old one, go back there and choose \"Link to an existing account\" again. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.",
   "@linkHostTakenOver": {
-    "description": "On the existing device, when the relay closed its connection because another connection logged in as this link's mailbox \u2014 someone else who has seen the pairing code. Nothing was added. The new device may have installed the account all the same; it is not on the account, and is wiped (Settings \u2192 Wipe everything, as stWipe words it) before it is linked again."
+    "description": "On the existing device, when the relay closed its connection because another connection logged in as this link's mailbox \u2014 someone else who has seen the pairing code. Nothing was added, and this device will not use that code again; the new device is closed the same way if it is still linking, and then shows a new code, and otherwise is sent back for one (\"Link to an existing account\", as onbLinkExisting words it). The new device may have installed the account all the same; it is not on the account, and is wiped (Settings \u2192 Wipe everything, as stWipe words it) before it is linked again."
+  },
+  "linkCodeSpent": "This device will not use that code again: another connection took over a link with it, so someone else may have seen it. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.",
+  "@linkCodeSpent": {
+    "description": "On the existing device (Link a device), when the code typed is one it saw taken over in an earlier attempt: someone else logged in as that link's mailbox, and still has the code. Nothing was sent. The person gets a new code on the new device by going back and choosing \"Link to an existing account\" (onbLinkExisting) again."
   },
   "linkADevice": "Link a device",
   "@linkADevice": {

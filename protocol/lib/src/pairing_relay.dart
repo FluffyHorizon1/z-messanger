@@ -443,7 +443,10 @@ class RelayPairing {
   /// ([PairingEnrolmentRefused]). Every other wait ends at once when the
   /// connection closes, and any of them, that one too, in
   /// [PairingTakenOver] when the relay closed it because another connection
-  /// logged in as this device's mailbox.
+  /// logged in as this device's mailbox. Before it throws that, it logs in
+  /// once as the new device's mailbox and leaves, so that a new device
+  /// still in the ceremony is closed the same way and says so too, rather
+  /// than wait out its timer and name a cause it cannot see (§10.2).
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -525,11 +528,35 @@ class RelayPairing {
         case _Sent.unreported:
           throw const PairingPeerUnfinished();
       }
+    } on PairingTakenOver {
+      // Someone else holding the code logged in as this device's mailbox.
+      // The new device, if it is still in the ceremony, cannot see that: it
+      // would wait out its timer and then name a cause it has no way to
+      // know. Logging in once as its mailbox closes its connection the same
+      // way, so that it stops at once, says another connection took the
+      // link over, and draws a new code.
+      await _closeTheOtherSide(
+          relayUrl, await relayIdentityV3(code, 'i'));
+      rethrow;
     } finally {
       await box?.close();
       await v2?.close();
       await v1?.close();
     }
+  }
+
+  /// Logs in once as [mailbox], the other side's v3 mailbox, and leaves at
+  /// once, reading and acknowledging nothing: the relay closes whatever
+  /// connection held that mailbox with [relayCloseReplaced], as it closed
+  /// this side's. Best effort: a relay this side cannot reach now changes
+  /// nothing, and what the relay holds for that mailbox stays as it was.
+  static Future<void> _closeTheOtherSide(
+      String relayUrl, ZIdentity mailbox) async {
+    try {
+      final c = await RelayClient.connect(relayUrl, mailbox,
+          timeout: const Duration(seconds: 5));
+      await c.close();
+    } catch (_) {}
   }
 
   /// Whether the relay closed [box]'s connection because another connection

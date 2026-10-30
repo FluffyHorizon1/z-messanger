@@ -17,6 +17,7 @@ import 'package:z_protocol/z_protocol.dart'
         PairingTakenOver,
         RelayException;
 
+import '../core/enrollment.dart' show PairingCodeSpent;
 import 'app_localizations.dart';
 
 // What each linking screen says when the ceremony stops (§10.2, 44.4), in
@@ -31,8 +32,9 @@ import 'app_localizations.dart';
 // other's, an enrolment that never came or was never installed — has words
 // of its own, and so do an enrolment that came and could not be opened or
 // installed, one the phone's own lost connection cut short or the relay
-// refused, a mailbox someone else holding the code logged in as, a relay
-// this device could not reach, a code that is not one, a timeout and a lost
+// refused, a mailbox someone else holding the code logged in as, a code
+// the phone saw taken over and will not use again, a relay this device
+// could not reach, a code that is not one, a timeout and a lost
 // connection. A phone whose connection drops while it sends the account
 // cannot tell whether the account got through, and says that, not that the
 // new device failed; the new device, sent nothing, names that among the
@@ -67,6 +69,7 @@ String hostLinkFailureText(AppLocalizations l, Object error) =>
       PairingEnrolmentRefused() => l.linkEnrolmentRefused,
       PairingTakenOver() => l.linkHostTakenOver,
       PairingCodeInvalid() => l.linkNotACode,
+      PairingCodeSpent() => l.linkCodeSpent,
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,
       _ when _unreachable(error) => l.linkRelayUnreachable,

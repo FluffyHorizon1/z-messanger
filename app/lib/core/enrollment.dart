@@ -130,6 +130,18 @@ class NewDeviceLink {
   }
 }
 
+/// What `ChatService.hostDeviceLink` throws for a code it will not use: one
+/// it saw taken over while it hosted a link with it, when someone else
+/// holding the code logged in as its mailbox (§10.2, [PairingTakenOver]).
+/// Whoever did that still has the code, so the person is told to get a new
+/// one from the new device. Nothing is sent.
+class PairingCodeSpent implements Exception {
+  const PairingCodeSpent();
+  @override
+  String toString() => 'PairingCodeSpent: this device saw this code taken '
+      'over, and will not use it again';
+}
+
 /// The per-contact `kv` families an enrolment carries (§10 `cstate`): the
 /// three post-quantum records (ADR 0027, 26.3), the contact's device list,
 /// the signature floor it has reached and the list's post-quantum

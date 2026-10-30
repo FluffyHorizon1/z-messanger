@@ -11,7 +11,8 @@ import 'alarm_evidence.dart';
 import 'archive.dart' show BackupArchive;
 import 'backup_store.dart';
 import 'device_sync.dart';
-import 'enrollment.dart' show enrollmentKvFamilies, isRootBundle, rootBundleKey;
+import 'enrollment.dart'
+    show PairingCodeSpent, enrollmentKvFamilies, isRootBundle, rootBundleKey;
 import 'handles.dart';
 import 'intro_links.dart' show introLinksEnabled;
 import 'key_transparency.dart';
@@ -8835,11 +8836,23 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// older version speaks a ceremony this one only listens for: it is
   /// recognised by its first frame and answered with nothing —
   /// [PairingPeerOutdated], naming the version it spoke, so the screen can
-  /// say to update that device.
+  /// say to update that device. A code whose mailbox someone else took over
+  /// while this device hosted a link with it ([PairingTakenOver]) is kept,
+  /// by its rendezvous id, and refused from then on ([PairingCodeSpent]),
+  /// across restarts.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
   }) async {
+    // What was typed, read first: a code that is not one says so at once
+    // ([PairingCodeInvalid]). One this device saw taken over — someone else
+    // logged in as its mailbox while it hosted a link — is not used again
+    // ([PairingCodeSpent]): whoever did it still has it.
+    final pairing = PairingCode.parse(code);
+    final mark = await pairing.rendezvousRoutingIdV3();
+    if ((await _spentLinkCodes()).contains(mark)) {
+      throw const PairingCodeSpent();
+    }
     // The new device needs the ACCOUNT's post-quantum public key, or it would
     // have no v3 identity to show and would fall back to classical codes
     // while the phone handed out hybrid ones (§18).
@@ -8853,33 +8866,43 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final hostBundle =
         asBefore || !acct.holdsAccountRoot ? null : await identity.bundle();
     Uint8List? enrolledPqdc;
-    final linked = debugPairAsVersion2
-        ? await RelayPairing.runExistingDeviceV2(
-            relayUrl: transport.serverUrl,
-            code: PairingCode.parse(code),
-            me: me,
-            contacts: bundles,
-            includeAccountRoot: false,
-            displayName: displayName,
-            contactState: contactState,
-            hostBundle: hostBundle,
-            confirm: confirmSas,
-            timeout: linkTimeout,
-          )
-        : await RelayPairing.runExistingDeviceV3(
-            relayUrl: transport.serverUrl,
-            code: PairingCode.parse(code),
-            me: me,
-            contacts: bundles,
-            displayName: displayName,
-            contactState: contactState,
-            hostBundle: hostBundle,
-            attest: (session) async =>
-                enrolledPqdc = await _attestLinkedDevice(session),
-            confirm: confirmSas,
-            timeout: linkTimeout,
-            margin: linkMargin,
-          );
+    final DeviceCertificate? linked;
+    try {
+      linked = debugPairAsVersion2
+          ? await RelayPairing.runExistingDeviceV2(
+              relayUrl: transport.serverUrl,
+              code: pairing,
+              me: me,
+              contacts: bundles,
+              includeAccountRoot: false,
+              displayName: displayName,
+              contactState: contactState,
+              hostBundle: hostBundle,
+              confirm: confirmSas,
+              timeout: linkTimeout,
+            )
+          : await RelayPairing.runExistingDeviceV3(
+              relayUrl: transport.serverUrl,
+              code: pairing,
+              me: me,
+              contacts: bundles,
+              displayName: displayName,
+              contactState: contactState,
+              hostBundle: hostBundle,
+              attest: (session) async =>
+                  enrolledPqdc = await _attestLinkedDevice(session),
+              confirm: confirmSas,
+              timeout: linkTimeout,
+              margin: linkMargin,
+            );
+    } on PairingTakenOver {
+      try {
+        await _spendLinkCode(mark);
+      } catch (_) {
+        // The takeover is what the screen says either way.
+      }
+      rethrow;
+    }
     if (linked == null) return false;
     // Before the device is added: its first `pqseal` can arrive as soon as
     // the self-sync channel names it ([_answerPqdcAsk]).
@@ -8887,6 +8910,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (pqdc != null) _enrolledPqdc[await linked.routingId()] = pqdc;
     await addMyDevice(linked, awaitProof: true);
     return true;
+  }
+
+  /// The vault key under which this device keeps the codes it saw taken
+  /// over while it hosted a link (§10.2), each by its v3 rendezvous id —
+  /// a hash of the code, not the code — the last [_spentLinkCodesKept].
+  static const String _spentLinkCodesKey = 'link_spent_codes';
+  static const int _spentLinkCodesKept = 32;
+
+  /// The codes [hostDeviceLink] will not use again, by rendezvous id.
+  Future<List<String>> _spentLinkCodes() async {
+    final raw = await vault.kvGet(_spentLinkCodesKey);
+    if (raw == null) return const [];
+    try {
+      final j = jsonDecode(raw);
+      return j is List ? [for (final e in j) if (e is String) e] : const [];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Keeps [mark], a code's rendezvous id, among [_spentLinkCodes].
+  Future<void> _spendLinkCode(String mark) async {
+    final kept = [...await _spentLinkCodes()];
+    if (kept.contains(mark)) return;
+    kept.add(mark);
+    await vault.kvPut(
+        _spentLinkCodesKey,
+        jsonEncode(kept.length > _spentLinkCodesKept
+            ? kept.sublist(kept.length - _spentLinkCodesKept)
+            : kept));
   }
 
   /// How long [hostDeviceLink] waits for each of the new device's frames:

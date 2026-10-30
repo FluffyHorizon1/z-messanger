@@ -500,7 +500,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get linkHostMayBeOlder =>
-      'Tu otro dispositivo no respondió. Puede que use una versión anterior de Z, que no puede vincularse con esta: actualiza Z en el dispositivo desde el que vinculas y vuelve a empezar. Si ya está actualizado, comprueba que allí se introdujo el código de este dispositivo.';
+      'Tu otro dispositivo no respondió. Puede que use una versión anterior de Z, que no puede vincularse con esta: actualiza Z en el dispositivo desde el que vinculas y vuelve a empezar. Si ya está actualizado, comprueba que allí se introdujo el código de este dispositivo. Si dice que otra conexión se hizo cargo de la vinculación, puede que alguien más haya visto este código: vuelve atrás, elige «Vincular a una cuenta existente» otra vez para obtener un código nuevo y no se lo enseñes a nadie.';
 
   @override
   String get linkNewCode =>
@@ -560,7 +560,11 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get linkHostTakenOver =>
-      'Otra conexión se hizo cargo de esta vinculación, así que este dispositivo no ha añadido el nuevo: puede que alguien más haya visto el código. Vuelve a empezar en los dos dispositivos y no enseñes el código a nadie. Si aun así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
+      'Otra conexión se hizo cargo de esta vinculación, así que este dispositivo no ha añadido el nuevo: puede que alguien más haya visto el código, y este dispositivo no volverá a usarlo. Vuelve a empezar con un código nuevo: si el dispositivo nuevo sigue mostrando el anterior, vuelve atrás allí y elige «Vincular a una cuenta existente» otra vez. Si aun así el dispositivo nuevo muestra tus chats, no está en tu cuenta: en él, abre Ajustes → Borrar todo y vuelve a vincularlo.';
+
+  @override
+  String get linkCodeSpent =>
+      'Este dispositivo no volverá a usar ese código: otra conexión se hizo cargo de una vinculación con él, así que puede que alguien más lo haya visto. En el dispositivo nuevo, vuelve atrás y elige «Vincular a una cuenta existente» otra vez para obtener un código nuevo, e introdúcelo aquí.';
 
   @override
   String get linkADevice => 'Vincular un dispositivo';

@@ -101,7 +101,12 @@
 //  20. a relay that cannot be reached — nothing listening, an address that
 //      is not a relay, a secure connection that cannot be made — says so on
 //      both screens, and a mistyped code on the phone says it is not one, in
-//      both languages and with no exception text in any of them.
+//      both languages and with no exception text in any of them;
+//  21. a phone whose mailbox someone else holding the code logs in as, while
+//      its person compares the digits, says so, and closes the laptop's
+//      mailbox the same way, so the laptop says so too, at once, and shows a
+//      new code; the phone will not use that code again, and says why, in
+//      both languages — once restarted too.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -304,6 +309,30 @@ void main() {
   const notACodeEs = 'Eso no es un código de emparejamiento. Introduce el '
       'código completo que muestra el dispositivo nuevo y vuelve a '
       'intentarlo.';
+  const phoneTakenOver = 'Another connection took over this link, so this '
+      'device has not added the new one: someone else may have seen the '
+      'code, and this device will not use it again. Start again with a new '
+      'code: if the new device still shows the old one, go back there and '
+      'choose "Link to an existing account" again. If the new device shows '
+      'your chats anyway, it is not on your account: on it, open Settings → '
+      'Wipe everything, then link it again.';
+  const phoneTakenOverEs = 'Otra conexión se hizo cargo de esta '
+      'vinculación, así que este dispositivo no ha añadido el nuevo: puede '
+      'que alguien más haya visto el código, y este dispositivo no volverá a '
+      'usarlo. Vuelve a empezar con un código nuevo: si el dispositivo nuevo '
+      'sigue mostrando el anterior, vuelve atrás allí y elige «Vincular a '
+      'una cuenta existente» otra vez. Si aun así el dispositivo nuevo '
+      'muestra tus chats, no está en tu cuenta: en él, abre Ajustes → Borrar '
+      'todo y vuelve a vincularlo.';
+  const codeSpent = 'This device will not use that code again: another '
+      'connection took over a link with it, so someone else may have seen '
+      'it. On the new device, go back and choose "Link to an existing '
+      'account" again for a new code, then enter that one here.';
+  const codeSpentEs = 'Este dispositivo no volverá a usar ese código: otra '
+      'conexión se hizo cargo de una vinculación con él, así que puede que '
+      'alguien más lo haya visto. En el dispositivo nuevo, vuelve atrás y '
+      'elige «Vincular a una cuenta existente» otra vez para obtener un '
+      'código nuevo, e introdúcelo aquí.';
   const laptopInstallFailed = 'This device could not open or install the '
       'account your other device sent, so it is not linked. Check that this '
       'device has space free, then start again on both devices.';
@@ -1050,10 +1079,22 @@ void main() {
             l.linkRelayUnreachable,
             reason: '$unreachable');
       }
-      // What was typed on the phone is not a pairing code.
+      // What was typed on the phone is not a pairing code; or is one the
+      // phone saw taken over, and will not use again.
       expect(
           hostLinkFailureText(l, const PairingCodeInvalid('too short')),
           l.linkNotACode);
+      expect(hostLinkFailureText(l, const PairingCodeSpent()),
+          l.linkCodeSpent);
+      // Each way to a new code names the choice the new device offers, as
+      // its onboarding screen words it.
+      for (final words in [
+        l.linkHostMayBeOlder,
+        l.linkHostTakenOver,
+        l.linkCodeSpent
+      ]) {
+        expect(words, contains(l.onbLinkExisting));
+      }
     }
     // The pairing code's parser says so in a type of its own, and a
     // FormatException still.
@@ -1124,6 +1165,10 @@ void main() {
     expect(es.linkRelayUnreachable, relayUnreachableEs);
     expect(en.linkNotACode, notACode);
     expect(es.linkNotACode, notACodeEs);
+    expect(en.linkHostTakenOver, phoneTakenOver);
+    expect(es.linkHostTakenOver, phoneTakenOverEs);
+    expect(en.linkCodeSpent, codeSpent);
+    expect(es.linkCodeSpent, codeSpentEs);
     for (final (a, b) in [
       (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
       (es.linkPeerGaveUp, en.linkPeerGaveUp),
@@ -1139,6 +1184,7 @@ void main() {
       (es.linkRelayUnreachable, en.linkRelayUnreachable),
       (es.linkNotACode, en.linkNotACode),
       (es.linkFailedOther, en.linkFailedOther),
+      (es.linkCodeSpent, en.linkCodeSpent),
     ]) {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
@@ -1843,6 +1889,72 @@ void main() {
           reason: 'what was typed is not a pairing code');
     } finally {
       await http.close(force: true);
+    }
+  });
+
+  test(
+      '21. a phone whose mailbox someone else holding the code logs in as '
+      "stops the laptop too, and will not use that code again", () async {
+    final alice = await person('Alice21');
+    await connected([alice]);
+    const timeout = Duration(seconds: 3), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    RelayClient? other;
+    final hosted = alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async {
+          // While the phone's person compares, the other login comes in.
+          other = await RelayClient.connect(relayUrl(),
+              await RelayPairing.relayIdentityV3(PairingCode.parse(code), 'r'));
+          return true;
+        })
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final waited = Stopwatch();
+    final laptop = await n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async {
+            waited.start();
+            return true;
+          },
+          timeout: timeout,
+          margin: margin,
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    waited.stop();
+    try {
+      final phone = await hosted;
+      expect(phoneScreen(phone), phoneTakenOver,
+          reason: 'the phone says another connection took over');
+      expect(hostLinkFailureText(es, phone!), phoneTakenOverEs);
+      expect(laptopScreen(laptop), laptopTakenOver,
+          reason: 'the laptop, closed the same way, says so too, and does '
+              'not name a cause it cannot see');
+      expect(newDeviceLinkFailureText(es, laptop!), laptopTakenOverEs);
+      expect(waited.elapsed, lessThan(timeout),
+          reason: 'at once, and not when its wait for the enrolment ran out');
+      expect(n.code, isNot(code), reason: 'and it shows a new code');
+      expect(await alice.svc.linkedDevices(), isEmpty);
+
+      // The phone will not use that code again, and says why.
+      final again = await alice.svc
+          .hostDeviceLink(code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      expect([phoneScreen(again), hostLinkFailureText(es, again!)],
+          [codeSpent, codeSpentEs]);
+      // Nor once it has restarted.
+      alice.svc.dispose();
+      await alice.svc.transport.stop();
+      live.remove(alice);
+      final restarted = await boot(alice.dir, 'Alice21', vault: alice.vault);
+      final later = await restarted.svc
+          .hostDeviceLink(code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      expect(phoneScreen(later), codeSpent, reason: 'once restarted too');
+    } finally {
+      await other?.close();
     }
   });
 }

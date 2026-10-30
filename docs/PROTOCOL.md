@@ -2226,8 +2226,20 @@ as soon as they answer, whatever the answer — and the reference client's
 next attempt is a new ceremony under a new code; a new device that has
 already stopped — its user said the digits differ — sees nothing of a later
 takeover. A takeover of the existing device's mailbox ends that device's
-attempt in the same way. What is left is the device listed, which the user
-revokes. What
+attempt in the same way, and the new device could not see it: it waited out
+its wait and then named a cause it had no way to know — an older version,
+or the other user refusing or being late. So an existing device whose
+mailbox was taken over logs in once as the new device's, and leaves at once,
+reading and acknowledging nothing: the relay closes the new device's
+connection with 4002 as it closed its own, and a new device still in the
+ceremony stops at once, says another connection took the link over, and
+draws a new code. The relay sees one login more, to a mailbox of the same
+ceremony. The reference client's existing device also keeps that code, by
+its v3 rendezvous id, and will not run a ceremony on it again, across
+restarts, saying why and how to get a new code; and a new device that
+connects only after the takeover, and so hears nothing, names a takeover on
+the other device among the reasons it gives. What a takeover of the new
+device's mailbox leaves is the device listed, which the user revokes. What
 would close it is two frames sent under the channel key in place of the
 two acknowledgements as signals: the new device's MAC'd "confirmed", once
 its user has said the digits match, and its MAC'd "installed", once it has

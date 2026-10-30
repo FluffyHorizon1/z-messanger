@@ -905,6 +905,61 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // The other way round: someone holding the code logs in as the
+    // existing device's mailbox while its person compares the digits. The
+    // new device, whose person has confirmed, waits for an enrolment that
+    // will not come, and cannot see why: it used to wait out its timer and
+    // then say the other's person had refused or was late. The existing
+    // device, taken over, logs in once as the new device's mailbox, which
+    // closes the new device's connection the same way, and it says so at
+    // once.
+    test('an existing device whose mailbox someone holding the code logs in '
+        "as closes the new device's too, which says so at once", () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      RelayClient? other;
+      final host = RelayPairing.runExistingDeviceV3(
+        relayUrl: url,
+        code: code,
+        me: await AccountIdentity.generate(),
+        contacts: const [],
+        attest: (s) async => randomBytes(3309),
+        confirm: (s) async {
+          // While its person compares, the other login comes in.
+          other = await RelayClient.connect(
+              url, await RelayPairing.relayIdentityV3(code, 'r'));
+          return true;
+        },
+        timeout: timeout,
+        margin: margin,
+      ).then<Object?>((r) => r, onError: (Object e) => e);
+      final waited = Stopwatch();
+      final laptop = await RelayPairing.runNewDeviceV3(
+        relayUrl: url,
+        n: desktop,
+        confirm: (s) async {
+          waited.start();
+          return true;
+        },
+        timeout: timeout,
+        margin: margin,
+      ).then<Object?>((r) => r, onError: (Object e) => e);
+      waited.stop();
+      try {
+        expect('${await host}', contains('another connection took over'),
+            reason: 'the existing device says so');
+        expect('$laptop', contains('another connection took over'),
+            reason: 'and so does the new device, closed the same way');
+        expect(waited.elapsed, lessThan(timeout),
+            reason: 'at once, and not when its wait for the enrolment, '
+                '${timeout + margin}, ran out');
+      } finally {
+        await other?.close();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {

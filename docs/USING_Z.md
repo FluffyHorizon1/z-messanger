@@ -443,8 +443,12 @@ They cannot read anything that goes across, but they can make your phone
 add the new device even if you said on the new device that the codes
 differ, or when the new device never got your account. A new device that
 notices says another connection took the link over, and shows a new code:
-start again on both devices with it. And if your phone ever lists a device
-you did not finish linking, revoke it in Settings → Linked devices.
+start again on both devices with it. When it is your phone that says so, it
+stops the new device too if that is still linking, and it will not take
+that code again: if the new device still shows the old code, go back on it
+and choose "Link to an existing account" again for a new one. And if your
+phone ever lists a device you did not finish linking, revoke it in Settings
+→ Linked devices.
 
 **Both devices need this version of Z or later.** Linking changed in this
 version, and neither device falls back to the way older versions link. If

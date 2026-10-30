@@ -494,7 +494,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get linkHostMayBeOlder =>
-      'Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device\'s code was entered there.';
+      'Your other device did not answer. It may be running an older version of Z, which cannot link with this one: update Z on the device you are linking from, then start again. If it is up to date, check that this device\'s code was entered there. If it says another connection took over the link, someone else may have seen this code: go back, choose \"Link to an existing account\" again for a new code, and keep it to yourself.';
 
   @override
   String get linkNewCode =>
@@ -553,7 +553,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get linkHostTakenOver =>
-      'Another connection took over this link, so this device has not added the new one: someone else may have seen the code. Start again on both devices, and keep the code to yourself. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.';
+      'Another connection took over this link, so this device has not added the new one: someone else may have seen the code, and this device will not use it again. Start again with a new code: if the new device still shows the old one, go back there and choose \"Link to an existing account\" again. If the new device shows your chats anyway, it is not on your account: on it, open Settings → Wipe everything, then link it again.';
+
+  @override
+  String get linkCodeSpent =>
+      'This device will not use that code again: another connection took over a link with it, so someone else may have seen it. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.';
 
   @override
   String get linkADevice => 'Link a device';
