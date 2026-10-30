@@ -466,11 +466,13 @@ encrypted, and since this version post-quantum too, so a recording of it
 will not open even to a future quantum computer — and the matching code on
 both screens is what shows nobody is in between. Nothing of it stays at the
 relay once the link is done; until this version all of it stayed for three
-days. A link that stops part-way can leave one piece there for those three
+days. A link that stops part-way can leave a few pieces there for those three
 days: your phone's answer, if the new device's person said the codes
-differ, or the account your phone sealed for the new device, if it had
+differ; the account your phone sealed for the new device, if it had
 stopped waiting or could not install it — sealed under a key that neither
-device keeps. Your phone adds the new device only once the new device says
+device keeps; the new device's opening, which names its public keys and
+nothing of your account; and small receipts the relay keeps for a device
+that had already gone. Your phone adds the new device only once the new device says
 it has installed your account. If your phone says the new device did not
 finish linking while the new device shows your account anyway, the new
 device is not on your account: nothing it sends is delivered. That happens

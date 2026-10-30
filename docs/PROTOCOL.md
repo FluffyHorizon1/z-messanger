@@ -2086,12 +2086,16 @@ v2 at most ten seconds, in v3, which links on it, as long as the new device
 can take (below) — so that the receipt for the new device's
 acknowledgement (§12.5 item 3) is handed to it, not queued for a mailbox
 nobody reads again. So a finished ceremony leaves nothing on the relay. A
-v3 ceremony that stops part‑way can leave one thing, for
-`QUEUE_TTL_HOURS`: the `reply-v3` of a link the new device's user refused
-(1 530 bytes); an enrollment that reached a new device that had stopped
-waiting, or could not open or install it; or the relay's receipt (192
-bytes) for a reply or an enrollment the new device acknowledged after the
-existing device had stopped waiting for it, or had lost its connection.
+v3 ceremony that stops part‑way can leave some of it for
+`QUEUE_TTL_HOURS`, and more than one piece at once: a frame its side never
+read — the `reply-v3` of a link the new device's user refused (1 530
+bytes), or an enrollment for a new device that had stopped waiting, lost
+its connection, or could not open or install it; a frame its
+side read whose acknowledgement never reached the relay, that side's
+connection gone first — `open-v3` among them, which carries the new
+device's public keys in the clear (R57); and the relay's receipt (192
+bytes) for any frame acknowledged after the side that sent it had stopped
+waiting for it, or had lost its connection.
 Until 2026‑10‑28 neither side acknowledged any frame: all four stayed
 queued until `QUEUE_TTL_HOURS` (72),
 the enrollment among them — 10 479 bytes of the relay's store for an account
@@ -5260,7 +5264,11 @@ mailbox, message 4 in the inviter's — since a run that holds its session
 does not connect again. That one is not a copy but the frame itself, read
 and kept by the side it was for. Each is a frame the relay has already
 carried. The messages are the same bytes as before; only a failed post adds
-a post.
+a post. Beside the frames, a ceremony that completes can leave one receipt:
+the relay's `delivered` (192 bytes) for the inviter's acknowledgement of
+message 4, queued for the acceptor's mailbox when the acceptor is no longer
+connected, and nobody connects to that mailbox again (§12.5 item 3). It
+holds an id and a mailbox address, and nothing of a frame.
 
 Anyone holding the invite holds both mailbox key pairs — that is what makes
 the invite a bearer token (R23), and why it is one‑time and short‑lived. In
