@@ -2237,8 +2237,9 @@ connection with 4002 as it closed its own, and a new device still in the
 ceremony stops at once, says another connection took the link over, and
 draws a new code. The relay sees one login more, to a mailbox of the same
 ceremony. The reference client's existing device also keeps that code, by
-its v3 rendezvous id, and will not run a ceremony on it again, across
-restarts, saying why and how to get a new code; and a new device that
+its v3 rendezvous id — the last 32 such codes, with no time bound, in no
+backup — and will not run a ceremony on it again, across restarts, saying
+why and how to get a new code; and a new device that
 connects only after the takeover, and so hears nothing, names a takeover on
 the other device among the reasons it gives. What a takeover of the new
 device's mailbox leaves is the device listed, which the user revokes. What

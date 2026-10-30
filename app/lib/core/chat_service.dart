@@ -8880,8 +8880,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// [PairingPeerOutdated], naming the version it spoke, so the screen can
   /// say to update that device. A code whose mailbox someone else took over
   /// while this device hosted a link with it ([PairingTakenOver]) is kept,
-  /// by its rendezvous id, and refused from then on ([PairingCodeSpent]),
-  /// across restarts.
+  /// by its rendezvous id — the last [_spentLinkCodesKept] such codes — and
+  /// refused from then on ([PairingCodeSpent]), across restarts.
   ///
   /// One link per code on this device: two attempts on a code log in as the
   /// same mailbox, and the relay closes the earlier for the later as it
@@ -9019,7 +9019,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
 
   /// The vault key under which this device keeps the codes it saw taken
   /// over while it hosted a link (§10.2), each by its v3 rendezvous id —
-  /// a hash of the code, not the code — the last [_spentLinkCodesKept].
+  /// a hash of the code, not the code — the last [_spentLinkCodesKept], with
+  /// no time bound. In no backup, and handed to no device this one links
+  /// (`DATA_MAP.md`): only the account's main device hosts a link.
   static const String _spentLinkCodesKey = 'link_spent_codes';
   static const int _spentLinkCodesKept = 32;
 
