@@ -3167,9 +3167,9 @@ build that finds that record kept by an older one takes the key from it
 rather than drawing another. The keys other devices announced are not in the
 archive. A restored device learns them again: it opens new ratchet sessions,
 and a new session with a device makes that device forget that this one holds
-its key (§18.11), so it announces it again — and, since 44.5, makes that
-device stop saying it holds this one's until this one announces it again,
-in case the restore drew another.
+its key (§18.11), so it announces it again; and the restored device takes
+no device's word that it holds its key until it has announced it there,
+in case the restore drew another (4.8.1).
 
 What a restore looks like on the wire is a device‑list update, never a
 rollback. The first start of a restored root, before it sends anything, asks
@@ -4413,15 +4413,31 @@ The members that carry them, a new kind and two optional members (§14):
   and a device linked again each begin one, and none keeps the keys other
   devices announced, so a stamp kept across it could leave that device never
   hearing this one's key again. Its re‑sending then resumes on the same clock
-  and within the same bound, until the next `pqs:1`. And from 44.5 a device
-  **MUST NOT** say `pqs:1` to a contact's device that has **started over** —
-  opened a new session while another that had carried its traffic was
-  held, §4's rule for a peer that lost its state — until that device
-  announces its key again: the stamp does not say which key is held, so a
-  device restored onto a new key took a stamp on its new session for its
-  new key and never announced it — what 44.3 through 4.8.0 did. It costs at
-  most one `pqseal` more, from the device that started over, which its next
-  message carries.
+  and within the same bound, until the next `pqs:1`. And from 4.8.1 a device
+  **MUST NOT** take a device's `pqs:1` for its holding this device's key
+  until this device has given that one the key it holds now — announced it
+  there, or handed it over in the reveal of a CONNECT ceremony of version 3
+  (§20.9). The stamp does not say which key is held, and a device restored
+  onto a new key — or whose seed no longer reads — is stamped by every device
+  that held its old one, whatever their build: 44.3 through 4.8.0 took that
+  stamp for the new key and announced the new key to none of them, its own
+  linked devices over self‑sync among them, and each kept the old key. A
+  stamp before the announcement is set aside, and the announcement stays
+  owed; a device that draws a new key forgets every announcement of the one
+  before; and a record an older build wrote keeps a device's stamp only
+  beside an announcement, so a pair stuck that way heals at the stuck
+  device's first start of 4.8.1, whichever build its contact runs. It costs a
+  device at most one `pqseal` to each device whose stamp it sets aside —
+  every device it has a session with, after a restore or a key drawn anew; a
+  contact's devices, after that contact is deleted and added back; and, once,
+  at its first start of 4.8.1, each device an older build's record holds a
+  stamp from with no announcement beside it — sent on the first message there
+  that may carry one: once their session is post‑quantum, and not beside
+  `pqct`. A session reset costs nothing: each side keeps its record of what
+  it gave, so the other's next stamp counts at once. One window remains: a
+  stamp the other device sent before the announcement reached it, arriving
+  after the announcement left, is taken; were that announcement then lost at
+  the relay, the pair would wait for its next new session.
 * **`pqid.pqdc`** is the sending device's own `pqdc`, in the `pqid` it
   already sends (§18.2): measured, 7 114 bytes of inner message, and 7 261
   with `ack` and every decoration, of the 8 959 the 16 384 bucket holds

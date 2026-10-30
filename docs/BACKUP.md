@@ -98,9 +98,10 @@ the record kept unread by an older one takes the key from there rather than
 draw another. The sealing keys other devices announced to this one are not in
 the archive. They are learned again: the restored device opens new ratchet
 sessions, and a new session with a device makes that device forget that this
-one held its key (`PROTOCOL.md` §18.11), so it announces it again — and,
-since 44.5, makes that device stop saying it holds the restored one's key
-until the restored one announces it, in case it is a new one.
+one held its key (`PROTOCOL.md` §18.11), so it announces it again. And
+since 4.8.1 the restored device takes no device's word that it holds its
+key until it has announced the key there — its own linked devices' over
+self‑sync as much as its contacts' — in case it is a new one.
 
 **Deliberately not in the archive:**
 

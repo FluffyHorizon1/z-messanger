@@ -80,14 +80,31 @@
 //      forgets on the door it takes a contact's other device by, and both
 //      announce again; all three end holding one another's keys and having
 //      heard that the others hold theirs;
-//  16. (44.5, PROTOCOL §18.11) a device restored onto a NEW sealing key — an
-//      archive that carried none, as every one from before 44.3 — is heard:
-//      its contact, which held its old key and said so on everything it
-//      sent, stops saying so once the restored device's new session reaches
-//      it, and so the restored device announces its new key, which the
-//      contact ends holding. Through 4.8.0 the contact went on saying it,
-//      the restored device took that for its new key, and announced
-//      nothing.
+//  16. (4.8.1, PROTOCOL §18.11) a device restored onto a NEW sealing key —
+//      an archive that carried none, as every one from before 44.3 — is
+//      heard: its contact holds its old key and says so on everything it
+//      sends, and the restored device takes none of that as said of its new
+//      key until it has announced it there, so it announces it, and the
+//      contact ends holding the new key and saying so. Through 4.8.0 the
+//      restored device took the stamp for its new key, and announced
+//      nothing;
+//  17. the same for a restored ROOT, over self-sync too: its linked laptop
+//      and its contact each hold its old key and say so, and each ends
+//      holding the new key, the root hearing both say so;
+//  18. the same with a contact on 4.8.0's rules, which says it holds the
+//      old key throughout: the contact ends holding the new key;
+//  19. a pair stuck before this release: a device restored onto a new key
+//      under 4.8.0's rules took its contact's word for its old key as word
+//      for the new and announced nothing, so the contact holds the old key;
+//      once the device starts on this build it announces its key, and the
+//      contact ends holding it;
+//  20. a session reset loses nothing and costs nothing: on the shipped
+//      clock — six hours between announcements — each side goes on holding
+//      the other's key and hearing that the other holds its own, within a
+//      few messages of the reset, and neither announces again;
+//  21. a device whose stored seed no longer reads as one draws a new key,
+//      and what it held of devices holding the old one goes with it: it
+//      announces the new key, and its contact ends holding it.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -262,9 +279,13 @@ void main() {
   }
 
   /// Start a service over [vault] the way the app does: the identity is the
-  /// one the vault holds.
+  /// one the vault holds. [before481] starts it with 4.8.0's rule for a
+  /// `pqs:1` (`ChatService.debugBuildBefore481`).
   Future<ChatService> boot(Vault vault, String name,
-      {Transport? transport, KtConfig? ktConfig, bool? v2Only}) async {
+      {Transport? transport,
+      KtConfig? ktConfig,
+      bool? v2Only,
+      bool before481 = false}) async {
     final id = await ZIdentity.fromJson(
         (jsonDecode((await vault.kvGet('identity'))!) as Map)
             .cast<String, Object?>());
@@ -280,14 +301,16 @@ void main() {
         // Asked for by name, the signer moves at the first start, as it did
         // before ADR 0029 made it wait on the account's readers: test 11 is
         // about a moved account's restore, not about when it moved.
-        debugMoveUngated: v2Only ?? false);
+        debugMoveUngated: v2Only ?? false,
+        debugBuildBefore481: before481);
     svc.kt.scheduled = false; // checked when the test says so
     svc.devlistGrace = const Duration(milliseconds: 700);
     services.add(svc);
     return svc;
   }
 
-  Future<(ChatService, Directory)> fresh(String name, {bool? v2Only}) async {
+  Future<(ChatService, Directory)> fresh(String name,
+      {bool? v2Only, bool before481 = false}) async {
     final dir = await tempDir(name);
     final vault = await Vault.open(rootOverride: dir);
     await vault.kvPut(
@@ -303,7 +326,10 @@ void main() {
     // That race is not what this file is about, so its accounts start past
     // it.
     await vault.kvPut('pq_seed', b64(randomBytes(32)));
-    return (await boot(vault, name, v2Only: v2Only), dir);
+    return (
+      await boot(vault, name, v2Only: v2Only, before481: before481),
+      dir
+    );
   }
 
   Future<void> waitUntil(bool Function() cond,
@@ -1578,9 +1604,53 @@ void main() {
         reason: "Carol announced hers again, to her contact's other device");
   });
 
+  /// [a] and [b] each hold the other's sealing key, and have heard so.
+  Future<void> sealsStamped(ChatService a, ChatService b, String tag) async {
+    var n = 0;
+    await waitFor(() async {
+      await exchange(a, b, '$tag${n++}');
+      return a.debugPqSealOf(b.myRid) != null &&
+          b.debugPqSealOf(a.myRid) != null &&
+          a.debugHoldsMySealKey(b.myRid) &&
+          b.debugHoldsMySealKey(a.myRid);
+    }, what: 'keys exchanged and stamped both ways');
+  }
+
+  /// [s]'s device lost, and restored from an archive with no sealing key in
+  /// it, as every one from before 44.3: its first start draws a new key.
+  Future<ChatService> restoredOntoNewKey(
+      ChatService s, Directory dir, String name,
+      {bool before481 = false}) async {
+    final (file, code) = await backup(s, name);
+    await lose(s, dir);
+    final vault = await restoreInto(dir, file, code);
+    await vault.kvDelete('seal_seed');
+    await vault.kvDelete('pqdc');
+    final revived = await boot(vault, name, before481: before481);
+    await waitUntil(() => up(revived), what: 'the restored $name up');
+    return revived;
+  }
+
+  /// The app stopped and started again on the same vault, as this build.
+  Future<ChatService> restart(ChatService s, String name) async {
+    final vault = s.vault;
+    s.dispose();
+    await s.transport.stop();
+    services.remove(s);
+    final again = await boot(vault, name);
+    await waitUntil(() => up(again), what: '$name up again');
+    return again;
+  }
+
+  bool holdsKey(ChatService s, String rid, Uint8List key) {
+    final held = s.debugPqSealOf(rid);
+    return held != null && constantTimeEquals(held, key);
+  }
+
   test(
-      '16. a device restored onto a new sealing key is heard: its contact '
-      'stops saying it holds the old one, and ends holding the new', () async {
+      '16. a device restored onto a new sealing key is heard: it takes its '
+      "contact's word for the old key for nothing until it has announced "
+      'the new one, and the contact ends holding the new', () async {
     final (alice, aliceDir) = await fresh('alice16');
     final (bob, _) = await fresh('bob16');
     await befriend(alice, bob);
@@ -1618,5 +1688,209 @@ void main() {
           revived.debugHoldsMySealKey(bob.myRid);
     }, what: "Bob holding the restored device's new key, and saying so");
     expect(bob.debugPqSealOf(revived.myRid), newKey);
+  });
+
+  test(
+      "17. a root restored onto a new sealing key is heard by its own linked "
+      'laptop over self-sync and by its contact, and hears both', () async {
+    final (phone, phoneDir) = await fresh('phone17');
+    final (laptop, _, _) = await linkTo(phone, 'laptop17');
+    final (carol, _) = await fresh('carol17');
+    await waitFor(() async => await laptop.ownDeviceListVersion() >= 2,
+        what: 'the laptop learning v2');
+    await befriend(phone, carol);
+    await waitUntil(() => laptop.contacts.containsKey(carol.myRid),
+        what: 'the laptop learning Carol from its root');
+    await holds(carol, phone.myRid, 2);
+    var ph = phone;
+    // [x] holds [y]'s key, and [y] has heard so, for every ordered pair of
+    // the three: over self-sync both ways, the laptop and Carol both ways,
+    // and the phone and Carol both ways.
+    List<String> missing() => [
+          for (final x in [ph, laptop, carol])
+            for (final y in [ph, laptop, carol])
+              if (!identical(x, y) &&
+                  !(x.debugPqSealOf(y.myRid) != null &&
+                      y.debugHoldsMySealKey(x.myRid)))
+                "${x.displayName} holding ${y.displayName}'s, and heard so"
+        ];
+    var n = 0;
+    Future<void> round(String tag) async {
+      final i = n++;
+      await ph.sendText(carol.myRid, '$tag p$i');
+      await carol.sendText(ph.myRid, '$tag c$i');
+      await laptop.sendText(carol.myRid, '$tag l$i');
+      await waitUntil(
+          () =>
+              texts(carol, ph.myRid).contains('$tag p$i') &&
+              texts(carol, ph.myRid).contains('$tag l$i') &&
+              texts(ph, carol.myRid).contains('$tag c$i'),
+          what: '$tag round $i');
+    }
+
+    await waitFor(() async {
+      await round('k');
+      return missing().isEmpty;
+    }, what: 'every key held and every stamp heard, among the three');
+    final oldKey = phone.debugSealingKey!;
+
+    ph = await restoredOntoNewKey(phone, phoneDir, 'phone17');
+    final newKey = ph.debugSealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key');
+    expect(laptop.debugPqSealOf(ph.myRid), oldKey,
+        reason: 'the premise: the laptop holds the old one');
+    expect(carol.debugPqSealOf(ph.myRid), oldKey,
+        reason: 'and so does Carol');
+    for (final s in [ph, laptop, carol]) {
+      s.pqOfferRetry = 300; // §17.4's clock, which the announcement runs on
+    }
+    try {
+      await waitFor(() async {
+        await round('after');
+        return holdsKey(laptop, ph.myRid, newKey) &&
+            holdsKey(carol, ph.myRid, newKey) &&
+            missing().isEmpty;
+      }, what: "the laptop and Carol holding the root's new key, heard so");
+    } on TimeoutException {
+      fail('after the restore: the laptop holds the new key: '
+          '${holdsKey(laptop, ph.myRid, newKey)}, Carol: '
+          '${holdsKey(carol, ph.myRid, newKey)}; ${missing()}');
+    }
+  });
+
+  test(
+      "18. a device restored onto a new sealing key whose contact runs "
+      "4.8.0's rules is heard: the contact ends holding the new key",
+      () async {
+    final (alice, aliceDir) = await fresh('alice18');
+    final (bob, _) = await fresh('bob18', before481: true);
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    final oldKey = alice.debugSealingKey!;
+
+    final revived = await restoredOntoNewKey(alice, aliceDir, 'alice18');
+    final newKey = revived.debugSealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key');
+    expect(bob.debugPqSealOf(revived.myRid), oldKey,
+        reason: 'the premise: Bob holds the old one, and says so');
+    revived.pqOfferRetry = 300;
+    bob.pqOfferRetry = 300;
+    var m = 0;
+    await waitFor(() async {
+      await exchange(revived, bob, 'after${m++}');
+      return holdsKey(bob, revived.myRid, newKey) &&
+          revived.debugHoldsMySealKey(bob.myRid);
+    }, what: "Bob holding the restored device's new key, and saying so");
+  });
+
+  test(
+      '19. a pair stuck before this release: once the device restored onto '
+      'a new key starts on this build, it announces it, and its contact ends '
+      'holding it', () async {
+    final (alice, aliceDir) = await fresh('alice19');
+    final (bob, _) = await fresh('bob19', before481: true);
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    final oldKey = alice.debugSealingKey!;
+
+    // Restored under 4.8.0's rules: Bob's word for the old key, taken for
+    // the new one.
+    var revived =
+        await restoredOntoNewKey(alice, aliceDir, 'alice19', before481: true);
+    final newKey = revived.debugSealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key');
+    revived.pqOfferRetry = 300;
+    bob.pqOfferRetry = 300;
+    var m = 0;
+    await waitFor(() async {
+      await exchange(revived, bob, 'stuck${m++}');
+      return revived.debugHoldsMySealKey(bob.myRid);
+    }, what: "the restored device taking Bob's word for its key");
+    // A negative check over a window: six more exchanges, and still nothing
+    // announced — the pair is stuck, as 4.8.0 left it.
+    for (var i = 0; i < 6; i++) {
+      await exchange(revived, bob, 'still$i');
+    }
+    expect(revived.debugPqSealSends, 0,
+        reason: 'the premise: the restored device announced nothing');
+    expect(bob.debugPqSealOf(revived.myRid), oldKey,
+        reason: 'the premise: Bob holds the old key');
+
+    // The restored device is updated, and starts on this build.
+    revived = await restart(revived, 'alice19');
+    expect(revived.debugHoldsMySealKey(bob.myRid), isFalse,
+        reason: 'a word taken before any announcement is not kept');
+    revived.pqOfferRetry = 300;
+    var k = 0;
+    await waitFor(() async {
+      await exchange(revived, bob, 'updated${k++}');
+      return holdsKey(bob, revived.myRid, newKey) &&
+          revived.debugHoldsMySealKey(bob.myRid);
+    }, what: "Bob holding the new key once the restored device updates");
+  });
+
+  test(
+      '20. a session reset loses nothing and costs nothing on the shipped '
+      'clock: each side goes on hearing that the other holds its key, and '
+      'neither announces again', () async {
+    final (alice, _) = await fresh('alice20');
+    final (bob, _) = await fresh('bob20');
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    // The shipped clock: six hours between announcements (§17.4).
+    expect(alice.pqOfferRetry, pqOfferRetryMs);
+    expect(bob.pqOfferRetry, pqOfferRetryMs);
+    final aliceSends = alice.debugPqSealSends;
+    final bobSends = bob.debugPqSealSends;
+    await bob.resetSecureSession(alice.myRid);
+    // Bob speaks first after his reset: what Alice sends on the retired
+    // session before his new one reaches her is not read (§4).
+    var m = 0;
+    try {
+      await waitFor(() async {
+        await exchange(bob, alice, 'after${m++}');
+        return alice.debugHoldsMySealKey(bob.myRid) &&
+            bob.debugHoldsMySealKey(alice.myRid);
+      },
+          timeout: const Duration(seconds: 20),
+          what: 'each hearing that the other holds its key again');
+    } on TimeoutException {
+      fail('after $m exchanges: Alice hears Bob holds hers: '
+          '${alice.debugHoldsMySealKey(bob.myRid)}, Bob hears Alice holds '
+          'his: ${bob.debugHoldsMySealKey(alice.myRid)}');
+    }
+    expect(alice.debugPqSealSends, aliceSends, reason: 'no announcement');
+    expect(bob.debugPqSealSends, bobSends, reason: 'none from Bob either');
+  });
+
+  test(
+      '21. a device whose stored seed no longer reads as one draws a new key '
+      'and is heard: its contact ends holding the new key', () async {
+    final (alice, _) = await fresh('alice21');
+    final (bob, _) = await fresh('bob21');
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    final oldKey = alice.debugSealingKey!;
+
+    // The app stops, and the seed it stored is damaged: 12 bytes, not 64.
+    final vault = alice.vault;
+    alice.dispose();
+    await alice.transport.stop();
+    services.remove(alice);
+    await vault.kvPut('seal_seed', b64(randomBytes(12)));
+    final again = await boot(vault, 'alice21');
+    await waitUntil(() => up(again), what: 'alice up again');
+    final newKey = again.debugSealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key drawn');
+    expect(again.debugHoldsMySealKey(bob.myRid), isFalse,
+        reason: "Bob's word was for the key that went");
+    again.pqOfferRetry = 300;
+    bob.pqOfferRetry = 300;
+    var m = 0;
+    await waitFor(() async {
+      await exchange(again, bob, 'after${m++}');
+      return holdsKey(bob, again.myRid, newKey) &&
+          again.debugHoldsMySealKey(bob.myRid);
+    }, what: "Bob holding Alice's new key, and saying so");
   });
 }

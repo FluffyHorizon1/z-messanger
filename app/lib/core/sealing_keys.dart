@@ -20,16 +20,20 @@
 //     beside the seed;
 //   * `cseal_<rid>` — one [SealRecord] per contact: each of their devices'
 //     sealing key and `pqdc` as announced, whether that device has said it
-//     holds this one's (`pqs:1`), when this one last announced its own to
-//     it, and whether it has started over since it announced its own. Gone
-//     with the contact (`ChatService.contactKvFamilies`);
+//     holds this one's (`pqs:1`) since this one gave it its key, and when
+//     this one last did. Gone with the contact
+//     (`ChatService.contactKvFamilies`);
 //   * `oseal` — the same for this account's own other devices.
 //
 // Neither of the last two is in the archive. A device that lost them — a
 // restore, a contact deleted and added back, a device linked again — learns
 // the keys again because it opens new ratchet sessions, and a new session
 // with a device forgets that the device holds this one's key
-// ([DeviceSeal.holdsMine]), so each side announces again.
+// ([DeviceSeal.holdsMine]), so each side announces again. And the device
+// that lost them takes no device's word that it holds its key until it has
+// announced it there (4.8.1, [DeviceSeal.announcedMs]): a restore that drew
+// a new key is told "I hold your key" of the old one, by devices of every
+// build.
 //
 // The keys of other devices are judged by nothing here beyond FIPS 203 §7.2's
 // check, which `InnerMessage.pqSealKey` applies before any key is taken:
@@ -58,16 +62,20 @@ class DeviceSeal {
   /// or over self-sync for one of mine: kept with the key, unjudged.
   Uint8List? pqdc;
 
-  /// That device has stamped `pqs:1` on what it sent here: it holds this
-  /// device's sealing key, and this device's announcements to it stop —
-  /// until a new ratchet session with it begins, accepted from it or opened
-  /// to it, which forgets this (a restore, a contact deleted and added back
-  /// and a device linked again all open one), and they resume on their
-  /// clock.
+  /// That device has stamped `pqs:1` on what it sent here since this device
+  /// gave it its key ([announcedMs]): it holds this device's sealing key, and
+  /// this device's announcements to it stop — until a new ratchet session
+  /// with it begins, accepted from it or opened to it, which forgets this (a
+  /// restore, a contact deleted and added back and a device linked again all
+  /// open one), and they resume on their clock. 4.8.1: a stamp with nothing
+  /// given before it is not this ([ChatService]'s `_keepSeal`).
   bool holdsMine;
 
-  /// When this device last announced its own key to that one, in ms since
-  /// the epoch; 0 for never. The re-announcement clock runs from here.
+  /// When this device last gave that one its own key — announced it in a
+  /// `pqseal` queued there, or (44.6) handed it over in a CONNECT ceremony of
+  /// version 3's reveal — in ms since the epoch; 0 for never, and 0 again
+  /// once this device draws another key. The re-announcement clock runs from
+  /// here, and (4.8.1) a `pqs:1` from that device stands only beside it.
   int announcedMs;
 
   /// 44.6 (§20.9): [ek] came in the reveal of a CONNECT ceremony of version
@@ -77,21 +85,12 @@ class DeviceSeal {
   /// different key from the device clears it, as it clears [pqdc].
   bool byCeremony;
 
-  /// 44.5 (§18.11): that device has started over since it last announced
-  /// its key, so the key held may no longer be its key, and this device does
-  /// not say `pqs:1` to it until it announces one again. Through 4.8.0 the
-  /// stamp went on regardless: a device restored onto a new sealing key heard
-  /// "I hold your key" of its old one, took it for its new one, and never
-  /// announced the new one here.
-  bool stale;
-
   DeviceSeal(
       {this.ek,
       this.pqdc,
       this.holdsMine = false,
       this.announcedMs = 0,
-      this.byCeremony = false,
-      this.stale = false});
+      this.byCeremony = false});
 
   Map<String, Object?> toJson() => {
         if (ek != null) 'ek': b64(ek!),
@@ -99,7 +98,6 @@ class DeviceSeal {
         if (holdsMine) 'pqs': 1,
         if (announcedMs > 0) 'at': announcedMs,
         if (byCeremony && ek != null) 'c3': 1,
-        if (stale && ek != null) 'st': 1,
       };
 
   /// Each member held to the shape it must have — a key FIPS 203 §7.2
@@ -126,7 +124,6 @@ class DeviceSeal {
     if (at is int && at > 0) out.announcedMs = at;
     // Only beside the key it was said of.
     out.byCeremony = out.ek != null && raw['c3'] == 1;
-    out.stale = out.ek != null && raw['st'] == 1;
     return out;
   }
 }
