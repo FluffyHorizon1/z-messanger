@@ -79,7 +79,17 @@
 //     killed once the relay has it goes on from it: until 2026-10-29 that
 //     post went out over the record from before the message was drawn, so
 //     the acceptor came back to it, drew a second message 2 and spent the
-//     invite at message 3, and the inviter made a second message 3.
+//     invite at message 3, and the inviter made a second message 3;
+// 12. a write the vault refuses ends neither the pass nor the polls: of two
+//     pending invites, the second's round still runs in the pass in which
+//     the first's writes were refused, and the pass is over without
+//     throwing; and the first pass after resume meeting one leaves the
+//     polls armed, so once the vault takes writes again both sides reach
+//     the digits with nobody pressing anything. Until 2026-10-30 the
+//     refused write after a round that threw left the pass there, before
+//     the next invite's round and before the polls were armed: the first
+//     pass after resume that met one stopped the polls for as long as the
+//     app stayed in front.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -284,6 +294,16 @@ void main() {
     live.remove(p);
     return open(dir, id, name, url: url);
   }
+
+  /// [p]'s vault refusing every write of its invites until [allowWrites],
+  /// as SQLite refuses a write it cannot make; nothing else in the vault is
+  /// touched. (`s:` is the vault's prefix for a sealed key.)
+  Future<void> refuseWrites(Person p) => p.vault.db.execute(
+      'CREATE TEMP TRIGGER refuse_invites BEFORE INSERT ON kv '
+      "WHEN NEW.k = 's:connect_invites' "
+      "BEGIN SELECT RAISE(ABORT, 'database is locked'); END");
+  Future<void> allowWrites(Person p) =>
+      p.vault.db.execute('DROP TRIGGER refuse_invites');
 
   /// Step both sides until the ceremony is done or we give up.
   Future<void> danceTo(Person a, Person b, {int rounds = 6}) async {
@@ -983,16 +1003,9 @@ void main() {
       final acceptorRefused = at == 'z-connect-c2';
       if (!acceptorRefused) await bob.invites.pump(); // message 2 waits too
       final refusing = acceptorRefused ? bob : alice;
-      // SQLite refuses each write of the invites while the trigger stands,
-      // as it refuses a write it cannot make; nothing else in the vault is
-      // touched. (`s:` is the vault's prefix for a sealed key.)
-      await refusing.vault.db.execute(
-          'CREATE TEMP TRIGGER refuse_invites BEFORE INSERT ON kv '
-          "WHEN NEW.k = 's:connect_invites' "
-          "BEGIN SELECT RAISE(ABORT, 'database is locked'); END");
-      await expectLater(refusing.invites.pump(), throwsA(isA<Exception>()),
-          reason: 'the write after the round threw was refused too');
-      await refusing.vault.db.execute('DROP TRIGGER refuse_invites');
+      await refuseWrites(refusing);
+      await refusing.invites.pump();
+      await allowWrites(refusing);
       expect(refusing.invites.invites.single.lastFailure,
           contains('database is locked'),
           reason: 'the write before the post was refused, and ended the round');
@@ -1093,4 +1106,99 @@ void main() {
             'message 3, each posted by the round after one whose every write '
             'the vault refused, which ended before its post');
   }, timeout: const Timeout(Duration(minutes: 8)));
+
+  test('12. a write the vault refuses ends neither the pass nor the polls',
+      () async {
+    final ended = <String>[];
+
+    // Bob holds two invites, each with its message 1 waiting, and his vault
+    // refuses every write of the invites: the first invite's round draws
+    // its message 2, and the write before the post is refused, then the
+    // write after the round threw. The pass goes on to the second invite's
+    // round all the same, and is over without throwing.
+    {
+      final alice = await person('Alice'), carol = await person('Carol');
+      final bob = await person('Bob');
+      final fromAlice = await alice.invites.create();
+      await alice.invites.pump();
+      final fromCarol = await carol.invites.create();
+      await carol.invites.pump();
+      await bob.invites.open(fromAlice.link);
+      await bob.invites.open(fromCarol.link);
+      final rounds = <String>[];
+      bob.invites.debugBeforeRound = (i) async => rounds.add(
+          i.code == fromAlice.code ? "Alice's" : "Carol's");
+      await refuseWrites(bob);
+      Object? thrown;
+      try {
+        await bob.invites.pump();
+      } catch (e) {
+        thrown = e;
+      }
+      await allowWrites(bob);
+      ended.add('rounds: $rounds; the pass '
+          '${thrown == null ? 'over' : 'threw'}; cards: ${[
+        for (final i in bob.invites.invites)
+          i.lastFailure?.contains('database is locked') == true
+              ? 'refused'
+              : '${i.lastFailure}'
+      ]}');
+    }
+
+    // Both apps in front, their polls running. Bob's vault refuses the
+    // first pass after resume, which has his message 2 to write down; once
+    // his card says so the vault takes writes again, and nobody presses
+    // anything. The polls carry both sides to the digits.
+    {
+      Future<String> polls() async {
+        const fast = Duration(milliseconds: 400);
+        final alice = await person('Alice', pollEvery: fast);
+        final bob = await person('Bob', pollEvery: fast);
+        final invite = await alice.invites.create();
+        await alice.invites.pump(); // message 1 waits for Bob
+        await bob.invites.open(invite.link);
+        await refuseWrites(bob);
+        alice.invites.resume();
+        bob.invites.resume();
+        final refused = DateTime.now().add(const Duration(seconds: 60));
+        while (bob.invites.invites.single.lastFailure == null) {
+          if (DateTime.now().isAfter(refused)) {
+            return "Bob's card never said the refusal";
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await allowWrites(bob);
+        bool there(Person p) =>
+            p.invites.invites.single.progress == ConnectProgress.confirm;
+        final deadline = DateTime.now().add(const Duration(seconds: 90));
+        while (!(there(alice) && there(bob)) &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        alice.invites.pause();
+        bob.invites.pause();
+        await Future.wait([alice.invites.pump(), bob.invites.pump()]);
+        final a = alice.invites.invites.single, b = bob.invites.invites.single;
+        return there(alice) && there(bob) && a.sas == b.sas
+            ? 'both at the digits'
+            : 'Alice ${a.progress.name}, Bob ${b.progress.name}';
+      }
+
+      // What the polls threw that nobody caught: a pass a timer started
+      // has nobody to throw to.
+      final errors = <String>[];
+      final over = Completer<String>();
+      runZonedGuarded(
+          () => polls().then(over.complete,
+              onError: (Object e) => over.complete('the case threw: $e')),
+          (e, _) => errors.add('$e'));
+      ended.add('${await over.future}; uncaught errors from the polls: '
+          '${errors.length}');
+    }
+
+    expect(ended, [
+      "rounds: [Alice's, Carol's]; the pass over; cards: [refused, refused]",
+      'both at the digits; uncaught errors from the polls: 0',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 4)));
 }

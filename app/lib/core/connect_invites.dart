@@ -676,11 +676,22 @@ class ConnectInvites extends ChangeNotifier {
       _disarm();
       return;
     }
-    await load();
-    if (_invites.isEmpty) {
-      _disarm();
-      return;
+    // The polls are armed, or not, however the pass ends: a pass that
+    // throws still leaves them as the invites need. Until 2026-10-30 they
+    // were armed only once the last round was over, and a pass that left
+    // early — a write the vault refused after a round that threw — never
+    // armed them.
+    try {
+      await _rounds(nowMs: nowMs);
+    } finally {
+      _arm();
     }
+  }
+
+  /// One round for each pending invite, in turn — the pass [pump] runs.
+  Future<void> _rounds({int? nowMs}) async {
+    await load();
+    if (_invites.isEmpty) return;
     for (final invite in List.of(_invites)) {
       // Spent, or finished and waiting on a human: nothing a round trip can
       // change. (Stepping a finished run only turns `confirm` into `done`,
@@ -765,14 +776,27 @@ class ConnectInvites extends ChangeNotifier {
       final now = jsonEncode(invite.run.toJson());
       if (now != before || now != invite._inVault) changed = true;
       invite.progress = next;
-      if (changed) await _written();
+      if (changed) await _written(invite);
     }
-    _arm();
   }
 
-  /// What a round did, written to the vault and shown.
-  Future<void> _written() async {
-    await _save();
+  /// What a round did, written to the vault and shown. A write the vault
+  /// refuses is said on the card, when the card has no failure of the round
+  /// to say already, and left for a later write to make — the invite's next
+  /// round finds the run unlike what the vault holds
+  /// ([PendingInvite._inVault]) and writes it again; a run its round
+  /// finished has no next round, and goes with the next write of any invite,
+  /// since [_save] writes them all — and the pass goes on to the next
+  /// invite's round. Until 2026-10-30 it ended the pass there, before the
+  /// rounds of the invites after it and before [_pump] armed the polls, so
+  /// the first pass after [resume] that met one left the invites still for
+  /// as long as the app stayed in front.
+  Future<void> _written(PendingInvite invite) async {
+    try {
+      await _save();
+    } catch (e) {
+      invite.lastFailure ??= '$e';
+    }
     notifyListeners();
   }
 
@@ -782,7 +806,7 @@ class ConnectInvites extends ChangeNotifier {
   Future<void> _threw(PendingInvite invite, String why) async {
     final told = _fail(invite, why);
     if (told || jsonEncode(invite.run.toJson()) != invite._inVault) {
-      await _written();
+      await _written(invite);
     }
   }
 
