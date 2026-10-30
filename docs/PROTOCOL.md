@@ -2222,10 +2222,12 @@ new device's ephemeral and KEM secrets, and the digits on both screens are
 the honest ones, so the comparison cannot catch it. The new device, whose
 connection the relay closed with 4002, stops and says another connection
 took the link over — at once, or, when its user was comparing the digits,
-as soon as they answer, whatever the answer — and the reference client's
-next attempt is a new ceremony under a new code; a new device that has
-already stopped — its user said the digits differ — sees nothing of a later
-takeover. A takeover of the existing device's mailbox ends that device's
+as soon as they answer, whatever the answer; and so it does when the relay
+closes it while a frame it sent is still going up, which until 2026‑10‑30
+said only that its connection was lost, the code kept — and the reference
+client's next attempt is a new ceremony under a new code; a new device that
+has already stopped — its user said the digits differ — sees nothing of a
+later takeover. A takeover of the existing device's mailbox ends that device's
 attempt in the same way, and the new device could not see it: it waited out
 its wait and then named a cause it had no way to know — an older version,
 or the other user refusing or being late. So an existing device whose

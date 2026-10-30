@@ -327,10 +327,11 @@ class RelayPairing {
   /// A connection that closes ends any wait at once, as a [RelayException],
   /// or as [PairingTakenOver] when the relay closed it because another
   /// connection logged in as this device's mailbox — someone else holding
-  /// the code. A takeover is also what the attempt ends in when it happened
-  /// while [confirm] was asking, whatever the person answered: that login
-  /// can acknowledge the reply, and the existing device may list this device
-  /// on it (§10.2).
+  /// the code — and so does one that closes while the relay has yet to take
+  /// a frame this side sent ([_post]). A takeover is also what the attempt
+  /// ends in when it happened while [confirm] was asking, whatever the
+  /// person answered: that login can acknowledge the reply, and the existing
+  /// device may list this device on it (§10.2).
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
@@ -343,7 +344,7 @@ class RelayPairing {
         await _Mailbox.open(relayUrl, await relayIdentityV3(n.code, 'i'));
     try {
       final rMailbox = await (await relayIdentityV3(n.code, 'r')).routingId();
-      await box.client.send(
+      await _post(box,
           to: rMailbox,
           id: 'z-pair-commit',
           payload: jsonEncode({'k': 'commit-v3', ...await n.commit()}));
@@ -355,7 +356,7 @@ class RelayPairing {
         throw const PairingNoAnswer();
       }
       final (open, session) = await n.open(replied.$1);
-      await box.client.send(
+      await _post(box,
           to: rMailbox,
           id: 'z-pair-open',
           payload: jsonEncode({'k': 'open-v3', ...open}));
@@ -479,7 +480,7 @@ class RelayPairing {
       v1 = null;
       final (reply, pending) =
           await PairingResponderV3.reply(commit, code: code);
-      await box.client.send(
+      await _post(box,
           to: iMailbox,
           id: 'z-pair-reply',
           payload: jsonEncode({'k': 'reply-v3', ...reply}));
@@ -573,6 +574,25 @@ class RelayPairing {
   static Exception _closed(_Mailbox box) => _takenOver(box)
       ? const PairingTakenOver()
       : RelayException('connection closed');
+
+  /// Sends [payload] to [to] as [id] on [box], and waits for the relay to
+  /// say it took it. A send that fails because the connection closed ends as
+  /// a wait does once its connection has closed ([_closed]) —
+  /// [PairingTakenOver] when the relay closed it for another login to the
+  /// same mailbox — and not in the send's own words, which say only that the
+  /// connection closed: the relay closes a connection for another login
+  /// whether or not it has yet taken a frame still going up from it.
+  static Future<void> _post(_Mailbox box,
+      {required String to,
+      required String id,
+      required String payload}) async {
+    try {
+      await box.client.send(to: to, id: id, payload: payload);
+    } on RelayException {
+      if (!box.client.isOpen) throw _closed(box);
+      rethrow;
+    }
+  }
 
   /// [_awaitFrame] for a ceremony's first frame, of [kind] on [box], with the
   /// older ceremonies' first frames watched for on their own mailboxes —

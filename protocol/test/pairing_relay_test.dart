@@ -960,6 +960,51 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // The other login can come while the new device's first frame is still
+    // going up: the relay closes the connection with 4002 before it has
+    // taken the frame, and the send fails. That failure used to say only
+    // that the connection closed, as one that dropped does, so the new
+    // device said its connection was lost and kept its code (the 2026-10-30
+    // review). Here a front keeps the commitment from the relay.
+    test('a new device whose mailbox someone holding the code logs in as '
+        'while its first frame is still going up says so at once', () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      var going = false;
+      final tap = await front(url, (frame) => [frame], holdUp: (frame) {
+        if (!isSendOf(frame, 'z-pair-commit')) return null;
+        going = true;
+        return Completer<void>().future;
+      });
+      RelayClient? other;
+      try {
+        final laptop = RelayPairing.runNewDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${tap.port}',
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        await waitUntil(() => going,
+            what: "the new device's commitment on its way up");
+        final waited = Stopwatch()..start();
+        other = await RelayClient.connect(
+            url, await RelayPairing.relayIdentityV3(code, 'i'));
+        final outcome = await laptop;
+        waited.stop();
+        expect('$outcome', contains('another connection took over'),
+            reason: 'the new device says another connection took its '
+                'mailbox over, not that its connection was lost');
+        expect(waited.elapsed, lessThan(timeout),
+            reason: 'at once, and not when a wait ran out');
+      } finally {
+        await other?.close();
+        await tap.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {
@@ -1004,14 +1049,20 @@ void main() {
 /// the relay sees the connection go. [cutUp] does the same for a frame from
 /// the client, which never reaches the relay. [refuseUp], when it answers a
 /// frame from the client, keeps that frame from the relay and hands the
-/// client its answer as if the relay had sent it. The Host header passes
-/// through, so the relay checks each authentication against the address the
-/// client dialled.
+/// client its answer as if the relay had sent it. [holdUp], when it answers
+/// a frame from the client with a future, keeps that frame from the relay —
+/// as one still going up — until the future completes, then passes it on if
+/// the connection is still there. The Host header passes through, so the
+/// relay checks each authentication against the address the client
+/// dialled, and the relay's own close code passes on to the client — 4002
+/// above all, its word that another connection logged in as this one's
+/// routing id.
 Future<HttpServer> front(
     String relayUrl, List<String> Function(String frame) down,
     {bool Function(String frame)? cut,
     bool Function(String frame)? cutUp,
-    String? Function(String frame)? refuseUp}) async {
+    String? Function(String frame)? refuseUp,
+    Future<void>? Function(String frame)? holdUp}) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   server.listen((req) async {
     final client = await WebSocketTransformer.upgrade(req);
@@ -1031,6 +1082,13 @@ Future<HttpServer> front(
         client.add(answer);
         return;
       }
+      final held = holdUp?.call(d as String);
+      if (held != null) {
+        held.then((_) {
+          if (!gone && relay.readyState == WebSocket.open) relay.add(d);
+        });
+        return;
+      }
       relay.add(d);
     }, onDone: () => relay.close(), onError: (Object _) => relay.close());
     relay.listen((d) {
@@ -1044,7 +1102,10 @@ Future<HttpServer> front(
       for (final f in down(d as String)) {
         client.add(f);
       }
-    }, onDone: () => client.close(), onError: (Object _) => client.close());
+    }, onDone: () {
+      final c = relay.closeCode;
+      client.close(c != null && c >= 3000 && c <= 4999 ? c : null);
+    }, onError: (Object _) => client.close());
   });
   return server;
 }

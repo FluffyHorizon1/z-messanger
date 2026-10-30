@@ -90,9 +90,9 @@
 //      enrolment says the connection was lost, at once and in both
 //      languages, where it used to wait out its timer and blame the phone;
 //  18. a laptop whose mailbox someone else holding the code logs in as —
-//      while its person compares the digits, or before any reply — says
-//      another connection took the link over, at once and in both
-//      languages, and shows a new code;
+//      while its person compares the digits, before any reply, or while its
+//      first frame is still going up — says another connection took the
+//      link over, at once and in both languages, and shows a new code;
 //  19. a phone whose connection drops as it puts the enrolment up, before
 //      the relay has it, says its connection dropped while it sent the
 //      account, which may or may not have arrived, and the laptop, sent
@@ -146,7 +146,10 @@ typedef Person = ({
 /// frame, or nothing. [cut], when given, names the frame from the relay at
 /// which that connection closes instead, both ways: the client is not
 /// handed it, and the relay sees the connection go. [cutUp] does the same
-/// for a frame from the client, which never reaches the relay.
+/// for a frame from the client, which never reaches the relay. [holdUp],
+/// when it answers a frame from the client with a future, keeps that frame
+/// from the relay — as one still going up — until the future completes,
+/// then passes it on if the connection is still there.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
@@ -157,7 +160,8 @@ class Recorder {
   static Future<Recorder> start(String relayUrl,
       {List<String> Function(String frame)? hand,
       bool Function(String frame)? cut,
-      bool Function(String frame)? cutUp}) async {
+      bool Function(String frame)? cutUp,
+      Future<void>? Function(String frame)? holdUp}) async {
     final r =
         Recorder._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     r._server.listen((req) async {
@@ -176,6 +180,13 @@ class Recorder {
           return;
         }
         r._note(d, 'send');
+        final held = d is String ? holdUp?.call(d) : null;
+        if (held != null) {
+          held.then((_) {
+            if (!gone && up.readyState == WebSocket.open) up.add(d);
+          });
+          return;
+        }
         up.add(d);
       }, onDone: () => up.close(), onError: (Object _) => up.close());
       up.listen((d) {
@@ -1718,19 +1729,30 @@ void main() {
     alice.svc.linkMargin = margin;
     // While the laptop's person compares the digits, and before any reply
     // has reached the laptop: the other login is in by the time the laptop
-    // next looks at its mailbox.
-    for (final whileComparing in [true, false]) {
-      final what = whileComparing
-          ? 'taken over while its person compared the digits'
-          : 'taken over before any reply';
+    // next looks at its mailbox. And while the laptop's first frame is
+    // still going up: the relay closes its connection before it has taken
+    // the frame, and until 2026-10-30 the laptop said only that its
+    // connection was lost, and kept its code.
+    for (final when in ['comparing', 'no reply', 'going up']) {
+      final whileComparing = when == 'comparing';
+      final what = switch (when) {
+        'comparing' => 'taken over while its person compared the digits',
+        'no reply' => 'taken over before any reply',
+        _ => 'taken over while its first frame was still going up',
+      };
       final n = await NewDeviceLink.create();
       final code = n.code;
       final mailbox =
           await RelayPairing.relayIdentityV3(PairingCode.parse(code), 'i');
       // The laptop connects through a front that keeps what it sends, so
-      // the test sees its commitment leave; the relay's close code passes
-      // on.
-      final tap = await Recorder.start(relayUrl());
+      // the test sees its commitment leave — and, going up, keeps it from
+      // the relay; the relay's close code passes on.
+      final tap = await Recorder.start(relayUrl(),
+          holdUp: when == 'going up'
+              ? (f) => Recorder.sendOf(f, 'z-pair-commit')
+                  ? Completer<void>().future
+                  : null
+              : null);
       final comparing = Completer<void>(), loggedIn = Completer<void>();
       Future<Object?>? hosted;
       if (whileComparing) {
