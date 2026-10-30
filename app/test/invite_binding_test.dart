@@ -861,9 +861,22 @@ void main() {
     expect(held.consented, isTrue);
     expect(held.lastFailure, isNotNull);
     expect(find.text('Opened from a link — nothing sent yet'), findsNothing);
-    await t.runAsync(() => Future<void>.delayed(const Duration(seconds: 1)));
-    await t.pump(const Duration(seconds: 20));
-    await t.pump(const Duration(seconds: 20));
+    // The pass Connect started, over before the test is: joined — pump hands
+    // back the one running, or runs one, over at once here — with both
+    // clocks let run, the real one for the refused socket and the vault, the
+    // test's for any timer the round set. Until 2026-10-30 this slept a
+    // second and pumped 40 s of the test's clock.
+    var over = false;
+    unawaited(bob.invites.pump().whenComplete(() => over = true));
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (!over) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('the pass Connect started was still in flight after 30 s');
+      }
+      await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await t.pump(const Duration(seconds: 1));
+    }
     bob.invites.pause();
     await t.pumpWidget(const SizedBox());
   }, timeout: const Timeout(Duration(minutes: 2)));

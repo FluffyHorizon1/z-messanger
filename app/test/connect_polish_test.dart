@@ -29,6 +29,7 @@
 //     writes the run down, acknowledges what it read and closes before it
 //     returns `confirm`, and until 2026-10-30 a card drawn in between went
 //     on offering the link, the code, the QR and Share beside the digits.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -130,12 +131,32 @@ void main() {
     await t.pump(const Duration(milliseconds: 350));
   }
 
-  /// The tab starts a relay poll behind every action; let it finish so no
-  /// test ends with work in flight.
-  Future<void> drain(WidgetTester t) async {
-    await t.runAsync(() => Future<void>.delayed(const Duration(seconds: 1)));
-    await t.pump(const Duration(seconds: 20));
-    await t.pump(const Duration(seconds: 20));
+  /// The tab runs a round behind every action, and no test here ends with
+  /// one in flight. Each of [all]'s passes is joined — [ConnectInvites.pump]
+  /// hands back the one running, or runs one, which against the port nothing
+  /// listens on is over at once — and both clocks are let run until every
+  /// one is over: the real one for the socket and the vault, the test's for
+  /// any timer a round set. Until 2026-10-30 this slept a second and pumped
+  /// 40 s of the test's clock.
+  Future<void> drain(WidgetTester t, List<ConnectInvites> all) async {
+    var open = all.length;
+    final failures = <Object>[];
+    for (final invites in all) {
+      unawaited(invites.pump().then((_) => open--, onError: (Object e) {
+        failures.add(e);
+        open--;
+      }));
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (open > 0) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('a round the tab started was still in flight after 30 s');
+      }
+      await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await t.pump(const Duration(seconds: 1));
+    }
+    if (failures.isNotEmpty) fail('a round the tab started threw: $failures');
   }
 
   /// An invite made through the screen, as a person makes one.
@@ -168,7 +189,7 @@ void main() {
     await createThroughUi(t, alice);
     expect(find.text('23 hours left'), findsOneWidget,
         reason: 'a fresh invite has 23-and-a-bit hours of its 24');
-    await drain(t);
+    await drain(t, [alice.invites]);
   });
 
   testWidgets('2. the QR is the link and nothing but the link', (t) async {
@@ -186,7 +207,7 @@ void main() {
     expect(ConnectCode.fromLink(qr.link)!.text, invite.code,
         reason: 'and scanning it yields the same code, not another invite');
     expect(find.text(AppLocalizationsEn().connectQrLabel), findsOneWidget);
-    await drain(t);
+    await drain(t, [alice.invites]);
   });
 
   testWidgets('3. Share hands over the link, or says it could not', (t) async {
@@ -235,7 +256,7 @@ void main() {
     expect(copied, invite.link);
     ShareText.debugHandler = null;
     messenger.setMockMethodCallHandler(SystemChannels.platform, null);
-    await drain(t);
+    await drain(t, [alice.invites]);
   });
 
   testWidgets('4. an invite that has run out offers nothing to send',
@@ -263,7 +284,7 @@ void main() {
         reason: 'a token that no longer works is not left on screen to copy');
     expect(find.text(l.connectDiscard), findsOneWidget,
         reason: 'but it can still be cleared away');
-    await drain(t);
+    await drain(t, [alice.invites, aged]);
   });
 
   testWidgets('5. an invite at the digits offers nothing to send, whatever '
@@ -316,6 +337,6 @@ void main() {
             'not left on screen to copy');
     expect(find.text('23 hours left'), findsNothing,
         reason: 'nor is the time it has left to be sent in');
-    await drain(t);
+    await drain(t, [alice.invites, midRound]);
   });
 }

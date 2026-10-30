@@ -353,13 +353,31 @@ void main() {
     await t.pump(const Duration(milliseconds: 350));
   }
 
-  /// The tab starts a relay poll behind every action. Let it finish — in real
-  /// time if the socket is going to be refused, and on the fake clock if its
-  /// connect timeout has to fire — so no test ends with work in flight.
-  Future<void> drain(WidgetTester t) async {
-    await t.runAsync(() => Future<void>.delayed(const Duration(seconds: 1)));
-    await t.pump(const Duration(seconds: 20));
-    await t.pump(const Duration(seconds: 20));
+  /// The tab runs a round behind every action, and no test here ends with
+  /// one in flight. Each of [all]'s passes is joined — [ConnectInvites.pump]
+  /// hands back the one running, or runs one, which here is over at once —
+  /// and both clocks are let run until every one is over: the real one for
+  /// the socket and the vault, the test's for any timer a round set. Until
+  /// 2026-10-30 this slept a second and pumped 40 s of the test's clock.
+  Future<void> drain(WidgetTester t, List<ConnectInvites> all) async {
+    var open = all.length;
+    final failures = <Object>[];
+    for (final invites in all) {
+      unawaited(invites.pump().then((_) => open--, onError: (Object e) {
+        failures.add(e);
+        open--;
+      }));
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (open > 0) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('a round the tab started was still in flight after 30 s');
+      }
+      await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await t.pump(const Duration(seconds: 1));
+    }
+    if (failures.isNotEmpty) fail('a round the tab started threw: $failures');
   }
 
   testWidgets('1. an invite has two renderings and one secret', (t) async {
@@ -412,7 +430,7 @@ void main() {
       expect(b64(parsed!.secret), b64(invite.run.code.secret));
     }
     expect(ConnectInvites.parseInvite('not an invite'), isNull);
-    await drain(t);
+    await drain(t, [alice.invites]);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('2. an invite link is consumed entirely on the device', () async {
@@ -582,7 +600,7 @@ void main() {
     expect(find.text('They match'), findsNothing,
         reason: 'the panel is gone; there is no path back to adding');
     expect(find.textContaining('Nothing was added'), findsOneWidget);
-    await drain(t);
+    await drain(t, [alice.invites]);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('7. the ceremony carries itself: nobody presses anything', () async {
@@ -694,7 +712,7 @@ void main() {
         find.byWidgetPredicate(
             (w) => w is SelectableText && w.data == invite.link),
         findsOneWidget);
-    await drain(t);
+    await drain(t, [alice.invites]);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('6. every new string is in both locales, with a description', () async {
