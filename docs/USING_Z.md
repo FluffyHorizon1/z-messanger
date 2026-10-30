@@ -446,9 +446,12 @@ notices says another connection took the link over, and shows a new code:
 start again on both devices with it. When it is your phone that says so, it
 stops the new device too if that is still linking, and it will not take
 that code again: if the new device still shows the old code, go back on it
-and choose "Link to an existing account" again for a new one. And if your
-phone ever lists a device you did not finish linking, revoke it in Settings
-→ Linked devices.
+and choose "Link to an existing account" again for a new one. If you leave
+Link a device on your phone while a link is running, the phone stops it —
+unless it has already started sending your account, which then finishes —
+and you can enter the code again: your phone does not take that for someone
+else using the code. And if your phone ever lists a device you did not
+finish linking, revoke it in Settings → Linked devices.
 
 **Both devices need this version of Z or later.** Linking changed in this
 version, and neither device falls back to the way older versions link. If

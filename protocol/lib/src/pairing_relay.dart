@@ -36,7 +36,10 @@ import 'util.dart';
 /// never acknowledged ([_Mailbox]). A wait in v2 or v3 ends at once when its
 /// connection closes, and says so — [PairingTakenOver] when the relay closed
 /// it for another login to the same mailbox, which is anyone else who holds
-/// the code. The v1 runners are left as builds before v2 ran them.
+/// the code. A v3 existing device's attempt can also be stopped from outside
+/// it until it sends the enrolment ([PairingCancel]), as its device does
+/// before it runs another on the same code. The v1 runners are left as
+/// builds before v2 ran them.
 
 const String _relayCtx = 'z-pair-relay:';
 // v2 (§10.1) derives its throwaway mailboxes from a different context, so a
@@ -60,6 +63,40 @@ class PairingResult {
   final AccountIdentity account;
   final EnrollmentData data; // contacts + display name that came across
   PairingResult(this.account, this.data);
+}
+
+/// A way to stop a v3 existing device's attempt from outside it
+/// ([RelayPairing.runExistingDeviceV3]): the app's link screen stops the
+/// attempt it started when its person leaves it, and the app stops an
+/// attempt on a code before it starts another on the same code, which would
+/// otherwise log in as the same mailbox and have the relay close the first
+/// as if someone else held the code.
+///
+/// The attempt stops at its next step — while it waits for a frame, for the
+/// relay or for its person — in [PairingCancelled], until it sends the
+/// enrolment: from then on the new device may come to hold the account, and
+/// only the report the attempt goes on to wait for can list it, so it runs
+/// to its end whatever [cancel] says ([sentEnrolment]). What the relay holds
+/// for this side that it had not read, or not answered, when it stopped is
+/// left unacknowledged, for the next attempt on the code to read.
+class PairingCancel {
+  final _asked = Completer<void>();
+  bool _sentEnrolment = false;
+
+  /// Asks the attempt to stop.
+  void cancel() {
+    if (!_asked.isCompleted) _asked.complete();
+  }
+
+  /// Whether [cancel] has been called.
+  bool get isCancelled => _asked.isCompleted;
+
+  /// Whether the attempt has sent the enrolment, after which it runs to its
+  /// end, cancelled or not.
+  bool get sentEnrolment => _sentEnrolment;
+
+  /// Whether the attempt is to stop: asked to, with the enrolment not sent.
+  bool get _stops => isCancelled && !_sentEnrolment;
 }
 
 class RelayPairing {
@@ -448,6 +485,13 @@ class RelayPairing {
   /// once as the new device's mailbox and leaves, so that a new device
   /// still in the ceremony is closed the same way and says so too, rather
   /// than wait out its timer and name a cause it cannot see (§10.2).
+  ///
+  /// [cancel] stops the attempt from outside it, at its next step, until it
+  /// sends the enrolment ([PairingCancel]): it ends in [PairingCancelled],
+  /// whatever closed its connection meanwhile, and so logs in as no other
+  /// mailbox, and leaves unacknowledged what it had not read — and the
+  /// commitment, when it had not yet sent its reply — for the next attempt
+  /// on the code. One that has sent the enrolment runs to its end.
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -460,6 +504,7 @@ class RelayPairing {
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
     Duration margin = enrolmentMargin,
+    PairingCancel? cancel,
   }) async {
     // The three connections are made inside the try, one after another, so
     // a relay that refuses the second or the third still has the ones
@@ -467,19 +512,33 @@ class RelayPairing {
     // reads.
     _Mailbox? box, v2, v1;
     try {
-      box = await _Mailbox.open(relayUrl, await relayIdentityV3(code, 'r'));
+      if (cancel != null && cancel._stops) throw const PairingCancelled();
+      box = await _Mailbox.open(relayUrl, await relayIdentityV3(code, 'r'),
+          cancel: cancel);
       v2 = await _Mailbox.open(relayUrl, await relayIdentityV2(code, 'r'));
       v1 = await _Mailbox.open(relayUrl, await relayIdentity(code, 'r'));
       final iMailbox = await (await relayIdentityV3(code, 'i')).routingId();
-      final commit =
-          await _awaitCommit(box, 'commit-v3', timeout, v2: v2, v1: v1);
+      final (commit, committed) =
+          await _awaitCommitHeld(box, 'commit-v3', timeout, v2: v2, v1: v1);
       // The older mailboxes were held for the first frame alone.
       await v2.close();
       v2 = null;
       await v1.close();
       v1 = null;
-      final (reply, pending) =
-          await PairingResponderV3.reply(commit, code: code);
+      final (Map<String, Object?>, PairingResponderV3) answer;
+      try {
+        answer = await PairingResponderV3.reply(commit, code: code);
+      } catch (_) {
+        // A commitment that cannot be answered is nobody's to read again.
+        box.acknowledge(committed);
+        rethrow;
+      }
+      // The commitment is acknowledged as its answer is handed over, with
+      // nothing between the two: an attempt cancelled before then leaves it
+      // at the relay, and the next attempt on the code answers it.
+      if (box.cancelled) throw const PairingCancelled();
+      box.acknowledge(committed);
+      final (reply, pending) = answer;
       await _post(box,
           to: iMailbox,
           id: 'z-pair-reply',
@@ -488,7 +547,9 @@ class RelayPairing {
       final open = await _awaitFrame(box, 'open-v3', timeout);
       final session = await pending.accept(open);
 
-      if (!await confirm(session.sas)) return null;
+      if (!await _unlessCancelled(box, () => confirm(session.sas))) {
+        return null;
+      }
       // §10 has both people compare the digits before the enrolment goes,
       // and the new device says its person did by acknowledging the reply.
       // Until the relay reports that, nothing of the account leaves here: a
@@ -529,20 +590,28 @@ class RelayPairing {
         case _Sent.unreported:
           throw const PairingPeerUnfinished();
       }
-    } on PairingTakenOver {
-      // Someone else holding the code logged in as this device's mailbox.
-      // The new device, if it is still in the ceremony, cannot see that: it
-      // would wait out its timer and then name a cause it has no way to
-      // know. Logging in once as its mailbox closes its connection the same
-      // way, so that it stops at once, says another connection took the
-      // link over, and draws a new code.
-      await _closeTheOtherSide(
-          relayUrl, await relayIdentityV3(code, 'i'));
+    } on Exception catch (e) {
+      // Stopped on this device ([cancel]): said as that, whatever closed
+      // the connection meanwhile — this device's next attempt on the code
+      // may be what logged in as its mailbox — and nothing is done to the
+      // new device's mailbox.
+      if (cancel != null && cancel._stops) throw const PairingCancelled();
+      if (e is PairingTakenOver) {
+        // Someone else holding the code logged in as this device's mailbox.
+        // The new device, if it is still in the ceremony, cannot see that:
+        // it would wait out its timer and then name a cause it has no way
+        // to know. Logging in once as its mailbox closes its connection the
+        // same way, so that it stops at once, says another connection took
+        // the link over, and draws a new code.
+        await _closeTheOtherSide(relayUrl, await relayIdentityV3(code, 'i'));
+      }
       rethrow;
     } finally {
-      await box?.close();
-      await v2?.close();
-      await v1?.close();
+      // A cancelled attempt leaves what it did not read for the next one.
+      final done = !(cancel?._stops ?? false);
+      await box?.close(acknowledge: done);
+      await v2?.close(acknowledge: done);
+      await v1?.close(acknowledge: done);
     }
   }
 
@@ -581,29 +650,60 @@ class RelayPairing {
   /// [PairingTakenOver] when the relay closed it for another login to the
   /// same mailbox — and not in the send's own words, which say only that the
   /// connection closed: the relay closes a connection for another login
-  /// whether or not it has yet taken a frame still going up from it.
+  /// whether or not it has yet taken a frame still going up from it. An
+  /// attempt cancelled before or meanwhile stops ([_unlessCancelled]).
   static Future<void> _post(_Mailbox box,
       {required String to,
       required String id,
       required String payload}) async {
     try {
-      await box.client.send(to: to, id: id, payload: payload);
+      await _unlessCancelled(
+          box, () => box.client.send(to: to, id: id, payload: payload));
     } on RelayException {
       if (!box.client.isOpen) throw _closed(box);
       rethrow;
     }
   }
 
-  /// [_awaitFrame] for a ceremony's first frame, of [kind] on [box], with the
-  /// older ceremonies' first frames watched for on their own mailboxes —
-  /// only read, never answered: a `commit-v2` on [v2], or a `hello` on [v1],
-  /// ends the wait with [PairingPeerOutdated] naming the version.
+  /// What [step] comes to, or [PairingCancelled] — at once, without
+  /// starting it, when [box]'s attempt is to stop already ([PairingCancel]),
+  /// and as soon as it is asked to while [step] is under way, whatever
+  /// [step] comes to later: a frame the relay has yet to take, or the
+  /// person's answer to the digits.
+  static Future<T> _unlessCancelled<T>(
+      _Mailbox box, Future<T> Function() step) {
+    if (box.cancelled) return Future<T>.error(const PairingCancelled());
+    final going = step();
+    final cancel = box.cancel;
+    if (cancel == null) return going;
+    return Future.any<T>([
+      going,
+      cancel._asked.future.then<T>((_) => throw const PairingCancelled()),
+    ]);
+  }
+
+  /// [_awaitCommitHeld], the frame acknowledged as it is taken (v2).
   static Future<Map<String, Object?>> _awaitCommit(
+      _Mailbox box, String kind, Duration timeout,
+      {_Mailbox? v2, _Mailbox? v1}) async {
+    final (found, frame) =
+        await _awaitCommitHeld(box, kind, timeout, v2: v2, v1: v1);
+    box.acknowledge(frame);
+    return found;
+  }
+
+  /// [_awaitFrameHeld] for a ceremony's first frame, of [kind] on [box],
+  /// with the older ceremonies' first frames watched for on their own
+  /// mailboxes — only read, never answered: a `commit-v2` on [v2], or a
+  /// `hello` on [v1], ends the wait with [PairingPeerOutdated] naming the
+  /// version, and is acknowledged.
+  static Future<(Map<String, Object?>, RelayInbound)> _awaitCommitHeld(
       _Mailbox box, String kind, Duration timeout,
       {_Mailbox? v2, _Mailbox? v1}) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
-      final found = box.take(kind);
+      if (box.cancelled) throw const PairingCancelled();
+      final found = box.takeHeld(kind);
       if (found != null) return found;
       if (v2 != null && v2.take('commit-v2') != null) {
         throw const PairingPeerOutdated(2);
@@ -622,11 +722,13 @@ class RelayPairing {
   /// Waits for a frame of [kind] on [box], taking — and so acknowledging —
   /// the first that arrives. A connection that closes ends the wait at once
   /// ([_closed]), where it used to run on to its timeout and end as though
-  /// the other device had sent nothing.
+  /// the other device had sent nothing; an attempt cancelled stops
+  /// ([PairingCancel]), and takes nothing.
   static Future<Map<String, Object?>> _awaitFrame(
       _Mailbox box, String kind, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
+      if (box.cancelled) throw const PairingCancelled();
       final found = box.take(kind);
       if (found != null) return found;
       if (!box.client.isOpen) throw _closed(box);
@@ -645,6 +747,7 @@ class RelayPairing {
       _Mailbox box, String kind, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
+      if (box.cancelled) throw const PairingCancelled();
       final found = box.takeHeld(kind);
       if (found != null) return found;
       if (!box.client.isOpen) throw _closed(box);
@@ -658,11 +761,13 @@ class RelayPairing {
   /// Whether the relay reports, within [timeout], that the frame this side
   /// sent as [id] was acknowledged by the mailbox it went to; false when the
   /// time runs out. A connection that goes first ends it ([_closed]):
-  /// nothing can be said of the other device then.
+  /// nothing can be said of the other device then. An attempt cancelled
+  /// stops ([PairingCancel]).
   static Future<bool> _awaitAcknowledged(
       _Mailbox box, String id, Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
     while (!box.acknowledged(id)) {
+      if (box.cancelled) throw const PairingCancelled();
       if (!box.client.isOpen) throw _closed(box);
       if (DateTime.now().isAfter(deadline)) return false;
       await Future<void>.delayed(const Duration(milliseconds: 25));
@@ -708,18 +813,26 @@ class RelayPairing {
   /// closes once the frame has been handed over may have taken all of it to
   /// the relay, and its `sent` with it, or only part: this side cannot tell,
   /// and the caller says so ([PairingEnrolmentInterrupted]).
+  ///
+  /// It is the last step a cancel stops ([PairingCancel]): once the frame is
+  /// handed over, the new device may come to hold the account, and only the
+  /// report waited for here can list it, so the wait runs on, cancelled or
+  /// not.
   static Future<(_Sent, String?)> _sendEnrolmentV3(_Mailbox box,
       {required String to,
       required String payload,
       required Duration wait}) async {
     const id = 'z-pair-enroll';
     String? refused;
+    if (box.cancelled) throw const PairingCancelled();
     // A connection that has already closed would refuse the frame as it is
     // handed over: nothing of the enrolment leaves, and the step ends as any
     // other does when its connection has gone ([_closed]). A refusal after
     // the frame has been handed over fails the send's future, and ends the
     // wait; so does the connection closing, which fails it too.
     if (!box.client.isOpen) throw _closed(box);
+    // Nothing between here and the frame's handing over waits on anything.
+    box.cancel?._sentEnrolment = true;
     // The send's own timeout is twice the wait, so that it never ends the
     // wait: a `sent` that has not come by the deadline is no refusal.
     unawaited(box.client
@@ -802,7 +915,10 @@ enum _Sent {
 /// new device whose person said the digits differ; v3's enrolment, at one
 /// that could not open or install it — and a frame whose acknowledgement
 /// tells the other device something ([_signals]), which closing never
-/// acknowledges, whatever kept it from being taken.
+/// acknowledges, whatever kept it from being taken. An existing device's
+/// attempt cancelled on its device ([PairingCancel]) acknowledges nothing as
+/// it closes, nor the commitment it took and had not yet answered: the next
+/// attempt on the code reads them.
 ///
 /// A relay delivers at least once (§12.5): it sends a mailbox again on a
 /// new connection, and an HA relay sends one again on a live connection when
@@ -816,6 +932,10 @@ enum _Sent {
 /// sweep after the reply arrived told the existing device they matched.
 class _Mailbox {
   final RelayClient client;
+
+  /// What can stop the attempt this mailbox is a side of from outside it,
+  /// when something can ([PairingCancel]).
+  final PairingCancel? cancel;
   final _inbox = <RelayInbound>[];
   final _handedOut = <String>{};
 
@@ -833,11 +953,14 @@ class _Mailbox {
   /// closing never acknowledges one.
   static const _signals = {'reply-v3', 'enroll-v3'};
 
-  _Mailbox._(this.client) {
+  _Mailbox._(this.client, this.cancel) {
     _frames = client.messages.listen(_arrived);
     _receipts = client.delivered
         .listen((r) => _acknowledged.putIfAbsent(r.id, () => _clock.elapsed));
   }
+
+  /// Whether the attempt is to stop at its next step ([PairingCancel]).
+  bool get cancelled => cancel?._stops ?? false;
 
   /// A frame by what the relay knows it by: its id and its sender.
   static String _key(RelayInbound f) => '${f.id}\u0000${f.from}';
@@ -858,8 +981,9 @@ class _Mailbox {
     }
   }
 
-  static Future<_Mailbox> open(String relayUrl, ZIdentity who) async =>
-      _Mailbox._(await RelayClient.connect(relayUrl, who));
+  static Future<_Mailbox> open(String relayUrl, ZIdentity who,
+          {PairingCancel? cancel}) async =>
+      _Mailbox._(await RelayClient.connect(relayUrl, who), cancel);
 
   /// The first frame of [kind] that has arrived, acknowledged and taken out;
   /// null while none has. Frames of other kinds are left where they are.
@@ -916,10 +1040,13 @@ class _Mailbox {
   }
 
   /// Acknowledges whatever arrived and was not taken, but a frame whose
-  /// acknowledgement is a signal ([_signals]), then closes.
-  Future<void> close() async {
+  /// acknowledgement is a signal ([_signals]), then closes — acknowledging
+  /// nothing when not to [acknowledge]: an attempt cancelled on this device
+  /// leaves what it did not read at the relay for the next attempt on the
+  /// code ([PairingCancel]).
+  Future<void> close({bool acknowledge = true}) async {
     for (final frame in _inbox) {
-      if (!_signals.contains(_kindOf(frame))) _ack(frame);
+      if (acknowledge && !_signals.contains(_kindOf(frame))) _ack(frame);
     }
     _inbox.clear();
     await _frames.cancel();

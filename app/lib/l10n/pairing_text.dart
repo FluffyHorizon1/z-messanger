@@ -4,6 +4,7 @@ import 'dart:io'
 
 import 'package:z_protocol/z_protocol.dart'
     show
+        PairingCancelled,
         PairingCodeInvalid,
         PairingEnrolmentInterrupted,
         PairingEnrolmentRefused,
@@ -38,7 +39,8 @@ import 'app_localizations.dart';
 // connection. A phone whose connection drops while it sends the account
 // cannot tell whether the account got through, and says that, not that the
 // new device failed; the new device, sent nothing, names that among the
-// reasons.
+// reasons. An attempt the phone stopped itself — its person left the screen,
+// or entered the same code again — says it was cancelled.
 //
 // Nothing here shows an exception's own text. Whatever no case names — a
 // rule of the ceremony the other device broke, or something nobody expected
@@ -70,6 +72,7 @@ String hostLinkFailureText(AppLocalizations l, Object error) =>
       PairingTakenOver() => l.linkHostTakenOver,
       PairingCodeInvalid() => l.linkNotACode,
       PairingCodeSpent() => l.linkCodeSpent,
+      PairingCancelled() => l.linkCancelled,
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,
       _ when _unreachable(error) => l.linkRelayUnreachable,

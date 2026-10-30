@@ -8882,16 +8882,78 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// while this device hosted a link with it ([PairingTakenOver]) is kept,
   /// by its rendezvous id, and refused from then on ([PairingCodeSpent]),
   /// across restarts.
+  ///
+  /// One link per code on this device: two attempts on a code log in as the
+  /// same mailbox, and the relay closes the earlier for the later as it
+  /// would for someone else holding the code. Until 2026-10-30 the earlier
+  /// then said it was taken over, kept the code as spent and closed the new
+  /// device's connection too, so a person who went back and entered the
+  /// code again was told someone else might have seen it. Now a call for a
+  /// code this device is still hosting a link with first stops that attempt
+  /// ([PairingCancel]), and starts once it is over; and [cancel], when
+  /// given, stops this one, as the link screen does when its person leaves
+  /// it. The attempt stopped ends in [PairingCancelled]: it sends nothing
+  /// more, spends nothing, closes no other connection, and leaves what it
+  /// had not read for the next. An attempt that has sent the account is not
+  /// stopped — the new device may hold it, and only the report the attempt
+  /// waits for lists it — so it runs on to its end, and a call that came
+  /// for its code meanwhile ends as it does.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
+    PairingCancel? cancel,
   }) async {
     // What was typed, read first: a code that is not one says so at once
-    // ([PairingCodeInvalid]). One this device saw taken over — someone else
-    // logged in as its mailbox while it hosted a link — is not used again
-    // ([PairingCodeSpent]): whoever did it still has it.
+    // ([PairingCodeInvalid]).
     final pairing = PairingCode.parse(code);
     final mark = await pairing.rendezvousRoutingIdV3();
+    final mine = _HostedLink(cancel ?? PairingCancel());
+    final earlier = _hosting[mark];
+    _hosting[mark] = mine;
+    Future<bool> run() async {
+      if (earlier != null) {
+        earlier.cancel.cancel();
+        try {
+          await earlier.over;
+        } catch (_) {
+          // What it came to is the earlier attempt's to say.
+        }
+        // One that had sent the account ran on to its end: that end is
+        // this call's too, and the code has had its ceremony.
+        if (earlier.sentEnrolment) {
+          mine.joined = true;
+          return earlier.over;
+        }
+        if (mine.cancel.isCancelled) throw const PairingCancelled();
+      }
+      return _hostDeviceLink(pairing, mark,
+          confirmSas: confirmSas, cancel: mine.cancel);
+    }
+
+    final going = run();
+    mine.done.complete(going);
+    try {
+      return await going;
+    } finally {
+      if (identical(_hosting[mark], mine)) _hosting.remove(mark);
+    }
+  }
+
+  /// The links [hostDeviceLink] is hosting now, by their code's v3
+  /// rendezvous id: one per code.
+  final Map<String, _HostedLink> _hosting = {};
+
+  /// [hostDeviceLink]'s one attempt on [pairing], whose rendezvous id is
+  /// [mark], once no other attempt on it is running here.
+  Future<bool> _hostDeviceLink(
+    PairingCode pairing,
+    String mark, {
+    required Future<bool> Function(String sas) confirmSas,
+    required PairingCancel cancel,
+  }) async {
+    // One this device saw taken over — someone else logged in as its
+    // mailbox while it hosted a link — is not used again
+    // ([PairingCodeSpent]): whoever did it still has it.
     if ((await _spentLinkCodes()).contains(mark)) {
       throw const PairingCodeSpent();
     }
@@ -8936,6 +8998,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
               confirm: confirmSas,
               timeout: linkTimeout,
               margin: linkMargin,
+              cancel: cancel,
             );
     } on PairingTakenOver {
       try {
@@ -17730,6 +17793,29 @@ class _OutboxPass {
     wake = null;
     if (w != null && !w.isCompleted) w.complete();
   }
+}
+
+/// One link [ChatService.hostDeviceLink] is hosting: what stops it, and what
+/// it came to once it is over.
+class _HostedLink {
+  _HostedLink(this.cancel) {
+    // Waited on only by a later call for the same code, if one comes.
+    done.future.ignore();
+  }
+
+  final PairingCancel cancel;
+  final done = Completer<bool>();
+
+  /// Whether this call says what an earlier attempt that had sent the
+  /// account came to, rather than running one of its own.
+  bool joined = false;
+
+  /// What it came to: linked or not, or what stopped it.
+  Future<bool> get over => done.future;
+
+  /// Whether what it came to is that of an attempt that sent the account,
+  /// which no cancel stops.
+  bool get sentEnrolment => joined || cancel.sentEnrolment;
 }
 
 /// One envelope a pass has out: its payload's length, when it went (on the

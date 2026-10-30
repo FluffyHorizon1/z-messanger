@@ -458,10 +458,24 @@ class PairingInstallFailed extends PairingAbort {
 /// From then on what the relay holds for this side goes to that connection
 /// — and on the new device's mailbox its acknowledgements are what the
 /// existing device takes for the new device's word. The attempt stops here,
-/// whatever this side's person said, and the code is not used again.
+/// whatever this side's person said, and the code is not used again. An
+/// existing device's attempt cancelled before it sent the enrolment ends in
+/// [PairingCancelled] instead, whatever closed its connection.
 class PairingTakenOver extends PairingAbort {
   const PairingTakenOver()
       : super('another connection took over this side of the link');
+}
+
+/// A v3 existing device's attempt was stopped on this device, through the
+/// `PairingCancel` it was run with (`RelayPairing.runExistingDeviceV3`):
+/// its person left the screen, or this device started another attempt on
+/// the same code. Nothing of the account was sent, nothing is linked, and
+/// nothing says the code was spent: whatever the relay holds for this side
+/// that it had not read is left there for the next attempt, and no other
+/// device is told anything — not even when the relay closed this side's
+/// connection for another login once the cancel was asked for.
+class PairingCancelled extends PairingAbort {
+  const PairingCancelled() : super('this attempt was cancelled on this device');
 }
 
 /// A rendezvous frame's fixed-width field: a string that decodes to exactly

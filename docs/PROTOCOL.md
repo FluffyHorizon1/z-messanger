@@ -2251,6 +2251,28 @@ can make neither, and the acknowledgements would only clean the relay up;
 but that changes what v3 puts on the wire — two frames more, and vectors
 for them — and it is not made here.
 
+**One attempt per code on a device (v3).** Two attempts on one code by the
+same existing device log in as the same mailbox, and the relay closes the
+first for the second as it would for anyone else's login: the first cannot
+tell the two apart. Until 2026‑10‑30 a person who left the reference
+client's link screen, came back and entered the same code had the first
+attempt — still running behind the screen they had left — take the
+second's login for a takeover: it kept the code as spent and closed the new
+device's connection, which then said so too and drew a new code, so the
+second attempt waited for a commitment that would not come. The reference
+client now hosts one link per code: an attempt on a code it is already
+hosting first stops the earlier one, and starts once it is over, and
+leaving the link screen stops the attempt it started. A stopped attempt
+ends at once in any wait — for a frame, for the relay, for its user's answer
+— sends nothing more, logs in as no other mailbox, keeps nothing as spent,
+and acknowledges nothing it had not read, nor the commitment when it had not
+yet sent its reply, so that the next attempt on the code reads them; what
+closed its connection meanwhile does not make it a takeover. An attempt
+that has handed the enrollment over is not stopped — the new device may come
+to hold the account, and only the report lists it — so it runs on to its
+end, and an attempt on its code that came meanwhile ends as it does. No
+frame changes.
+
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.
 

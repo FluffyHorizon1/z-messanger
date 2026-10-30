@@ -68,9 +68,17 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
   String? _status;
   bool _ok = false;
 
+  /// What stops the attempt this screen started, while it runs. Leaving the
+  /// screen stops it, unless it has sent the account (`hostDeviceLink`):
+  /// until 2026-10-30 an attempt went on after its screen was left, and the
+  /// same code entered again on the next screen made the relay close the
+  /// first, which then said someone else had taken the link over.
+  PairingCancel? _attempt;
+
   Future<void> _link() async {
     final l = AppLocalizations.of(context);
     final chat = context.read<ChatService>();
+    final attempt = _attempt = PairingCancel();
     setState(() {
       _busy = true;
       _status = null;
@@ -79,8 +87,12 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
     try {
       final ok = await chat.hostDeviceLink(
         _code.text.trim(),
-        confirmSas: (sas) => confirmSasDialog(context, sas),
+        // Asked only while the screen is there to ask on.
+        confirmSas: (sas) async =>
+            mounted && await confirmSasDialog(context, sas),
+        cancel: attempt,
       );
+      if (!mounted) return;
       setState(() {
         _busy = false;
         _ok = ok;
@@ -89,13 +101,23 @@ class _HostLinkScreenState extends State<HostLinkScreen> {
             : l.linkCancelled;
       });
     } catch (e) {
+      if (!mounted) return;
       // A new device on an older version is recognised by the ceremony it
       // speaks, and the words say to update it (§10.2 rule 6).
       setState(() {
         _busy = false;
         _status = hostLinkFailureText(l, e);
       });
+    } finally {
+      if (identical(_attempt, attempt)) _attempt = null;
     }
+  }
+
+  @override
+  void dispose() {
+    _attempt?.cancel();
+    _code.dispose();
+    super.dispose();
   }
 
   @override

@@ -106,7 +106,16 @@
 //      its person compares the digits, says so, and closes the laptop's
 //      mailbox the same way, so the laptop says so too, at once, and shows a
 //      new code; the phone will not use that code again, and says why, in
-//      both languages — once restarted too.
+//      both languages — once restarted too;
+//  22. a phone asked to host a link with a code it is still hosting one with
+//      — its person went back and entered the code again — stops the first
+//      itself, and neither is a takeover: before the laptop has started, or
+//      while the laptop's commitment is on its way, the first says it was
+//      cancelled and the second links the laptop, nothing kept as spent; and
+//      a first that had already sent the account runs on, and both say the
+//      laptop is linked;
+//  23. leaving the phone's link screen stops the attempt it started, at once,
+//      and the code then links when it is entered again.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -117,7 +126,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/enrollment.dart';
@@ -127,9 +138,12 @@ import 'package:zapp/core/relay_url.dart';
 import 'package:zapp/core/sealing_keys.dart';
 import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
+import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/l10n/app_localizations_en.dart';
 import 'package:zapp/l10n/app_localizations_es.dart';
 import 'package:zapp/l10n/pairing_text.dart';
+import 'package:zapp/ui/link_device_screen.dart';
+import 'package:zapp/ui/theme.dart';
 
 typedef Person = ({
   ChatService svc,
@@ -149,10 +163,14 @@ typedef Person = ({
 /// for a frame from the client, which never reaches the relay. [holdUp],
 /// when it answers a frame from the client with a future, keeps that frame
 /// from the relay — as one still going up — until the future completes,
-/// then passes it on if the connection is still there.
+/// then passes it on if the connection is still there. [welcomed] keeps the
+/// routing id of every login the relay welcomes through it, and [left] that
+/// of every such connection once it has closed, from either end.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
+  final welcomed = <String>[];
+  final left = <String>[];
   Recorder._(this._server);
 
   String get url => 'ws://127.0.0.1:${_server.port}';
@@ -171,6 +189,14 @@ class Recorder {
       final up = await WebSocket.connect(relayUrl,
           headers: {'host': req.headers.value('host') ?? ''});
       var gone = false;
+      String? rid;
+      var closed = false;
+      void leave() {
+        if (rid == null || closed) return;
+        closed = true;
+        r.left.add(rid!);
+      }
+
       down.listen((d) {
         if (gone) return;
         if (cutUp != null && d is String && cutUp(d)) {
@@ -188,10 +214,14 @@ class Recorder {
           return;
         }
         up.add(d);
-      }, onDone: () => up.close(), onError: (Object _) => up.close());
+      }, onDone: () {
+        leave();
+        up.close();
+      }, onError: (Object _) => up.close());
       up.listen((d) {
         if (gone) return;
         r._note(d, 'msg');
+        rid ??= r._welcome(d);
         if (cut != null && d is String && cut(d)) {
           gone = true;
           down.close();
@@ -206,6 +236,7 @@ class Recorder {
           }
         }
       }, onDone: () {
+        leave();
         // The relay's own close code passes on — 4002 above all, its word
         // that another connection logged in as this one's routing id.
         final c = up.closeCode;
@@ -226,6 +257,20 @@ class Recorder {
     } catch (_) {
       return null;
     }
+  }
+
+  /// The routing id a relay `ready` [data] welcomes a login as, kept in
+  /// [welcomed]; null for anything else.
+  String? _welcome(Object? data) {
+    if (data is! String) return null;
+    try {
+      final f = jsonDecode(data);
+      if (f is Map && f['t'] == 'ready' && f['id'] is String) {
+        welcomed.add(f['id'] as String);
+        return f['id'] as String;
+      }
+    } catch (_) {}
+    return null;
   }
 
   void _note(Object? data, String t) {
@@ -1978,5 +2023,221 @@ void main() {
     } finally {
       await other?.close();
     }
+  });
+
+  test(
+      '22. a phone asked to host a link with a code it is still hosting one '
+      'with stops the first itself, and neither is a takeover', () async {
+    // The phone connects through a front that notes each login the relay
+    // welcomes, so the test sees the first attempt in before the second.
+    final rec = await Recorder.start(relayUrl());
+    try {
+      final alice = await person('Alice22', url: rec.url);
+      await connected([alice]);
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
+      alice.svc.linkTimeout = timeout;
+      alice.svc.linkMargin = margin;
+      var listed = 0;
+      for (final when in ['not started', 'on its way', 'sent']) {
+        final what = switch (when) {
+          'not started' => 'the laptop not yet started',
+          'on its way' => "the laptop's commitment on its way",
+          _ => 'the first attempt had sent the account',
+        };
+        final n = await NewDeviceLink.create();
+        final code = n.code;
+        final mailbox = await (await RelayPairing.relayIdentityV3(
+                PairingCode.parse(code), 'r'))
+            .routingId();
+        // The laptop connects through a front that, while its commitment is
+        // on its way, keeps it from the relay until the first attempt is
+        // over.
+        final release = Completer<void>();
+        final tap = await Recorder.start(relayUrl(),
+            holdUp: when == 'on its way'
+                ? (f) =>
+                    Recorder.sendOf(f, 'z-pair-commit') ? release.future : null
+                : null);
+        final installing = Completer<void>(), goOn = Completer<void>();
+        Future<Object?> laptop() => n
+            .run(
+              relayUrl: tap.url,
+              confirm: (_) async => true,
+              timeout: timeout,
+              margin: margin,
+              install: (_) async {
+                if (when != 'sent') return;
+                installing.complete();
+                await goOn.future;
+              },
+            )
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        Future<Object?>? joined;
+        final first = alice.svc
+            .hostDeviceLink(code, confirmSas: (_) async => true)
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        if (when == 'sent') {
+          joined = laptop();
+          await installing.future;
+        } else {
+          await waitUntil(() => rec.welcomed.contains(mailbox),
+              what: "$what: the first attempt logged in as the phone's "
+                  'mailbox');
+          if (when == 'on its way') {
+            joined = laptop();
+            await waitUntil(() => tap.frames.containsKey('commit-v3'),
+                what: "$what: the laptop's commitment sent");
+          }
+        }
+        // The person went back, and entered the same code again.
+        final second = alice.svc
+            .hostDeviceLink(code, confirmSas: (_) async => true)
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        if (when == 'sent') {
+          goOn.complete();
+          expect(phoneScreen(await first), en.linkDone,
+              reason: '$what: it ran on to its end, and linked the laptop');
+        } else {
+          expect(phoneScreen(await first), en.linkCancelled,
+              reason: '$what: the first attempt says it was cancelled, not '
+                  'that someone else took the link over');
+          release.complete();
+          joined ??= laptop();
+        }
+        expect(laptopScreen(await joined), '(installed)',
+            reason: '$what: the laptop was not closed, and links');
+        expect(phoneScreen(await second), en.linkDone,
+            reason: '$what: the second attempt says the laptop is linked');
+        listed++;
+        expect(await alice.svc.linkedDevices(), hasLength(listed),
+            reason: '$what: the laptop listed, once');
+        expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+            reason: '$what: no code kept as one someone else took over');
+        await tap.close();
+      }
+    } finally {
+      await rec.close();
+    }
+  });
+
+  /// Runs both clocks — the real one for the sockets and the vault, the
+  /// test's for the timers a screen's attempt set — until [cond] holds,
+  /// failing with [what] after [within].
+  Future<void> drive(WidgetTester t, bool Function() cond,
+      {required String what,
+      Duration within = const Duration(seconds: 30)}) async {
+    final deadline = DateTime.now().add(within);
+    while (!cond()) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('not within ${within.inSeconds} s: $what');
+      }
+      await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  testWidgets(
+      "23. leaving the phone's link screen stops the attempt it started, at "
+      'once, and the code then links when it is entered again', (t) async {
+    late Person alice;
+    late Recorder rec;
+    late NewDeviceLink n;
+    late List<String> mailboxes;
+    await t.runAsync(() async {
+      rec = await Recorder.start(relayUrl());
+      alice = await person('Alice23', url: rec.url);
+      await connected([alice]);
+      // An attempt left running would still be waiting when the test looks.
+      alice.svc.linkTimeout = const Duration(seconds: 30);
+      alice.svc.linkMargin = const Duration(seconds: 1);
+      n = await NewDeviceLink.create();
+      final code = PairingCode.parse(n.code);
+      mailboxes = [
+        for (final who in [
+          await RelayPairing.relayIdentityV3(code, 'r'),
+          await RelayPairing.relayIdentityV2(code, 'r'),
+          await RelayPairing.relayIdentity(code, 'r'),
+        ])
+          await who.routingId()
+      ];
+    });
+    await t.pumpWidget(ChangeNotifierProvider<ChatService>.value(
+      value: alice.svc,
+      child: MaterialApp(
+        theme: ZTheme.light(),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              key: const ValueKey('open'),
+              onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                      builder: (_) => const HostLinkScreen())),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await t.tap(find.byKey(const ValueKey('open')));
+    await t.pumpAndSettle();
+    await t.enterText(find.byType(TextField), n.code);
+    await t.tap(find.text(en.linkDeviceAction));
+    await drive(t, () => rec.welcomed.contains(mailboxes.first),
+        what: "the screen's attempt logged in as the phone's mailbox");
+    // The person goes back.
+    await t.pageBack();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 500));
+    expect(find.byType(HostLinkScreen), findsNothing);
+    await drive(t, () => mailboxes.every(rec.left.contains),
+        within: const Duration(seconds: 10),
+        what: 'the attempt the screen started stopped once the screen was '
+            'left, its three mailboxes closed');
+
+    // The person enters the same code again, and the laptop starts.
+    late Future<Object?> again, joined;
+    await t.runAsync(() async {
+      again = alice.svc
+          .hostDeviceLink(n.code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      joined = n
+          .run(
+            relayUrl: relayUrl(),
+            confirm: (_) async => true,
+            timeout: const Duration(seconds: 4),
+            margin: const Duration(seconds: 1),
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e);
+    });
+    Object? phone, laptop;
+    var open = 2;
+    unawaited(again.then((r) {
+      phone = r;
+      open--;
+    }));
+    unawaited(joined.then((r) {
+      laptop = r;
+      open--;
+    }));
+    await drive(t, () => open == 0,
+        what: 'the second attempt, and the laptop, over');
+    expect(phoneScreen(phone), en.linkDone,
+        reason: 'the code links when it is entered again');
+    expect(laptopScreen(laptop), '(installed)');
+    await t.runAsync(() async {
+      expect(await alice.svc.linkedDevices(), hasLength(1));
+      expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+          reason: 'leaving the screen spent nothing');
+    });
+    await t.pumpWidget(const SizedBox());
+    await t.runAsync(() async {
+      live.remove(alice);
+      alice.svc.dispose();
+      await alice.svc.transport.stop();
+      await rec.close();
+    });
   });
 }
