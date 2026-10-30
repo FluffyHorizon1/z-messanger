@@ -216,7 +216,14 @@ class _ConnectTabState extends State<ConnectTab> {
         milliseconds: invite.createdMs +
             connectInviteLifetime.inMilliseconds -
             DateTime.now().millisecondsSinceEpoch);
-    final unanswered = invite.progress == ConnectProgress.waiting;
+    // Answered once its run is at the digits, whatever the last round
+    // returned: the round that reaches them sets the run's session and then
+    // writes the run down, acknowledges what it read and closes before it
+    // returns `confirm`, and a card drawn in between — the tab rebuilt for
+    // anything else — read "waiting". Until 2026-10-30 it then offered the
+    // link, the code, the QR and Share beside the digits.
+    final unanswered = invite.progress == ConnectProgress.waiting &&
+        invite.run.session == null;
     final live = unanswered && left > Duration.zero;
     return Card(
       // Keyed by the invite, as the comparison panels are, so nothing a card
@@ -232,7 +239,7 @@ class _ConnectTabState extends State<ConnectTab> {
           children: [
             Text(status,
                 style: TextStyle(
-                    color: invite.progress == ConnectProgress.waiting
+                    color: unanswered
                         ? context.z.textSecondary
                         : context.z.warn)),
             // ADR 0020: which of my invites are links to a group, named here

@@ -23,7 +23,12 @@
 //  3. Share hands the link to the system, and falls back to the clipboard —
 //     saying which happened — where there is no share sheet;
 //  4. an invite that has run out offers none of the three renderings and no
-//     share, because a token that no longer works should not be circulating.
+//     share, because a token that no longer works should not be circulating;
+//  5. nor does one whose run is at the digits, whatever its last round
+//     returned: the round that reaches them sets the run's session, then
+//     writes the run down, acknowledges what it read and closes before it
+//     returns `confirm`, and until 2026-10-30 a card drawn in between went
+//     on offering the link, the code, the QR and Share beside the digits.
 import 'dart:convert';
 import 'dart:io';
 
@@ -258,6 +263,59 @@ void main() {
         reason: 'a token that no longer works is not left on screen to copy');
     expect(find.text(l.connectDiscard), findsOneWidget,
         reason: 'but it can still be cleared away');
+    await drain(t);
+  });
+
+  testWidgets('5. an invite at the digits offers nothing to send, whatever '
+      'its last round returned', (t) async {
+    late Person alice;
+    late String bobCode;
+    await t.runAsync(() async {
+      alice = await person('Alice');
+      bobCode = await (await person('Bob')).svc.myContactCode();
+    });
+    final invite = await createThroughUi(t, alice);
+    final l = AppLocalizationsEn();
+    expect(find.byType(InviteQr), findsOneWidget);
+
+    // The run at the digits beside the progress from before the round that
+    // reached them: what the invite holds from the moment that round sets
+    // the run's session until it returns. A record like that is read back
+    // at the digits (PendingInvite.fromJson), so the progress is put back
+    // in memory, where the round leaves it.
+    late ConnectInvites midRound;
+    await t.runAsync(() async {
+      final raw = await alice.vault.kvGet('connect_invites');
+      final list = (jsonDecode(raw!) as List).cast<Map<String, Object?>>();
+      list.single['run'] = {
+        ...(list.single['run'] as Map).cast<String, Object?>(),
+        'session': {
+          'key': b64(randomBytes(32)),
+          'sas': '1234 5678',
+          'peer': bobCode,
+          'peerName': 'Bob',
+        },
+      };
+      await alice.vault.kvPut('connect_invites', jsonEncode(list));
+      midRound = ConnectInvites(alice.svc);
+      await midRound.load();
+    });
+    midRound.invites.single.progress = ConnectProgress.waiting;
+    await t.pumpWidget(tabWith(alice, midRound));
+    await t.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('1234 5678'), findsOneWidget,
+        reason: 'the digits are on the screen, to be compared');
+    expect(find.byType(InviteQr), findsNothing);
+    expect(find.text(l.connectShareSheet), findsNothing);
+    expect(find.text(l.connectShareLink), findsNothing);
+    expect(find.text(l.connectShareCode), findsNothing);
+    expect(find.text(invite.code), findsNothing);
+    expect(find.text(invite.link), findsNothing,
+        reason: 'an answered invite is a token that no longer works, and is '
+            'not left on screen to copy');
+    expect(find.text('23 hours left'), findsNothing,
+        reason: 'nor is the time it has left to be sent in');
     await drain(t);
   });
 }
