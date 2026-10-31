@@ -4561,7 +4561,13 @@ The members that carry them, a new kind and two optional members (§14):
   once. One window remains: a
   stamp the other device sent before the announcement reached it, arriving
   after the announcement left, is taken; were that announcement then lost at
-  the relay, the pair would wait for its next new session.
+  the relay, the pair stays so. A new session forgets the stamp but not the
+  announcement, so the next stamp counts again, and nothing mends it until
+  this device draws a key again. Measured: the announcement dropped, then a
+  reset by either side and eight messages each way, and the other device
+  still held the old key, with no `pqseal` sent. Nothing uses the key yet —
+  44.5's link check finds such a device classical rather than refusing it,
+  and 44.7 will seal to the key — so this window is to be closed before 44.7.
 * **`pqid.pqdc`** is the sending device's own `pqdc`, in the `pqid` it
   already sends (§18.2): measured, 7 114 bytes of inner message, and 7 261
   with `ack` and every decoration, of the 8 959 the 16 384 bucket holds
