@@ -3653,4 +3653,15 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get linkCodeLinked =>
       'Ese código ya vinculó un dispositivo a tu cuenta. Para vincular otro dispositivo, elige «Vincular a una cuenta existente» en él para obtener un código nuevo, e introdúcelo aquí.';
+
+  @override
+  String get backupSaveDialogTitle => 'Guarda tu copia de seguridad de Z';
+
+  @override
+  String get backupAutoNotOn =>
+      'Este dispositivo no pudo guardar el código, así que las copias automáticas siguen desactivadas. Comprueba que tiene espacio libre y vuelve a intentarlo.';
+
+  @override
+  String get backupAutoNotOff =>
+      'Este dispositivo no pudo cambiar el ajuste, así que las copias automáticas siguen activadas. Vuelve a intentarlo.';
 }

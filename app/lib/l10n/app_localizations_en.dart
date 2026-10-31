@@ -3618,4 +3618,15 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get linkCodeLinked =>
       'That code has already linked a device to your account. To link another device, choose \"Link to an existing account\" on it for a new code, then enter that one here.';
+
+  @override
+  String get backupSaveDialogTitle => 'Save your Z backup';
+
+  @override
+  String get backupAutoNotOn =>
+      'This device could not store the code, so automatic backups stay off. Check that it has space free, then try again.';
+
+  @override
+  String get backupAutoNotOff =>
+      'This device could not change the setting, so automatic backups stay on. Try again.';
 }

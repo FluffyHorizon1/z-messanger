@@ -194,6 +194,80 @@ void main() {
       await vault.db.close();
     });
 
+    // Until 2026-10-31 the temporary file was opened before the archive was,
+    // outside anything that would catch it: a folder that could not be
+    // written failed with nothing listening, an uncaught error beside the
+    // one the caller got, and a write that failed part-way left its
+    // `.partial`. Here the folder is a file.
+    test('a backup into a folder that cannot be written fails to its caller, '
+        'and leaves nothing behind', () async {
+      final vault = await seededVault('unwritable', messages: 1);
+      final store = await BackupStore.open(vault);
+      await store.dir.delete(recursive: true);
+      await File(store.dir.path).writeAsString('not a folder');
+      await expectLater(store.write(code: await RecoveryCode.generate()),
+          throwsA(isA<FileSystemException>()),
+          reason: 'the failure reaches the caller, and only the caller');
+      expect(await File(store.dir.path).readAsString(), 'not a folder',
+          reason: 'nothing was written in its place');
+      await vault.db.close();
+    });
+
+    test('a backup that fails part-way leaves no partial file, and the '
+        'archives already there as they were', () async {
+      final vault = await seededVault('partway', messages: 2);
+      final store = await BackupStore.open(vault);
+      final code = await RecoveryCode.generate();
+      final kept =
+          await store.write(code: code, now: DateTime(2026, 1, 1, 12, 0, 0));
+      final bytes = await kept.file.readAsBytes();
+      // The store cannot be read from here: the archive's export fails.
+      await vault.db.close();
+      await expectLater(store.write(code: code), throwsA(anything));
+      final left = [
+        await for (final e in store.dir.list()) e.uri.pathSegments.last
+      ];
+      expect(left, [kept.name],
+          reason: 'no .partial left, and the archive already there kept');
+      expect(await kept.file.readAsBytes(), bytes,
+          reason: 'its bytes as they were');
+    });
+
+    // /dev/full refuses every write with "no space left on device", as a
+    // full disk does, and the next backup's temporary file is made a link to
+    // it. Until 2026-10-31 a write the disk refused was reported only where
+    // nothing listened, an uncaught error, and the backup then waited for
+    // ever. The link stays: Dart's File.delete will not remove a link to a
+    // device, and a temporary file on a real disk is a file, which the test
+    // before this one sees removed.
+    test('a backup onto a full disk fails to its caller, and makes no archive',
+        () async {
+      final vault = await seededVault('full', messages: 2);
+      final store = await BackupStore.open(vault);
+      final code = await RecoveryCode.generate();
+      final kept =
+          await store.write(code: code, now: DateTime(2026, 1, 1, 12, 0, 0));
+      final bytes = await kept.file.readAsBytes();
+      const link = '.z-backup-20260101-120001.zbk.partial';
+      await Link('${store.dir.path}${Platform.pathSeparator}$link')
+          .create('/dev/full');
+      await expectLater(
+          store.write(code: code, now: DateTime(2026, 1, 1, 12, 0, 1)),
+          throwsA(isA<FileSystemException>().having(
+              (e) => e.osError?.errorCode, 'errno', 28)),
+          reason: 'the disk\'s refusal reaches the caller');
+      final left = [
+        await for (final e in store.dir.list()) e.uri.pathSegments.last
+      ]..sort();
+      expect(left, [link, kept.name]..sort(),
+          reason: 'no archive made, and the one already there kept');
+      expect(await kept.file.readAsBytes(), bytes,
+          reason: 'its bytes as they were');
+      await vault.db.close();
+    },
+        skip: File('/dev/full').existsSync() ? null : 'no /dev/full here',
+        timeout: const Timeout(Duration(seconds: 60)));
+
     test('a half-written archive is never mistaken for a backup', () async {
       final vault = await seededVault('partial');
       final store = await BackupStore.open(vault);
@@ -274,6 +348,40 @@ void main() {
       expect(await sched.storedCode(), isNull);
       expect(await sched.runIfDue(store, now: t0.add(const Duration(days: 90))),
           isNull);
+      await vault.db.close();
+    });
+
+    test(
+        'a schedule the store refuses part-way stays as it was, off with no '
+        'code or on with its code', () async {
+      final vault = await seededVault('sched_refused', messages: 1);
+      final sched = BackupSchedule(vault);
+      final code = await RecoveryCode.generate();
+
+      // Turning on: the code is stored, and then the store refuses the
+      // interval that would turn the schedule on.
+      await vault.db.execute("CREATE TRIGGER refuse_on BEFORE INSERT ON kv "
+          "WHEN NEW.k = 'p:backup_interval_days' "
+          "BEGIN SELECT RAISE(ABORT, 'refused'); END");
+      await expectLater(
+          sched.enable(code: code, everyDays: 7), throwsA(isA<Exception>()));
+      expect(await sched.intervalDays(), 0);
+      // Off holds no code: the one stored on the way is taken out again.
+      expect(await sched.storedCode(), isNull);
+      await vault.db.execute('DROP TRIGGER refuse_on');
+
+      // Turning off: the interval is set to off, and then the store refuses
+      // to forget the code.
+      await sched.enable(code: code, everyDays: 7);
+      await vault.db.execute("CREATE TRIGGER refuse_off BEFORE DELETE ON kv "
+          "WHEN OLD.k = 's:backup_code' "
+          "BEGIN SELECT RAISE(ABORT, 'refused'); END");
+      await expectLater(sched.disable(), throwsA(isA<Exception>()));
+      // Still on, with its code, as the screen goes on saying: not off with
+      // a code kept that the screen has said nothing about.
+      expect(await sched.intervalDays(), 7);
+      expect((await sched.storedCode())!.entropy, code.entropy);
+      await vault.db.execute('DROP TRIGGER refuse_off');
       await vault.db.close();
     });
 

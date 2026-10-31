@@ -5629,6 +5629,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'That code has already linked a device to your account. To link another device, choose \"Link to an existing account\" on it for a new code, then enter that one here.'**
   String get linkCodeLinked;
+
+  /// Title of the system's save dialog that Save a copy… opens, for where the copy of the backup goes. In the reader's language; until 4.9.1 it was English whatever the language.
+  ///
+  /// In en, this message translates to:
+  /// **'Save your Z backup'**
+  String get backupSaveDialogTitle;
+
+  /// Backup: turning automatic backups on failed because this device's store refused to keep the recovery code (a full disk, a closed or locked database). Nothing changed: they stay off, with no code kept. One line, never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not store the code, so automatic backups stay off. Check that it has space free, then try again.'**
+  String get backupAutoNotOn;
+
+  /// Backup: turning automatic backups off failed because this device's store refused the change (a full disk, a closed or locked database). Nothing changed: they stay on, with their code. One line, never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not change the setting, so automatic backups stay on. Try again.'**
+  String get backupAutoNotOff;
 }
 
 class _AppLocalizationsDelegate

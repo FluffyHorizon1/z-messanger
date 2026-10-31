@@ -495,8 +495,17 @@ differently and only the first has to succeed for the history to be safe.
    nor any attachment is ever held whole in memory. It is built under a
    `.partial` name and renamed only after the terminator is written, so an
    interrupted run leaves nothing a later restore could mistake for a
-   complete archive.
-2. **Hand over.** The finished file is copied wherever the user chooses.
+   complete archive. A write that fails, in a folder that cannot be written,
+   on a full disk or with the store failing part-way, removes its `.partial`,
+   leaves the archives already there as they were, and reaches the screen,
+   which says in the reader's language that the backup could not be written.
+   Until 4.9.1 a folder that could not be written, or a full disk, was an
+   error nothing caught, and the write then waited for ever, the screen still
+   at its progress line; a write that failed part-way left its `.partial`
+   behind.
+2. **Hand over.** The finished file is copied wherever the user chooses,
+   through a dialog titled in the reader's language (until 4.9.1 the title
+   was English in every language).
 
 A backup that was taken but not yet exported is still a backup: it survives an
 app update, though not a lost phone. The UI says which of the two you have.
@@ -566,6 +575,14 @@ encryption. Turning the schedule off erases the stored code.
 
 The user is asked to type the code when enabling, so the stored copy is one
 they actually hold rather than one they have already lost.
+
+A vault that refuses the write leaves automatic backup as it was, and the
+screen says so in the reader's language: off, with no code kept, when it was
+being turned on; on, with its code, when it was being turned off. The interval
+is written last when turning on and first when turning off, and a refusal of
+the second write takes the first back. Until 4.9.1 neither refusal was said,
+and a store that would not forget the code left the schedule off with the code
+still kept, while the screen showed it on.
 
 ---
 

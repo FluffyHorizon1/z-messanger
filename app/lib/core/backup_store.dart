@@ -23,6 +23,7 @@
 // iOS this directory must be excluded from iCloud backup along with the
 // vault itself; see the iOS brief.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:z_protocol/z_protocol.dart';
@@ -39,6 +40,41 @@ class StoredBackup {
   const StoredBackup(this.file, this.takenAt, this.bytes);
 
   String get name => file.uri.pathSegments.last;
+}
+
+/// Where [BackupStore.write] puts an archive's bytes: its temporary file,
+/// written a piece at a time. The first write the file refuses, a full disk
+/// most likely, is kept, the bytes after it are let go, and the flush that
+/// ends the archive still finishes, so that the refusal is thrown to the
+/// caller by [throwIfRefused] rather than lost.
+class _ArchiveFile implements StreamConsumer<List<int>> {
+  _ArchiveFile(this._file);
+
+  final RandomAccessFile _file;
+  Object? _refusal;
+  StackTrace? _trace;
+
+  @override
+  Future<void> addStream(Stream<List<int>> stream) async {
+    await for (final bytes in stream) {
+      if (_refusal != null) continue;
+      try {
+        await _file.writeFrom(bytes);
+      } catch (e, st) {
+        _refusal = e;
+        _trace = st;
+      }
+    }
+  }
+
+  /// Throws the first write the file refused, if one was.
+  void throwIfRefused() {
+    final refusal = _refusal;
+    if (refusal != null) Error.throwWithStackTrace(refusal, _trace!);
+  }
+
+  @override
+  Future<void> close() => _file.close();
 }
 
 class BackupStore {
@@ -64,6 +100,15 @@ class BackupStore {
   /// is built under a temporary name and renamed only once the terminator
   /// has been written, so a crash or a full disk leaves no half-archive that
   /// a later restore could mistake for a whole one.
+  ///
+  /// A write that fails, however it fails, throws to the caller, removes
+  /// its temporary file, and leaves the archives already there as they were.
+  /// Until 2026-10-31 the file was written through `File.openWrite`, whose
+  /// sink reports a failure that comes while nothing is flushing it only on
+  /// its `done`, where nothing listened, and then never finishes a flush: a
+  /// folder that could not be written, or a full disk, was an uncaught error
+  /// and a backup that waited for ever. A write that failed part-way left
+  /// its `.partial` behind.
   Future<StoredBackup> write({
     required RecoveryCode code,
     DateTime? now,
@@ -81,16 +126,29 @@ class BackupStore {
     final target =
         File('${dir.path}${Platform.pathSeparator}$_prefix$stamp$_ext');
 
-    final sink = partial.openWrite();
     try {
-      await BackupArchive.export(
-          vault: vault, code: code, out: sink, onProgress: onProgress);
-      await sink.flush();
-    } finally {
-      await sink.close();
+      // Opened here, so that a folder that cannot be written fails to the
+      // caller at once.
+      final file = _ArchiveFile(await partial.open(mode: FileMode.write));
+      final sink = IOSink(file);
+      try {
+        await BackupArchive.export(
+            vault: vault, code: code, out: sink, onProgress: onProgress);
+        await sink.flush();
+        file.throwIfRefused();
+      } finally {
+        await sink.close();
+      }
+      // Only now is it an archive.
+      await partial.rename(target.path);
+    } catch (_) {
+      try {
+        if (await partial.exists()) await partial.delete();
+      } catch (_) {
+        // What the caller is told is the write's failure, either way.
+      }
+      rethrow;
     }
-    // Only now is it an archive.
-    await partial.rename(target.path);
     await _prune();
     return StoredBackup(target, at, await target.length());
   }
@@ -162,11 +220,14 @@ class BackupStore {
   /// Copies [backup] wherever the user chooses. Returns the destination, or
   /// null if they cancelled. Throws [SaveTooLargeException] when the
   /// platform's dialog cannot carry a file that size — the archive is still
-  /// in the backup folder, which is what the caller should say.
-  static Future<String?> handToUser(StoredBackup backup) =>
+  /// in the backup folder, which is what the caller should say. The dialog's
+  /// title is [dialogTitle], in the reader's words, which the caller has:
+  /// until 2026-10-31 it was English whatever the reader's language.
+  static Future<String?> handToUser(StoredBackup backup,
+          {required String dialogTitle}) =>
       FileExport.saveExistingFile(
         source: backup.file,
-        dialogTitle: 'Save your Z backup',
+        dialogTitle: dialogTitle,
         fileName: backup.name,
       );
 }
@@ -207,16 +268,45 @@ class BackupSchedule {
 
   /// Turns automatic backup on, reusing the code the user has already
   /// written down. Storing it is what makes an unattended run possible.
+  ///
+  /// A store that refuses throws, and the schedule stays as it was: the
+  /// interval, written last, is what turns it on, and a code stored before
+  /// a refusal of the interval is taken back out, as far as the store will.
   Future<void> enable({required RecoveryCode code, int everyDays = 7}) async {
     if (everyDays <= 0) throw ArgumentError('everyDays must be positive');
+    final held = await vault.kvGet(_kCode);
     await vault.kvPut(_kCode, b64(code.entropy));
-    await vault.kvPut(_kInterval, '$everyDays', sensitive: false);
+    try {
+      await vault.kvPut(_kInterval, '$everyDays', sensitive: false);
+    } catch (_) {
+      try {
+        if (held == null) {
+          await vault.kvDelete(_kCode);
+        } else {
+          await vault.kvPut(_kCode, held);
+        }
+      } catch (_) {}
+      rethrow;
+    }
   }
 
-  /// Turns it off and forgets the stored code.
+  /// Turns it off and forgets the stored code. A store that refuses throws,
+  /// and the schedule stays on: an interval set to off before a refusal to
+  /// forget the code is put back, as far as the store will, rather than
+  /// leave the schedule off with its code still held.
   Future<void> disable() async {
+    final was = await vault.kvGet(_kInterval);
     await vault.kvPut(_kInterval, '0', sensitive: false);
-    await vault.kvDelete(_kCode);
+    try {
+      await vault.kvDelete(_kCode);
+    } catch (_) {
+      try {
+        if (was != null) {
+          await vault.kvPut(_kInterval, was, sensitive: false);
+        }
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   Future<RecoveryCode?> storedCode() async {

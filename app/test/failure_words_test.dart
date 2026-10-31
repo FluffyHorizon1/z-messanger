@@ -50,7 +50,15 @@
 //      them with the heads the client compared;
 //  10. every startup, unlock and log fault's words, in English and in
 //      Spanish, from what failed, and a fault stored before faults had a
-//      kind read as one of no kind, its words and heads as they were.
+//      kind read as one of no kind, its words and heads as they were;
+//  11. the backup screen, on a backup folder that cannot be written, says
+//      the backup was not written, in English and in Spanish, and no error
+//      gets past it (4.9.1);
+//  12. the save dialog that a copy of the backup opens is titled in the
+//      reader's language;
+//  13. the backup screen, asked to turn automatic backups on or off on a
+//      store that refuses, says so in English and in Spanish, and they stay
+//      as they were.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -119,6 +127,9 @@ class FakePicker extends FilePicker {
   @override
   Future<bool?> clearTemporaryFiles() async => true;
 
+  /// The title the last save dialog was opened with.
+  String? savedTitle;
+
   @override
   Future<String?> saveFile({
     String? dialogTitle,
@@ -128,8 +139,10 @@ class FakePicker extends FilePicker {
     List<String>? allowedExtensions,
     Uint8List? bytes,
     bool lockParentWindow = false,
-  }) async =>
-      savePath;
+  }) async {
+    savedTitle = dialogTitle;
+    return savePath;
+  }
 }
 
 /// The OS prompt, there and refusing: what a device whose biometrics went
@@ -287,6 +300,80 @@ void main() {
           await svc.vault.db.close();
         } catch (_) {}
       });
+
+  /// The backup screen in [lang] over [svc], with one archive already in
+  /// its folder so that the screen offers a copy of it once its store is
+  /// open: what says it is ready. Returns the folder.
+  Future<Directory> openBackup(
+      WidgetTester t, String lang, ChatService svc) async {
+    final l = lookupAppLocalizations(Locale(lang));
+    final backups = Directory('${svc.vault.root.path}/backups');
+    await t.runAsync(() async {
+      await backups.create(recursive: true);
+      await File('${backups.path}/z-backup-20261031-120000.zbk')
+          .writeAsString('an archive');
+    });
+    await t.pumpWidget(ChangeNotifierProvider<ChatService>.value(
+        value: svc, child: app(lang, const BackupScreen())));
+    await settleUntil(
+        t, () => find.text(l.backupSaveCopy).evaluate().isNotEmpty,
+        what: '$lang: the backup screen, its store open');
+    return backups;
+  }
+
+  /// Takes the word just said off the screen, so the next is not queued
+  /// behind it.
+  Future<void> dismissWord(WidgetTester t) async {
+    t
+        .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+        .removeCurrentSnackBar();
+    await t.pump();
+  }
+
+  /// Creates a backup on the backup screen: the code shown, and typed back.
+  Future<void> createBackup(WidgetTester t, AppLocalizations l,
+      {required String what}) async {
+    await t.tap(find.text(l.backupCreate));
+    await settleUntil(
+        t, () => find.text(l.backupCodeWritten).evaluate().isNotEmpty,
+        what: '$what: the code shown');
+    final shown = t
+        .widget<SelectableText>(find.descendant(
+            of: find.byType(AlertDialog), matching: find.byType(SelectableText)))
+        .data!;
+    await t.tap(find.text(l.backupCodeWritten));
+    await settleUntil(
+        t, () => find.text(l.backupConfirmTitle).evaluate().isNotEmpty,
+        what: '$what: the code asked back');
+    await t.enterText(
+        find.descendant(
+            of: find.byType(AlertDialog), matching: find.byType(TextField)),
+        shown);
+    await t.tap(find.text(l.confirm));
+  }
+
+  /// The automatic backups switch on the backup screen.
+  bool autoIsOn(WidgetTester t, AppLocalizations l) => t
+      .widget<SwitchListTile>(find.widgetWithText(SwitchListTile, l.backupAuto))
+      .value;
+
+  /// Flips the automatic backups switch, typing [code] when it asks for one.
+  Future<void> flipAuto(WidgetTester t, AppLocalizations l,
+      {String? code, required String what}) async {
+    final auto = find.text(l.backupAuto);
+    await t.ensureVisible(auto);
+    await t.pump();
+    await t.tap(auto);
+    if (code == null) return;
+    await settleUntil(
+        t, () => find.text(l.backupAskCodeTitle).evaluate().isNotEmpty,
+        what: '$what: the code asked for');
+    await t.enterText(
+        find.descendant(
+            of: find.byType(AlertDialog), matching: find.byType(TextField)),
+        code);
+    await t.tap(find.text(l.backupAskCodeTurnOn));
+  }
 
   /// A service over its own vault whose transparency log is [log], on
   /// loopback under [config]; its relay a closed port.
@@ -537,9 +624,7 @@ void main() {
           what: '$lang: the dialog closed');
       // (a) A store that cannot be read, so no backup can be written: its
       // database closed, the service's own connection stopped first. (A
-      // folder that cannot be opened fails the write too, but the sink's
-      // own open fails first with nothing yet listening, an error the test
-      // framework takes for the test's.)
+      // folder that cannot be written is criterion 11's.)
       await t.runAsync(() async {
         await svc.transport.stop();
         await svc.vault.db.close();
@@ -1059,5 +1144,97 @@ void main() {
         [fault.kind, fault.reason, fault.atMs]);
     expect(back.held!.toJson(), held.toJson());
     expect(back.served!.toJson(), served.toJson());
+  });
+
+  testWidgets(
+      '11. the backup screen, on a backup folder that cannot be written, says '
+      'the backup was not written, and no error gets past it', (t) async {
+    // Spanish first: either way the error was the one that escaped.
+    for (final lang in ['es', 'en']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      FilePicker.platform = FakePicker(temp('unwritable_cache_$lang'));
+      final svc = (await t.runAsync(() => service('Ugo_$lang')))!;
+      final backups = await openBackup(t, lang, svc);
+      // The folder becomes a file, so nothing can be written in it. Until
+      // 2026-10-31 the write's own open failed with nothing listening, an
+      // error the test framework takes for the test's.
+      await t.runAsync(() async {
+        await backups.delete(recursive: true);
+        await File(backups.path).writeAsString('not a folder');
+      });
+      await createBackup(t, l, what: '$lang, a folder that cannot be written');
+      await says(t, words(lang, 'backupFailed'),
+          '$lang: a backup into a folder that cannot be written');
+      expect(await t.runAsync(() => File(backups.path).readAsString()),
+          'not a folder',
+          reason: 'nothing written in its place');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, svc);
+    }
+  });
+
+  testWidgets(
+      "12. the save dialog that a copy of the backup opens is titled in the "
+      "reader's language", (t) async {
+    // Spanish first: where the English title showed through.
+    for (final lang in ['es', 'en']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      final picker = FakePicker(temp('title_cache_$lang'));
+      FilePicker.platform = picker;
+      final svc = (await t.runAsync(() => service('Tea_$lang')))!;
+      await openBackup(t, lang, svc);
+      await t.tap(find.text(l.backupSaveCopy));
+      await settleUntil(t, () => picker.savedTitle != null,
+          what: '$lang: the save dialog opened');
+      expect(picker.savedTitle, words(lang, 'backupSaveDialogTitle'),
+          reason: "$lang: the dialog's title in the reader's words");
+      // The place the picker hands back cannot be written: the copy's end.
+      await says(t, words(lang, 'backupSaveFailed'),
+          '$lang: the copy, handed to a place nothing can be written');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, svc);
+    }
+  });
+
+  testWidgets(
+      '13. the backup screen, asked to turn automatic backups on or off on a '
+      'store that refuses, says so, and they stay as they were', (t) async {
+    final code = (await t.runAsync(
+        () async => (await RecoveryCode.generate()).format()))!;
+    for (final lang in ['es', 'en']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      FilePicker.platform = FakePicker(temp('auto_cache_$lang'));
+      // On, on a store that refuses the code: its database closed, the
+      // service's own connection stopped first. Until 2026-10-31 nothing
+      // caught this, and the error went past the screen.
+      final off = (await t.runAsync(() => service('Ida_$lang')))!;
+      await openBackup(t, lang, off);
+      await t.runAsync(() async {
+        await off.transport.stop();
+        await off.vault.db.close();
+      });
+      await flipAuto(t, l, code: code, what: '$lang, turning them on');
+      await says(t, words(lang, 'backupAutoNotOn'),
+          '$lang: automatic backups the store would not turn on');
+      expect(autoIsOn(t, l), isFalse, reason: '$lang: they stay off');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, off);
+      // Off, on a store that refuses: on first, then the store closed.
+      final on = (await t.runAsync(() => service('Ivo_$lang')))!;
+      await openBackup(t, lang, on);
+      await flipAuto(t, l, code: code, what: '$lang, turning them on first');
+      await says(t, words(lang, 'backupAutoOn'), '$lang: automatic backups on');
+      await dismissWord(t);
+      await t.runAsync(() async {
+        await on.transport.stop();
+        await on.vault.db.close();
+      });
+      await flipAuto(t, l, what: '$lang, turning them off');
+      await says(t, words(lang, 'backupAutoNotOff'),
+          '$lang: automatic backups the store would not turn off');
+      expect(autoIsOn(t, l), isTrue, reason: '$lang: they stay on');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, on);
+    }
   });
 }

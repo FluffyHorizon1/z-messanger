@@ -236,7 +236,15 @@ content: Text(l.backupCreated)));
     if (sched == null) return;
     final messenger = ScaffoldMessenger.of(context);
     if (!on) {
-      await sched.disable();
+      try {
+        await sched.disable();
+      } catch (_) {
+        // The store refused: automatic backups stay on, and the screen says
+        // so in the reader's words.
+        if (!mounted) return;
+        messenger.showSnackBar(SnackBar(content: Text(l.backupAutoNotOff)));
+        return;
+      }
       if (!mounted) return;
       setState(() => _intervalDays = 0);
       messenger.showSnackBar(SnackBar(
@@ -258,6 +266,12 @@ content: Text(l.backupAutoOn)));
     } on FormatException catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(recoveryCodeText(l, e))));
+    } catch (_) {
+      // The vault would not store the code: automatic backups stay off,
+      // said in the reader's words. Until 2026-10-31 nothing caught this,
+      // and the screen said nothing at all.
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text(l.backupAutoNotOn)));
     }
   }
 
@@ -265,7 +279,8 @@ content: Text(l.backupAutoOn)));
     final l = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final path = await BackupStore.handToUser(backup);
+      final path = await BackupStore.handToUser(backup,
+          dialogTitle: l.backupSaveDialogTitle);
       if (path != null) {
         messenger.showSnackBar(SnackBar(
 content: Text(l.backupCopySaved)));
