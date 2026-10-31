@@ -65,12 +65,13 @@
 //  12. held: a link pasted, scanned, read from a QR image, typed into the
 //      handle search or tapped is put in front of its person on a screen
 //      saying that whoever made it will see their name and contact code and
-//      that a link verifies nothing, and nothing is sent and no connection
-//      opened until they press Send request — then one request, to the
-//      link's mailbox, on a connection opened for it alone; with no handle
-//      log configured, and a handle that begins as a link does still a handle;
-//      the Scan tab's own scanner and Open a QR image driven, a stand-in
-//      camera and picker behind them;
+//      that a link verifies nothing, and nothing is sent and their app
+//      opens no connection until they press Send request (another app's
+//      link read in the meantime is that app's connection, not theirs) —
+//      then one request, to the link's mailbox, on a connection opened for
+//      it alone; with no handle log configured, and a handle that begins as
+//      a link does still a handle; the Scan tab's own scanner and Open a QR
+//      image driven, a stand-in camera and picker behind them;
 //  13. requests through links share the outgoing list's 20 entries with
 //      handles', the oldest going first whichever it is, three ids each, and
 //      a link's entry is stored as its code with no handle;
@@ -1865,15 +1866,18 @@ void main() {
       'or tapped, nothing is sent until Send request', (tester) async {
     await tester.binding.setSurfaceSize(const Size(800, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    late ChatService ola, rick;
+    late ChatService ola, rick, other;
     late OwnIntroLink link;
     late String code, flipped;
     late int connsBefore;
     await tester.runAsync(() async {
       ola = await boot('OlaHeld');
       rick = await boot('RickHeld');
-      await connected([ola, rick]);
+      // Another app on the relay, with a link of its own.
+      other = await boot('OtherHeld');
+      await connected([ola, rick, other]);
       link = await made(ola, pow: 16);
+      await made(other, pow: 16);
       expect(rick.handles.available, isFalse, reason: 'no handle log');
 
       // What the fields take: the link as printed, its bare code, either as a
@@ -1920,7 +1924,25 @@ void main() {
         'the link held on its screen');
     expect(find.text(en.plinkOpenBody), findsOneWidget);
     expect(find.text(en.plinkOpenNote), findsOneWidget);
-    expect(tap.conns.length, connsBefore, reason: 'no connection opened');
+    // Another app on the relay reads its own link's mailbox here, inside
+    // this count, as any app this file has started and left running can on
+    // its own clock: criterion 8's, started again on a disk that holds a
+    // live link, draws its first drain at production's 3 to 30 seconds, and
+    // until 2026-10-31, when every connection through the tap was counted,
+    // one that landed here failed this (Expected: <88> Actual: <89>). What
+    // is counted is what Rick's app could have opened: a connection that
+    // never authenticated, or one as him.
+    await tester.runAsync(() async {
+      await other.handles.drainLink();
+      await waitUntil(() => tap.named, what: 'every connection named');
+    });
+    expect(
+        [
+          for (final c in tap.conns.skip(connsBefore))
+            if (c.anonymous || c.authRid == rick.myRid) c.n
+        ],
+        isEmpty,
+        reason: 'no connection opened');
     expect(tap.sendsTo(link.introRid), 0, reason: 'nothing sent');
     expect(rick.handles.outgoing, isEmpty);
     expect(rick.handles.stampsMade, 0);
