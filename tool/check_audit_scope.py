@@ -103,6 +103,11 @@ UNCITED_OK = {
         "that the launch-time unlock errors render in the reader's language "
         "from a typed error rather than English built in main.dart — a "
         "localisation property (G9), not a security claim",
+    "app/test/failure_words_test.dart":
+        "that the first screen, Add contact, Backup and Settings say what "
+        "failed in the reader's language, chosen from what failed, and never "
+        "show the exception's text — a localisation property (G9), not a "
+        "security claim",
     "app/test/destructive_confirm_test.dart":
         "that resetting a secure session and removing a group member ask "
         "before they act, as every other destructive action does, and that "

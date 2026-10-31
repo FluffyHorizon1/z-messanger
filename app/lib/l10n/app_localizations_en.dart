@@ -263,6 +263,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'This code did not verify: it is not a Z contact code, or it was damaged or changed after its owner made it. Nothing was added — ask them for their code again.';
 
   @override
+  String get addFailedOther =>
+      'This device could not add the contact. Check that it has space free, then try again.';
+
+  @override
   String get addScanPrompt => 'Point the camera at their Z code.';
 
   @override
@@ -289,6 +293,20 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get onbRestoreFailed =>
       'Restore failed: wrong secret, or the file is damaged.';
+
+  @override
+  String recoveryCodeLength(int total, int count) {
+    return 'A recovery code is $total characters, and this one has $count. Check what you typed, then try again.';
+  }
+
+  @override
+  String recoveryCodeCharacter(String character) {
+    return '\"$character\" is not part of a recovery code. Check what you typed, then try again.';
+  }
+
+  @override
+  String get recoveryCodeTypo =>
+      'That recovery code has a typo. Check the characters, then try again.';
 
   @override
   String get onbBackupTooNew =>
@@ -338,6 +356,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get onbCreateIdentity => 'Create my identity';
+
+  @override
+  String get onbCreateFailed =>
+      'This device could not set up your identity. Check that it has space free, then try again.';
 
   @override
   String get onbRestoreFromBackup => 'Restore from a backup';
@@ -711,9 +733,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get backupCreated => 'Backup created. Save a copy somewhere safe.';
 
   @override
-  String backupFailed(String error) {
-    return 'Backup failed: $error';
-  }
+  String get backupFailed =>
+      'The backup could not be written. Check that this device has space free, then try again.';
 
   @override
   String get backupAutoOff =>
@@ -731,9 +752,8 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String backupSaveFailed(String error) {
-    return 'Could not save: $error';
-  }
+  String get backupSaveFailed =>
+      'The backup is made, but this device could not save a copy there. Try Save a copy… again, or choose another place.';
 
   @override
   String sizeKb(String kb) {
@@ -1442,9 +1462,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stRelayOffline => 'Offline';
 
   @override
-  String stRelayOfflineWithError(String error) {
-    return 'Offline ($error)';
-  }
+  String get stRelayOfflineUnreachable =>
+      'Offline: this device cannot reach the relay';
+
+  @override
+  String get stRelayOfflineRefused =>
+      'Offline: this device could not sign in to the relay';
 
   @override
   String get stDevices => 'Devices';
@@ -1700,9 +1723,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get stIncorrectPassphrase => 'Incorrect passphrase.';
 
   @override
-  String stCouldNotEnable(String error) {
-    return 'Could not enable: $error';
-  }
+  String get stCouldNotEnable =>
+      'Biometric unlock could not be turned on. Check that this device has a fingerprint, face or screen lock set up, then try again.';
 
   @override
   String get stPassphraseSet =>

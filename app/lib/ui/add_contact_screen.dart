@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/failure_text.dart';
 import '../l10n/refusal_text.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
@@ -131,17 +132,15 @@ class _AddContactScreenState extends State<AddContactScreen>
         _scanned = false;
         _error = contactCodeRefusalText(l, e);
       });
-    } on FormatException catch (e) {
-      setState(() {
-        _busy = false;
-        _scanned = false;
-        _error = e.message;
-      });
     } catch (e) {
+      // A code that does not decode, or a store that refused a write: said
+      // in the reader's language, never as the error's text.
+      if (!mounted) return;
+      final l = AppLocalizations.of(context);
       setState(() {
         _busy = false;
         _scanned = false;
-        _error = '$e';
+        _error = addContactFailureText(l, e);
       });
     }
   }

@@ -358,6 +358,10 @@
   "@addRefusedInvalidCode": {
     "description": "42.3: the code failed the protocol's checks — not a contact code, unreadable, or a signature, certificate or commitment signature that does not verify (possible tampering). One sentence for all of them: what the person should do is the same."
   },
+  "addFailedOther": "This device could not add the contact. Check that it has space free, then try again.",
+  "@addFailedOther": {
+    "description": "Add contact: a code that verified could not be added — the store refused a write. One line, never the error's own text."
+  },
   "addScanPrompt": "Point the camera at their Z code.",
   "@addScanPrompt": {
     "description": "Instruction on the camera scanning screen."
@@ -394,6 +398,31 @@
   "onbRestoreFailed": "Restore failed: wrong secret, or the file is damaged.",
   "@onbRestoreFailed": {
     "description": "Restore failed. Deliberately does NOT say which of the two, because saying so would tell an attacker holding the file whether a guess was close."
+  },
+  "recoveryCodeLength": "A recovery code is {total} characters, and this one has {count}. Check what you typed, then try again.",
+  "@recoveryCodeLength": {
+    "description": "A recovery code typed (restore, the backup's check, automatic backup) has the wrong number of characters once its ZBK prefix, spaces and dashes are taken out. {total} is how many a code has, {count} how many this one had.",
+    "placeholders": {
+      "total": {
+        "type": "int"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "recoveryCodeCharacter": "\"{character}\" is not part of a recovery code. Check what you typed, then try again.",
+  "@recoveryCodeCharacter": {
+    "description": "A recovery code typed holds a character that is in no code (Crockford base32 has no U, for one). {character} is that character, as the code was read, in capitals.",
+    "placeholders": {
+      "character": {
+        "type": "String"
+      }
+    }
+  },
+  "recoveryCodeTypo": "That recovery code has a typo. Check the characters, then try again.",
+  "@recoveryCodeTypo": {
+    "description": "A recovery code typed has the right length and characters, but its last character, a checksum, does not match: a typo somewhere."
   },
   "onbBackupTooNew": "This backup was made by a newer version of Z. Update Z first, then restore it — the backup itself is untouched.",
   "@onbBackupTooNew": {
@@ -454,6 +483,10 @@
   "onbCreateIdentity": "Create my identity",
   "@onbCreateIdentity": {
     "description": "Primary action: generate a new identity and finish onboarding."
+  },
+  "onbCreateFailed": "This device could not set up your identity. Check that it has space free, then try again.",
+  "@onbCreateFailed": {
+    "description": "The first screen: creating the identity failed — the store refused a write, or the app could not start on it. One line, never the error's own text."
   },
   "onbRestoreFromBackup": "Restore from a backup",
   "@onbRestoreFromBackup": {
@@ -910,14 +943,9 @@
   "@backupCreated": {
     "description": "Success confirmation."
   },
-  "backupFailed": "Backup failed: {error}",
+  "backupFailed": "The backup could not be written. Check that this device has space free, then try again.",
   "@backupFailed": {
-    "description": "The backup could not be written.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
+    "description": "The backup could not be written: the store full or not writable, or the vault refusing a read. One line in the reader's language, never the error's own text."
   },
   "backupAutoOff": "Automatic backup off. The stored code was erased.",
   "@backupAutoOff": {
@@ -940,14 +968,9 @@
       }
     }
   },
-  "backupSaveFailed": "Could not save: {error}",
+  "backupSaveFailed": "The backup is made, but this device could not save a copy there. Try Save a copy… again, or choose another place.",
   "@backupSaveFailed": {
-    "description": "The export failed.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
+    "description": "The backup was written, but handing a copy to the place the person chose failed: the save dialog, or writing the file there. Names the Save a copy… row (backupSaveCopy). One line, never the error's own text."
   },
   "sizeKb": "{kb} KB",
   "@sizeKb": {
@@ -1828,14 +1851,13 @@
   "@stRelayOffline": {
     "description": "Relay status, with no error to show."
   },
-  "stRelayOfflineWithError": "Offline ({error})",
-  "@stRelayOfflineWithError": {
-    "description": "Relay status with the last transport error in parentheses.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
+  "stRelayOfflineUnreachable": "Offline: this device cannot reach the relay",
+  "@stRelayOfflineUnreachable": {
+    "description": "Settings, the relay's status: not connected, and the last try could not reach the relay at all — no network, nothing listening, no secure connection to be had, or no answer in time."
+  },
+  "stRelayOfflineRefused": "Offline: this device could not sign in to the relay",
+  "@stRelayOfflineRefused": {
+    "description": "Settings, the relay's status: not connected, and the last try reached a relay but could not sign in to it — the relay refused its sign-in, or it is too old for this version to sign in to."
   },
   "stDevices": "Devices",
   "@stDevices": {
@@ -2136,14 +2158,9 @@
   "@stIncorrectPassphrase": {
     "description": "The typed passphrase did not verify."
   },
-  "stCouldNotEnable": "Could not enable: {error}",
+  "stCouldNotEnable": "Biometric unlock could not be turned on. Check that this device has a fingerprint, face or screen lock set up, then try again.",
   "@stCouldNotEnable": {
-    "description": "Biometric enrolment threw.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
+    "description": "Settings: turning on biometric unlock failed — the system's prompt or keystore refused. One line, never the error's own text."
   },
   "stPassphraseSet": "Passphrase set. You'll be asked for it next launch.",
   "@stPassphraseSet": {

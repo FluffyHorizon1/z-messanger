@@ -5,6 +5,38 @@ import 'package:cryptography/cryptography.dart';
 
 import 'util.dart';
 
+/// Why typed text is not a recovery code ([RecoveryCodeInvalid]).
+enum RecoveryCodeProblem {
+  /// It has more or fewer characters than a code, once the prefix, spaces
+  /// and dashes are taken out.
+  length,
+
+  /// A character that is in no code.
+  character,
+
+  /// Its last character, the checksum, does not match the rest: a typo.
+  checksum,
+}
+
+/// What [RecoveryCode.parse] throws for text that is not a recovery code: a
+/// [FormatException] still, whose message says why in English, for logs,
+/// and a type of its own that carries the reason — the length it had, the
+/// character that is in no code — so that a screen can say it in its
+/// reader's language. Until 2026-10-31 the screens that ask for a code
+/// showed the English message to every reader.
+class RecoveryCodeInvalid extends FormatException {
+  final RecoveryCodeProblem problem;
+
+  /// How many characters it had, for [RecoveryCodeProblem.length].
+  final int length;
+
+  /// The character that is in no code, for [RecoveryCodeProblem.character].
+  final String character;
+
+  const RecoveryCodeInvalid(this.problem, super.message,
+      {this.length = 0, this.character = ''});
+}
+
 /// The recovery code that unlocks a backup archive (§9, `docs/BACKUP.md`).
 ///
 /// 120 random bits written as 25 characters in five groups:
@@ -74,8 +106,9 @@ class RecoveryCode {
   }
 
   /// Parses a typed code, tolerating case, spaces, dashes, the `ZBK` prefix
-  /// and the usual I/L/O confusions. Throws [FormatException] with a reason
-  /// the UI can show: the length, an impossible character, or the checksum.
+  /// and the usual I/L/O confusions. Throws [RecoveryCodeInvalid], a
+  /// [FormatException], with the reason: the length, an impossible
+  /// character, or the checksum.
   static Future<RecoveryCode> parse(String input) async {
     final cleaned = input
         .toUpperCase()
@@ -85,15 +118,19 @@ class RecoveryCode {
         .replaceAll('L', '1')
         .replaceAll('O', '0');
     if (cleaned.length != totalChars) {
-      throw FormatException(
+      throw RecoveryCodeInvalid(
+          RecoveryCodeProblem.length,
           'a recovery code is $totalChars characters; this one has '
-          '${cleaned.length}');
+          '${cleaned.length}',
+          length: cleaned.length);
     }
     final bits = StringBuffer();
     for (var i = 0; i < dataChars; i++) {
       final v = alphabet.indexOf(cleaned[i]);
       if (v < 0) {
-        throw FormatException('"${cleaned[i]}" is not part of a recovery code');
+        throw RecoveryCodeInvalid(RecoveryCodeProblem.character,
+            '"${cleaned[i]}" is not part of a recovery code',
+            character: cleaned[i]);
       }
       bits.write(v.toRadixString(2).padLeft(5, '0'));
     }
@@ -104,7 +141,7 @@ class RecoveryCode {
     }
     final want = alphabet[await _checksum(entropy)];
     if (cleaned[dataChars] != want) {
-      throw const FormatException(
+      throw const RecoveryCodeInvalid(RecoveryCodeProblem.checksum,
           'that code has a typo — check the characters and try again');
     }
     return RecoveryCode(entropy);

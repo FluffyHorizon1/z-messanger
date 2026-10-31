@@ -72,6 +72,50 @@ void main() {
           throwsA(isA<FormatException>()));
     });
 
+    test(
+        'a code that is not one says why as data, for a screen to say in its '
+        "reader's language: the length it had, the character in no code, or "
+        'a typo', () async {
+      Future<RecoveryCodeInvalid> refusal(String typed) async {
+        try {
+          await RecoveryCode.parse(typed);
+        } on RecoveryCodeInvalid catch (e) {
+          return e;
+        }
+        fail('"$typed" parsed as a recovery code');
+      }
+
+      final short = await refusal('ZBK-123');
+      expect((short.problem, short.length), (RecoveryCodeProblem.length, 3));
+      final long = await refusal('0' * (RecoveryCode.totalChars + 2));
+      expect((long.problem, long.length),
+          (RecoveryCodeProblem.length, RecoveryCode.totalChars + 2));
+      final odd = await refusal('${'0' * 7}u${'0' * 17}');
+      expect((odd.problem, odd.character), (RecoveryCodeProblem.character, 'U'));
+      // A typo: the checksum character changed, which the checksum is
+      // certain to catch (it is the one character it is compared with).
+      final text = (await (await RecoveryCode.generate()).format())
+          .replaceAll('-', '')
+          .substring(3);
+      final last = text[RecoveryCode.dataChars];
+      final other = RecoveryCode.alphabet[
+          (RecoveryCode.alphabet.indexOf(last) + 1) %
+              RecoveryCode.alphabet.length];
+      final typo = await refusal(
+          text.replaceRange(RecoveryCode.dataChars, null, other));
+      expect(typo.problem, RecoveryCodeProblem.checksum);
+      // Still a FormatException, its English message for logs as before.
+      for (final e in [short, odd, typo]) {
+        expect(e, isA<FormatException>());
+      }
+      expect(short.message,
+          'a recovery code is ${RecoveryCode.totalChars} characters; this one '
+          'has 3');
+      expect(odd.message, '"U" is not part of a recovery code');
+      expect(typo.message,
+          'that code has a typo — check the characters and try again');
+    });
+
     test('codes are unpredictable', () async {
       final seen = <String>{};
       for (var i = 0; i < 50; i++) {

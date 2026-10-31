@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/failure_text.dart';
 import 'package:z_protocol/z_protocol.dart';
 
 import '../core/restore.dart';
@@ -81,10 +82,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await widget.vault.kvPut('display_name', _name.text.trim());
       await setRelayUrl(widget.vault, url, acceptedInsecure: true);
       await widget.onDone();
-    } catch (e) {
+    } catch (_) {
+      // The store refused a write, or the app could not start on it: said
+      // in one line of the reader's language, never as the error's text.
+      if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = '$e';
+        _error = l.onbCreateFailed;
       });
     }
   }
@@ -163,12 +167,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         _error = l.onbBackupTooNew;
       });
     } on FormatException catch (e) {
-      // The message is the useful part here: a mistyped recovery code is
-      // caught by its checksum and says so, which a generic "wrong secret"
-      // would throw away.
+      // Why is the useful part here: a mistyped recovery code is caught by
+      // its checksum, or its length, or a character in no code, and says
+      // which, where a generic "wrong secret" would throw that away — in the
+      // reader's language, where it used to be the parser's English.
+      if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = e.message;
+        _error = restoreFailureText(l, e);
       });
     } catch (_) {
       setState(() {

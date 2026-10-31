@@ -267,6 +267,10 @@ class AppLocalizationsEs extends AppLocalizations {
       'Este código no se ha podido verificar: no es un código de contacto de Z, o se dañó o se modificó después de que su dueño lo creara. No se ha añadido nada; pídele su código de nuevo.';
 
   @override
+  String get addFailedOther =>
+      'Este dispositivo no pudo añadir el contacto. Comprueba que tiene espacio libre y vuelve a intentarlo.';
+
+  @override
   String get addScanPrompt => 'Apunta la cámara a su código Z.';
 
   @override
@@ -293,6 +297,20 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get onbRestoreFailed =>
       'La restauración falló: secreto incorrecto o archivo dañado.';
+
+  @override
+  String recoveryCodeLength(int total, int count) {
+    return 'Un código de recuperación tiene $total caracteres, y este tiene $count. Revisa lo que escribiste y vuelve a intentarlo.';
+  }
+
+  @override
+  String recoveryCodeCharacter(String character) {
+    return '«$character» no forma parte de un código de recuperación. Revisa lo que escribiste y vuelve a intentarlo.';
+  }
+
+  @override
+  String get recoveryCodeTypo =>
+      'Ese código de recuperación tiene una errata. Revisa los caracteres y vuelve a intentarlo.';
 
   @override
   String get onbBackupTooNew =>
@@ -342,6 +360,10 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get onbCreateIdentity => 'Crear mi identidad';
+
+  @override
+  String get onbCreateFailed =>
+      'Este dispositivo no pudo crear tu identidad. Comprueba que tiene espacio libre y vuelve a intentarlo.';
 
   @override
   String get onbRestoreFromBackup => 'Restaurar desde una copia de seguridad';
@@ -719,9 +741,8 @@ class AppLocalizationsEs extends AppLocalizations {
       'Copia de seguridad creada. Guarda una copia en un lugar seguro.';
 
   @override
-  String backupFailed(String error) {
-    return 'La copia de seguridad falló: $error';
-  }
+  String get backupFailed =>
+      'No se pudo escribir la copia de seguridad. Comprueba que este dispositivo tiene espacio libre y vuelve a intentarlo.';
 
   @override
   String get backupAutoOff =>
@@ -739,9 +760,8 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
-  String backupSaveFailed(String error) {
-    return 'No se pudo guardar: $error';
-  }
+  String get backupSaveFailed =>
+      'La copia de seguridad está hecha, pero este dispositivo no pudo guardar una copia ahí. Prueba «Guardar una copia…» otra vez, o elige otro lugar.';
 
   @override
   String sizeKb(String kb) {
@@ -1457,9 +1477,12 @@ class AppLocalizationsEs extends AppLocalizations {
   String get stRelayOffline => 'Sin conexión';
 
   @override
-  String stRelayOfflineWithError(String error) {
-    return 'Sin conexión ($error)';
-  }
+  String get stRelayOfflineUnreachable =>
+      'Sin conexión: este dispositivo no llega al relay';
+
+  @override
+  String get stRelayOfflineRefused =>
+      'Sin conexión: este dispositivo no pudo iniciar sesión en el relay';
 
   @override
   String get stDevices => 'Dispositivos';
@@ -1719,9 +1742,8 @@ class AppLocalizationsEs extends AppLocalizations {
   String get stIncorrectPassphrase => 'Frase de contraseña incorrecta.';
 
   @override
-  String stCouldNotEnable(String error) {
-    return 'No se pudo activar: $error';
-  }
+  String get stCouldNotEnable =>
+      'No se pudo activar el desbloqueo biométrico. Comprueba que este dispositivo tiene configurada una huella, la cara o un bloqueo de pantalla y vuelve a intentarlo.';
 
   @override
   String get stPassphraseSet =>

@@ -29,7 +29,12 @@ class Transport extends ChangeNotifier {
 
   /// The authenticated link's state — what the UI shows.
   LinkStatus status = LinkStatus.disconnected;
-  String? lastError;
+
+  /// What the last try to connect failed with, null once one succeeds. The
+  /// error itself, for the screen to say in its reader's words
+  /// (`relayOfflineText`): until 2026-10-31 it was the error's text, and
+  /// Settings showed it as it came.
+  Object? lastError;
 
   RelayClient? _client;
   bool _shouldRun = false;
@@ -199,7 +204,7 @@ class Transport extends ChangeNotifier {
       _pushConfirmed = null;
       _syncPush();
     } catch (e) {
-      lastError = e.toString();
+      lastError = e;
       _client = null;
       _setStatus(LinkStatus.disconnected);
       _scheduleRetry();

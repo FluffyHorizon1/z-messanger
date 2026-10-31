@@ -1,0 +1,667 @@
+// What four screens say when something they started fails: the first
+// screen, Add contact, Backup and Settings (4.9.0).
+//
+// Each of them showed the exception it caught, in English whatever the
+// reader's language: an identity or a contact the store would not take as
+// "DatabaseException(error database_closed)", "Backup failed: ", "Could not
+// save: " and "Could not enable: " before the error, the relay's status as
+// "Offline (SocketException: Connection refused (OS Error: ...))", and a
+// mistyped recovery code as the parser's English. Each says why in the
+// reader's words now (`lib/l10n/failure_text.dart`), and none shows an
+// exception's text.
+//
+// Criteria 1 to 5 drive a real screen into the failure, in English and in
+// Spanish, and read the words they expect from the ARB files as they run,
+// so that a build without them says what it showed instead; criterion 6
+// holds every mapping to its words.
+//
+// Criteria, each a test below:
+//   1. the first screen, on a store that refuses every write, says it could
+//      not set up the identity;
+//   2. a restore whose recovery code is not one says why — its length, a
+//      character in no code, a typo — and one whose code does not open the
+//      backup says the restore failed;
+//   3. Add contact, on a store that refuses the write, says this device
+//      could not add the contact;
+//   4. the backup screen says a backup that could not be written, a copy
+//      that could not be saved, and a code typed back, or typed to turn
+//      automatic backups on, that is not one — its length;
+//   5. Settings says biometric unlock could not be turned on, and why the
+//      relay is offline — it cannot be reached, or this device could not
+//      sign in to it;
+//   6. every failure's words, in English and in Spanish, from what failed,
+//      and no exception text in any of them.
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
+import 'package:z_protocol/z_protocol.dart';
+import 'package:zapp/core/app_lock.dart';
+import 'package:zapp/core/chat_service.dart';
+import 'package:zapp/core/key_transparency.dart';
+import 'package:zapp/core/models.dart';
+import 'package:zapp/core/prefs.dart';
+import 'package:zapp/core/push_service.dart';
+import 'package:zapp/core/transport.dart';
+import 'package:zapp/core/vault.dart';
+import 'package:zapp/l10n/app_localizations.dart';
+import 'package:zapp/l10n/failure_text.dart';
+import 'package:zapp/l10n/refusal_text.dart';
+import 'package:zapp/ui/add_contact_screen.dart';
+import 'package:zapp/ui/backup_screen.dart';
+import 'package:zapp/ui/onboarding_screen.dart';
+import 'package:zapp/ui/settings_screen.dart';
+import 'package:zapp/ui/theme.dart';
+
+/// The file picker as Android's hands a pick over (file_picker 8.3.7): the
+/// chosen file copied into the cache, the copy what the app is handed. A
+/// save hands back [savePath], a place nothing can be written.
+class FakePicker extends FilePicker {
+  FakePicker(this.cache);
+  final Directory cache;
+  List<int> contents = const [];
+  String savePath = '/nonexistent/z-failure-words/backup.zbk';
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = true,
+    int compressionQuality = 30,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    final copy = File('${cache.path}/file_picker/'
+        '${DateTime.now().microsecondsSinceEpoch}/backup.zbk')
+      ..createSync(recursive: true)
+      ..writeAsBytesSync(contents);
+    return FilePickerResult([
+      PlatformFile(path: copy.path, name: 'backup.zbk', size: contents.length)
+    ]);
+  }
+
+  @override
+  Future<bool?> clearTemporaryFiles() async => true;
+
+  @override
+  Future<String?> saveFile({
+    String? dialogTitle,
+    String? fileName,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Uint8List? bytes,
+    bool lockParentWindow = false,
+  }) async =>
+      savePath;
+}
+
+/// The OS prompt, there and refusing: what a device whose biometrics went
+/// away under the app says.
+class RefusingGate implements BiometricGate {
+  @override
+  Future<bool> get isAvailable async => true;
+  @override
+  Future<GateResult> authenticate(String reason) async =>
+      throw PlatformException(code: 'NotAvailable', message: 'no biometrics');
+}
+
+/// No hardware key on this device.
+class NoBoundKeys implements BoundKeyStore {
+  @override
+  Future<bool> get available async => false;
+  @override
+  Future<BoundBlob> seal(Uint8List secret) =>
+      throw const BoundKeyException('unavailable');
+  @override
+  Future<Uint8List> open(BoundBlob blob) =>
+      throw const BoundKeyException('unavailable');
+  @override
+  Future<void> forget() async {}
+}
+
+/// Pump until [cond] holds, letting real work run in between: a widget
+/// test's clock is fake, and the vault is real files and a real database.
+/// [step] is how far each round moves the test's clock.
+Future<void> settleUntil(WidgetTester t, bool Function() cond,
+    {required String what,
+    Duration step = const Duration(milliseconds: 16),
+    Duration timeout = const Duration(seconds: 30)}) async {
+  final deadline = DateTime.now().add(timeout);
+  await t.pump();
+  while (!cond()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('condition not met: $what', timeout);
+    }
+    await t.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)));
+    await t.pump(step);
+  }
+}
+
+/// An exception's text on the screen: what none of these may show.
+final rawText =
+    RegExp(r'Exception|Error\(|errno|OS Error|Instance of|database_closed');
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  final temps = <Directory>[];
+
+  tearDownAll(() {
+    for (final d in temps) {
+      try {
+        if (d.existsSync()) d.deleteSync(recursive: true);
+      } catch (_) {}
+    }
+  });
+
+  Directory temp(String name) {
+    final d = Directory.systemTemp.createTempSync('z_fw_$name');
+    temps.add(d);
+    return d;
+  }
+
+  /// The words [key] has in [lang]'s ARB, its placeholders filled from
+  /// [args]; null when the ARB has no such key.
+  String? arb(String lang, String key, [Map<String, Object> args = const {}]) {
+    final j = jsonDecode(File('lib/l10n/app_$lang.arb').readAsStringSync())
+        as Map;
+    var s = j[key] as String?;
+    if (s == null) return null;
+    args.forEach((k, v) => s = s!.replaceAll('{$k}', '$v'));
+    return s;
+  }
+
+  /// [key]'s words in [lang], or a string no screen shows when the ARB has
+  /// none, so that a build without them fails saying what it showed.
+  String words(String lang, String key, [Map<String, Object> args = const {}]) =>
+      arb(lang, key, args) ?? '\u0000(no words for $key)';
+
+  Widget app(String lang, Widget home) => MaterialApp(
+        locale: Locale(lang),
+        debugShowCheckedModeBanner: false,
+        theme: ZTheme.light(),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: home,
+      );
+
+  /// A service over its own vault whose relay is [relay] — a closed port
+  /// unless said — with the transparency log off.
+  Future<ChatService> service(String name,
+      {String relay = 'ws://127.0.0.1:1'}) async {
+    final vault = await Vault.open(rootOverride: temp(name));
+    final id = await ZIdentity.generate();
+    await vault.kvPut('identity', jsonEncode(id.toJson()));
+    return ChatService.init(
+        vault: vault,
+        identity: id,
+        displayName: name,
+        transport: Transport(identity: id, serverUrl: relay),
+        ktConfig: KtConfig.off);
+  }
+
+  Future<void> stop(WidgetTester t, ChatService svc) =>
+      t.runAsync(() async {
+        await svc.transport.stop();
+        svc.dispose();
+        try {
+          await svc.vault.db.close();
+        } catch (_) {}
+      });
+
+  /// Every line of text on the screen, for a failure to say what it showed.
+  List<String> onScreen() => [
+        for (final e in find.byType(Text).evaluate())
+          if ((e.widget as Text).data case final s?) s,
+      ];
+
+  /// What a screen says: [want] shown, and no exception's text.
+  Future<void> says(WidgetTester t, String want, String what,
+      {Duration step = const Duration(milliseconds: 16)}) async {
+    try {
+      await settleUntil(
+          t,
+          () =>
+              find.text(want).evaluate().isNotEmpty ||
+              find.textContaining(rawText).evaluate().isNotEmpty,
+          what: what,
+          step: step);
+    } on TimeoutException {
+      fail('$what: not said within 30 s; the screen said ${onScreen()}');
+    }
+    expect(find.textContaining(rawText), findsNothing,
+        reason: '$what: no exception text on the screen');
+    expect(find.text(want), findsOneWidget, reason: '$what: in its words');
+  }
+
+  testWidgets(
+      '1. the first screen, on a store that refuses every write, says it '
+      'could not set up the identity', (t) async {
+    for (final lang in ['en', 'es']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      final vault = (await t.runAsync(() async {
+        final v = await Vault.open(rootOverride: temp('create_$lang'));
+        await v.db.close();
+        return v;
+      }))!;
+      await t.pumpWidget(
+          app(lang, OnboardingScreen(vault: vault, onDone: () async {})));
+      await t.pump();
+      await t.enterText(
+          find.widgetWithText(TextField, l.onbDisplayName), 'Alice');
+      await t.tap(find.text(l.onbCreateIdentity));
+      await says(t, words(lang, 'onbCreateFailed'),
+          '$lang: an identity the store would not take');
+    }
+    await t.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '2. a restore whose recovery code is not one says why, and one whose '
+      'code does not open the backup says the restore failed', (t) async {
+    // A code with one character changed, its checksum no longer matching:
+    // a typo, found by the parser's own refusal.
+    final (good, typo) = (await t.runAsync(() async {
+      final good = await (await RecoveryCode.generate()).format();
+      for (var i = good.length - 2; i > 4; i--) {
+        if (good[i] == '-') continue;
+        for (final c in RecoveryCode.alphabet.split('')) {
+          final candidate = good.replaceRange(i, i + 1, c);
+          try {
+            await RecoveryCode.parse(candidate);
+          } on FormatException catch (e) {
+            if (e.message.contains('typo')) return (good, candidate);
+          }
+        }
+      }
+      throw StateError('no typo found');
+    }))!;
+    // Spanish first: where the parser's English showed through.
+    for (final lang in ['es', 'en']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      final picker = FakePicker(temp('restore_cache_$lang'))
+        ..contents = utf8.encode('{"z":"zbk","v":1}\nthe rest of an archive');
+      FilePicker.platform = picker;
+      final vault = (await t
+          .runAsync(() => Vault.open(rootOverride: temp('restore_$lang'))))!;
+      await t.pumpWidget(
+          app(lang, OnboardingScreen(vault: vault, onDone: () async {})));
+      await t.pump();
+      for (final (what, code, key, args) in [
+        ('too short', 'ZBK-AAAAA', 'recoveryCodeLength',
+            <String, Object>{'total': 25, 'count': 5}),
+        ('a character in no code', 'U' * 25, 'recoveryCodeCharacter',
+            <String, Object>{'character': 'U'}),
+        ('a typo', typo, 'recoveryCodeTypo', <String, Object>{}),
+        ('a code that does not open it', good, 'onbRestoreFailed',
+            <String, Object>{}),
+      ]) {
+        final button = find.text(l.onbRestoreFromBackup);
+        await t.ensureVisible(button);
+        await t.pump();
+        await t.tap(button);
+        await settleUntil(
+            t, () => find.text(l.onbRecoveryCode).evaluate().isNotEmpty,
+            what: '$lang, $what: the recovery-code dialog');
+        await t.enterText(
+            find.descendant(
+                of: find.byType(AlertDialog), matching: find.byType(TextField)),
+            code);
+        await t.tap(find.text(l.onbRestore));
+        await settleUntil(
+            t, () => find.text(l.onbRecoveryCode).evaluate().isEmpty,
+            what: '$lang, $what: the dialog gone');
+        await says(t, words(lang, key, args), '$lang, $what');
+      }
+      await t.pumpWidget(const SizedBox());
+      await t.runAsync(() => vault.db.close());
+    }
+  });
+
+  testWidgets(
+      '3. Add contact, on a store that refuses the write, says this device '
+      'could not add the contact', (t) async {
+    for (final lang in ['en', 'es']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      final svc = (await t.runAsync(() => service('Lola_$lang')))!;
+      final omar = (await t.runAsync(() => service('Omar_$lang')))!;
+      final code = (await t.runAsync(omar.myContactCode))!;
+      await stop(t, omar);
+      await t.pumpWidget(ChangeNotifierProvider<ChatService>.value(
+          value: svc, child: app(lang, const AddContactScreen())));
+      await t.tap(find.text(l.addPaste));
+      await settleUntil(
+          t, () => find.text(l.addVerifyAndAdd).evaluate().isNotEmpty,
+          what: '$lang: the Paste tab');
+      final tabs = t.widget<TabBar>(find.byType(TabBar)).controller!;
+      await settleUntil(t, () => tabs.index == 1 && !tabs.indexIsChanging,
+          what: '$lang: the switch to the Paste tab');
+      // The store refuses the write from here: its database is closed, the
+      // service's own connection stopped first.
+      await t.runAsync(() async {
+        await svc.transport.stop();
+        await svc.vault.db.close();
+      });
+      await t.enterText(find.byType(TextField).first, code);
+      await t.tap(find.text(l.addVerifyAndAdd));
+      await says(t, words(lang, 'addFailedOther'),
+          '$lang: a contact the store would not take');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, svc);
+    }
+  });
+
+  testWidgets(
+      '4. the backup screen says a backup that could not be written, a copy '
+      'that could not be saved, and a code that is not one', (t) async {
+    for (final lang in ['en', 'es']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      final picker = FakePicker(temp('backup_cache_$lang'));
+      FilePicker.platform = picker;
+      final svc = (await t.runAsync(() => service('Bea_$lang')))!;
+      // A backup already in the folder, so that the screen offers a copy of
+      // it once it has opened its store: what says it is ready.
+      final backups = Directory('${svc.vault.root.path}/backups');
+      await t.runAsync(() async {
+        await backups.create(recursive: true);
+        await File('${backups.path}/z-backup-20261031-120000.zbk')
+            .writeAsString('an archive');
+      });
+      await t.pumpWidget(ChangeNotifierProvider<ChatService>.value(
+          value: svc, child: app(lang, const BackupScreen())));
+      await settleUntil(
+          t, () => find.text(l.backupSaveCopy).evaluate().isNotEmpty,
+          what: '$lang: the backup screen, its store open');
+
+      /// Takes the word just said off the screen, so the next is not queued
+      /// behind it.
+      Future<void> dismiss() async {
+        t
+            .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+            .removeCurrentSnackBar();
+        await t.pump();
+      }
+
+      /// Shows a code and types [typed] back, or the code itself.
+      Future<void> create({String? typed, required String what}) async {
+        await t.tap(find.text(l.backupCreate));
+        await settleUntil(
+            t, () => find.text(l.backupCodeWritten).evaluate().isNotEmpty,
+            what: '$what: the code shown');
+        final shown = t
+            .widget<SelectableText>(find.descendant(
+                of: find.byType(AlertDialog),
+                matching: find.byType(SelectableText)))
+            .data!;
+        await t.tap(find.text(l.backupCodeWritten));
+        await settleUntil(
+            t, () => find.text(l.backupConfirmTitle).evaluate().isNotEmpty,
+            what: '$what: the code asked back');
+        await t.enterText(
+            find.descendant(
+                of: find.byType(AlertDialog), matching: find.byType(TextField)),
+            typed ?? shown);
+        await t.tap(find.text(l.confirm));
+      }
+
+      // (b) A copy handed to a place nothing can be written.
+      await t.tap(find.text(l.backupSaveCopy));
+      await says(t, words(lang, 'backupSaveFailed'),
+          '$lang: a copy that could not be saved');
+      await dismiss();
+      // (c) The code typed back is not one: said in the dialog.
+      await create(typed: 'ZBK-AAAAA', what: '$lang, a code typed back');
+      await says(
+          t,
+          words(lang, 'recoveryCodeLength',
+              <String, Object>{'total': 25, 'count': 5}),
+          '$lang: a code typed back that is not one');
+      await t.tap(find.text(l.back));
+      await settleUntil(
+          t, () => find.text(l.backupConfirmTitle).evaluate().isEmpty,
+          what: '$lang: the dialog closed');
+      // (a) A store that cannot be read, so no backup can be written: its
+      // database closed, the service's own connection stopped first. (A
+      // folder that cannot be opened fails the write too, but the sink's
+      // own open fails first with nothing yet listening, an error the test
+      // framework takes for the test's.)
+      await t.runAsync(() async {
+        await svc.transport.stop();
+        await svc.vault.db.close();
+      });
+      await create(what: '$lang, a backup that cannot be written');
+      await says(t, words(lang, 'backupFailed'),
+          '$lang: a backup that could not be written');
+      await dismiss();
+      // (d) Automatic backups asked for with a code that is not one.
+      final auto = find.text(l.backupAuto);
+      await t.ensureVisible(auto);
+      await t.pump();
+      await t.tap(auto);
+      await settleUntil(
+          t, () => find.text(l.backupAskCodeTitle).evaluate().isNotEmpty,
+          what: '$lang: the code asked for');
+      await t.enterText(
+          find.descendant(
+              of: find.byType(AlertDialog), matching: find.byType(TextField)),
+          'ZBK-AAAAA');
+      await t.tap(find.text(l.backupAskCodeTurnOn));
+      await says(
+          t,
+          words(lang, 'recoveryCodeLength',
+              <String, Object>{'total': 25, 'count': 5}),
+          '$lang: a code for automatic backups that is not one');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, svc);
+    }
+  });
+
+  testWidgets(
+      '5. Settings says biometric unlock could not be turned on, and why the '
+      'relay is offline', (t) async {
+    // A relay this build cannot sign in to: it asks for an authentication
+    // this client will not give, as a relay too old for it does.
+    final old = (await t.runAsync(() async {
+      final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      s.listen((req) async {
+        final ws = await WebSocketTransformer.upgrade(req);
+        ws.add(jsonEncode({
+          't': 'challenge',
+          'nonce': b64(randomBytes(32)),
+          'auth': 1,
+        }));
+        ws.listen((_) {}, onError: (Object _) {});
+      });
+      return s;
+    }))!;
+    addTearDown(() => t.runAsync(() => old.close(force: true)));
+    for (final lang in ['en', 'es']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      for (final (what, relay, key) in [
+        ('a relay that cannot be reached', 'ws://127.0.0.1:1',
+            'stRelayOfflineUnreachable'),
+        ('a relay it cannot sign in to', 'ws://127.0.0.1:${old.port}',
+            'stRelayOfflineRefused'),
+      ]) {
+        final dir = temp('settings_$lang');
+        final svc = (await t.runAsync(
+            () => service('Sam_$lang', relay: relay)))!;
+        await t.runAsync(() async {
+          final deadline = DateTime.now().add(const Duration(seconds: 20));
+          while (svc.transport.lastError == null &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+          await svc.vault.setPassphrase('a passphrase of some length');
+        });
+        final prefs = AppPrefs(root: dir);
+        await t.runAsync(prefs.load);
+        final lock =
+            AppLock(root: dir, gate: RefusingGate(), store: MemorySecretStore(),
+                bound: NoBoundKeys());
+        await t.pumpWidget(MultiProvider(
+          providers: [
+            ChangeNotifierProvider<ChatService>.value(value: svc),
+            ChangeNotifierProvider<Transport>.value(value: svc.transport),
+            ChangeNotifierProvider<PushService>.value(
+                value: PushService(transport: svc.transport, vault: svc.vault)),
+            ChangeNotifierProvider<AppLock>.value(value: lock),
+            ChangeNotifierProvider<AppPrefs>.value(value: prefs),
+          ],
+          child: app(lang, const SettingsScreen()),
+        ));
+        await settleUntil(
+            t, () => find.text(l.stSettings).evaluate().isNotEmpty,
+            what: '$lang: the Settings screen');
+        await says(t, words(lang, key), '$lang: $what');
+        if (relay.endsWith(':1')) {
+          // Biometric unlock, turned on where the system refuses it.
+          final row = find.text(l.stBiometric);
+          await t.scrollUntilVisible(row, 200,
+              scrollable: find.byType(Scrollable).first);
+          await t.pump();
+          await t.tap(row);
+          await settleUntil(
+              t, () => find.text(l.stEnterPassphrase).evaluate().isNotEmpty,
+              what: '$lang: the passphrase asked for');
+          await t.enterText(
+              find.descendant(
+                  of: find.byType(AlertDialog),
+                  matching: find.byType(TextField)),
+              'a passphrase of some length');
+          await t.tap(find.text(l.ok));
+          await says(t, words(lang, 'stCouldNotEnable'),
+              '$lang: biometric unlock the system refused',
+              step: const Duration(milliseconds: 100));
+        }
+        await t.pumpWidget(const SizedBox());
+        await stop(t, svc);
+      }
+    }
+  });
+
+  test(
+      '6. every failure says why in English and in Spanish, from what failed, '
+      'with no exception text', () {
+    final en = lookupAppLocalizations(const Locale('en'));
+    final es = lookupAppLocalizations(const Locale('es'));
+    for (final l in [en, es]) {
+      final shown = <String>[];
+      String keep(String s) {
+        shown.add(s);
+        return s;
+      }
+
+      // A recovery code that is not one, wherever one is asked for.
+      expect(
+          keep(recoveryCodeText(
+              l,
+              const RecoveryCodeInvalid(RecoveryCodeProblem.length, 'x',
+                  length: 5))),
+          l.recoveryCodeLength(RecoveryCode.totalChars, 5));
+      expect(
+          keep(recoveryCodeText(
+              l,
+              const RecoveryCodeInvalid(RecoveryCodeProblem.character, 'x',
+                  character: 'U'))),
+          l.recoveryCodeCharacter('U'));
+      expect(
+          keep(recoveryCodeText(l,
+              const RecoveryCodeInvalid(RecoveryCodeProblem.checksum, 'x'))),
+          l.recoveryCodeTypo);
+      expect(keep(recoveryCodeText(l, const FormatException('x'))),
+          l.recoveryCodeTypo);
+      // A restore: a code that is not one says why; anything else, that the
+      // restore failed.
+      expect(
+          keep(restoreFailureText(
+              l,
+              const RecoveryCodeInvalid(RecoveryCodeProblem.length, 'x',
+                  length: 3))),
+          l.recoveryCodeLength(RecoveryCode.totalChars, 3));
+      for (final other in <Object>[
+        const FormatException('wrong recovery code, or the archive is damaged'),
+        StateError('something nobody expected'),
+      ]) {
+        expect(keep(restoreFailureText(l, other)), l.onbRestoreFailed);
+      }
+      // Add contact: a refused code says its refusal; one that does not
+      // decode, that it did not verify; anything else, that this device
+      // could not add the contact.
+      const refused =
+          ContactCodeRefused(ContactCodeRefusal.ownCode, '', 'your own code');
+      expect(keep(addContactFailureText(l, refused)),
+          contactCodeRefusalText(l, refused));
+      expect(keep(addContactFailureText(l, const FormatException('bad'))),
+          l.addRefusedInvalidCode);
+      expect(
+          keep(addContactFailureText(
+              l, const FileSystemException('disk full'))),
+          l.addFailedOther);
+      // The relay's status: none to say, one that cannot be reached at all,
+      // one it reached but could not sign in to, and anything else as
+      // offline.
+      expect(keep(relayOfflineText(l, null)), l.stRelayOffline);
+      for (final unreachable in <Object>[
+        const SocketException('Connection refused'),
+        const WebSocketException('was not upgraded to websocket'),
+        const HandshakeException('Handshake error in client'),
+        const TlsException('certificate'),
+        const HttpException('Connection closed before full header'),
+        TimeoutException('no challenge'),
+      ]) {
+        expect(keep(relayOfflineText(l, unreachable)),
+            l.stRelayOfflineUnreachable,
+            reason: '$unreachable');
+      }
+      expect(keep(relayOfflineText(l, RelayException('auth failed: x'))),
+          l.stRelayOfflineRefused);
+      expect(keep(relayOfflineText(l, StateError('x'))), l.stRelayOffline);
+      // The words that have no cause of their own to name.
+      shown.addAll([
+        l.onbCreateFailed,
+        l.backupFailed,
+        l.backupSaveFailed,
+        l.stCouldNotEnable,
+      ]);
+      for (final s in shown) {
+        expect(s, isNot(matches(rawText)), reason: s);
+        expect(s, isNot(contains('nobody expected')), reason: s);
+        expect(s, isNot(contains('disk full')), reason: s);
+      }
+    }
+    // Each language has its own words for each.
+    for (final (a, b) in [
+      (es.onbCreateFailed, en.onbCreateFailed),
+      (es.addFailedOther, en.addFailedOther),
+      (es.recoveryCodeLength(25, 5), en.recoveryCodeLength(25, 5)),
+      (es.recoveryCodeCharacter('U'), en.recoveryCodeCharacter('U')),
+      (es.recoveryCodeTypo, en.recoveryCodeTypo),
+      (es.backupFailed, en.backupFailed),
+      (es.backupSaveFailed, en.backupSaveFailed),
+      (es.stCouldNotEnable, en.stCouldNotEnable),
+      (es.stRelayOfflineUnreachable, en.stRelayOfflineUnreachable),
+      (es.stRelayOfflineRefused, en.stRelayOfflineRefused),
+    ]) {
+      expect(a, isNot(b), reason: 'the Spanish has words of its own');
+    }
+    // The count and the character are in the words.
+    for (final l in [en, es]) {
+      expect(l.recoveryCodeLength(25, 7), contains('25'));
+      expect(l.recoveryCodeLength(25, 7), contains('7'));
+      expect(l.recoveryCodeCharacter('U'), contains('U'));
+    }
+  });
+}

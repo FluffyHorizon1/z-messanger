@@ -16,6 +16,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/failure_text.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
@@ -214,13 +215,15 @@ class _BackupScreenState extends State<BackupScreen> {
       messenger.showSnackBar(SnackBar(
 content: Text(l.backupCreated)));
       await _saveCopy(backup);
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _busy = false;
         _stage = null;
       });
-      messenger.showSnackBar(SnackBar(content: Text(l.backupFailed('$e'))));
+      // Said in one line of the reader's language, never as the error's
+      // text.
+      messenger.showSnackBar(SnackBar(content: Text(l.backupFailed)));
     }
   }
 
@@ -254,7 +257,7 @@ content: Text(l.backupAutoOff)));
 content: Text(l.backupAutoOn)));
     } on FormatException catch (e) {
       if (!mounted) return;
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      messenger.showSnackBar(SnackBar(content: Text(recoveryCodeText(l, e))));
     }
   }
 
@@ -273,8 +276,8 @@ content: Text(l.backupCopySaved)));
       messenger.showSnackBar(SnackBar(
           content: Text(l.backupTooLargeForPicker(backup.name)),
           duration: const Duration(seconds: 6)));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(l.backupSaveFailed('$e'))));
+    } catch (_) {
+      messenger.showSnackBar(SnackBar(content: Text(l.backupSaveFailed)));
     }
   }
 
@@ -403,7 +406,7 @@ class _ConfirmCodeDialogState extends State<_ConfirmCodeDialog> {
     } on FormatException catch (e) {
       setState(() {
         _checking = false;
-        _error = e.message;
+        _error = recoveryCodeText(l, e);
       });
     }
   }

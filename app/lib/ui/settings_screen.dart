@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../core/update_check.dart';
 import '../l10n/app_localizations.dart';
+import '../l10n/failure_text.dart';
 import '../l10n/handle_text.dart';
 import '../l10n/link_text.dart';
 import '../l10n/ttl_text.dart';
@@ -303,9 +304,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               switch (transport.status) {
                 LinkStatus.connected => l.stRelayConnected,
                 LinkStatus.connecting => l.stRelayConnecting,
-                LinkStatus.disconnected => transport.lastError == null
-                    ? l.stRelayOffline
-                    : l.stRelayOfflineWithError('${transport.lastError}'),
+                LinkStatus.disconnected =>
+                  relayOfflineText(l, transport.lastError),
               },
               style: const TextStyle(fontSize: 12),
             ),
@@ -1096,8 +1096,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           content: Text(ok ? l.stBiometricOn : l.stPromptNotCompleted)));
     } on WrongPassphraseException {
       messenger.showSnackBar(SnackBar(content: Text(l.stIncorrectPassphrase)));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(l.stCouldNotEnable('$e'))));
+    } catch (_) {
+      // The system's prompt or keystore refused: said in one line of the
+      // reader's language, never as the error's text.
+      messenger.showSnackBar(SnackBar(content: Text(l.stCouldNotEnable)));
     }
   }
 

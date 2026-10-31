@@ -518,6 +518,12 @@ abstract class AppLocalizations {
   /// **'This code did not verify: it is not a Z contact code, or it was damaged or changed after its owner made it. Nothing was added — ask them for their code again.'**
   String get addRefusedInvalidCode;
 
+  /// Add contact: a code that verified could not be added — the store refused a write. One line, never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not add the contact. Check that it has space free, then try again.'**
+  String get addFailedOther;
+
   /// Instruction on the camera scanning screen.
   ///
   /// In en, this message translates to:
@@ -565,6 +571,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Restore failed: wrong secret, or the file is damaged.'**
   String get onbRestoreFailed;
+
+  /// A recovery code typed (restore, the backup's check, automatic backup) has the wrong number of characters once its ZBK prefix, spaces and dashes are taken out. {total} is how many a code has, {count} how many this one had.
+  ///
+  /// In en, this message translates to:
+  /// **'A recovery code is {total} characters, and this one has {count}. Check what you typed, then try again.'**
+  String recoveryCodeLength(int total, int count);
+
+  /// A recovery code typed holds a character that is in no code (Crockford base32 has no U, for one). {character} is that character, as the code was read, in capitals.
+  ///
+  /// In en, this message translates to:
+  /// **'\"{character}\" is not part of a recovery code. Check what you typed, then try again.'**
+  String recoveryCodeCharacter(String character);
+
+  /// A recovery code typed has the right length and characters, but its last character, a checksum, does not match: a typo somewhere.
+  ///
+  /// In en, this message translates to:
+  /// **'That recovery code has a typo. Check the characters, then try again.'**
+  String get recoveryCodeTypo;
 
   /// Restore refused on sight, before the recovery code is asked for: the chosen .zbk archive is of a newer format version than this build can read. Updating the app and choosing the same file again restores it.
   ///
@@ -655,6 +679,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Create my identity'**
   String get onbCreateIdentity;
+
+  /// The first screen: creating the identity failed — the store refused a write, or the app could not start on it. One line, never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not set up your identity. Check that it has space free, then try again.'**
+  String get onbCreateFailed;
 
   /// Secondary action: restore an existing identity from a .zbk or .zid.
   ///
@@ -1256,11 +1286,11 @@ abstract class AppLocalizations {
   /// **'Backup created. Save a copy somewhere safe.'**
   String get backupCreated;
 
-  /// The backup could not be written.
+  /// The backup could not be written: the store full or not writable, or the vault refusing a read. One line in the reader's language, never the error's own text.
   ///
   /// In en, this message translates to:
-  /// **'Backup failed: {error}'**
-  String backupFailed(String error);
+  /// **'The backup could not be written. Check that this device has space free, then try again.'**
+  String get backupFailed;
 
   /// Confirms turning scheduled backups off, and that the stored code is gone with it.
   ///
@@ -1286,11 +1316,11 @@ abstract class AppLocalizations {
   /// **'That backup is too large for this device\'s file picker. It is still saved in the app as {name}.'**
   String backupTooLargeForPicker(String name);
 
-  /// The export failed.
+  /// The backup was written, but handing a copy to the place the person chose failed: the save dialog, or writing the file there. Names the Save a copy… row (backupSaveCopy). One line, never the error's own text.
   ///
   /// In en, this message translates to:
-  /// **'Could not save: {error}'**
-  String backupSaveFailed(String error);
+  /// **'The backup is made, but this device could not save a copy there. Try Save a copy… again, or choose another place.'**
+  String get backupSaveFailed;
 
   /// A file size in kilobytes.
   ///
@@ -2312,11 +2342,17 @@ abstract class AppLocalizations {
   /// **'Offline'**
   String get stRelayOffline;
 
-  /// Relay status with the last transport error in parentheses.
+  /// Settings, the relay's status: not connected, and the last try could not reach the relay at all — no network, nothing listening, no secure connection to be had, or no answer in time.
   ///
   /// In en, this message translates to:
-  /// **'Offline ({error})'**
-  String stRelayOfflineWithError(String error);
+  /// **'Offline: this device cannot reach the relay'**
+  String get stRelayOfflineUnreachable;
+
+  /// Settings, the relay's status: not connected, and the last try reached a relay but could not sign in to it — the relay refused its sign-in, or it is too old for this version to sign in to.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline: this device could not sign in to the relay'**
+  String get stRelayOfflineRefused;
 
   /// Section header.
   ///
@@ -2756,11 +2792,11 @@ abstract class AppLocalizations {
   /// **'Incorrect passphrase.'**
   String get stIncorrectPassphrase;
 
-  /// Biometric enrolment threw.
+  /// Settings: turning on biometric unlock failed — the system's prompt or keystore refused. One line, never the error's own text.
   ///
   /// In en, this message translates to:
-  /// **'Could not enable: {error}'**
-  String stCouldNotEnable(String error);
+  /// **'Biometric unlock could not be turned on. Check that this device has a fingerprint, face or screen lock set up, then try again.'**
+  String get stCouldNotEnable;
 
   /// After setting a passphrase for the first time.
   ///

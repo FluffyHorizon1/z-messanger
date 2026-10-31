@@ -40,8 +40,8 @@ Four components, one operator‑independent trust story:
 
 | Component | Language / size | Role |
 |---|---|---|
-| `protocol/` (`z_protocol`) | pure Dart, ~15.8 k lines in 26 modules, ~21.3 k lines of tests (445, fifty-two of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader, handles' grammar, labels, records, owner rule, stamps and acknowledgement |
-| `app/` | Flutter (Dart), core ~38.4 k lines (`lib/core/`), UI ~10.8 k lines, 120 test files (~74.0 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
+| `protocol/` (`z_protocol`) | pure Dart, ~15.8 k lines in 26 modules, ~21.4 k lines of tests (446, fifty-two of them driving a real relay) | Every cryptographic construction: identities, X3DH‑style handshake, Double Ratchet, sealed sender, attachments, accounts/devices/pairing, groups' inner messages, ML‑KEM hybrid + re‑key, device‑list transparency values, the transparency log's reader, handles' grammar, labels, records, owner rule, stamps and acknowledgement |
+| `app/` | Flutter (Dart), core ~38.4 k lines (`lib/core/`), UI ~10.8 k lines, 121 test files (~74.7 k lines), most driving real clients through a real relay | The orchestrator: encrypted vault, outbox, session/ratchet persistence, multi‑device self‑sync, groups fan‑out, transparency alerts, voice, search, history sync |
 | `server/` | Node.js, `server.js` ~4 500 lines, ~14.5 k lines of tests (245) incl. the clean‑room vector verifier | RAM‑only relay: authenticated mailboxes, sealed‑envelope storage/delivery, push wake, metrics. **Two code paths, and the Redis one is what the public deployment runs** (`MemoryCoordinator` for a single instance, `RedisCoordinator` for several sharing a RAM‑only store — `render.ha.yaml`); a change to queueing, presence, acknowledgement, flush or push handling has to be read in both |
 | `kt/` | Node.js, no dependencies: `server.js` ~1 000 lines and five modules in `lib/` (~3.8 k lines), ~6.5 k lines of tests (116) | The transparency log (§19) and, run with `KT_MODE=handles`, the handle log (§21.5): an RFC 9162 log tree and a sparse map under one signed head, publishes held to the account key's signature (and, for handles, the owner rule), lookups by bucket, and the mirror a witness runs (`lib/mirror.js`, `tools/mirror.js`). G3 and C31 rest on it |
 
@@ -299,7 +299,7 @@ mapping is read out of the table in §3, so it cannot drift from this document.
 The pieces individually:
 
 ```
-# Protocol library: 445 tests incl. the vector freeze
+# Protocol library: 446 tests incl. the vector freeze
 cd protocol && dart test
 
 # Relay: 245 tests incl. 39 clean-room vector replays (no shared code)
@@ -318,7 +318,7 @@ python3 protocol/tool/verify_mldsa.py
 # claiming nothing, with a reason)
 python3 tool/check_audit_scope.py
 
-# App: 120 test files, most driving real clients through the real relay
+# App: 121 test files, most driving real clients through the real relay
 # (each spawns its own relay process; node must be on PATH)
 cd app && flutter test
 
