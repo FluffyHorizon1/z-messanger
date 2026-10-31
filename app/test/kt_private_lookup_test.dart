@@ -907,6 +907,7 @@ void main() {
     await uma.kt.check();
     expect(uma.kt.health, KtHealth.fault);
     expect(uma.kt.fault!.reason, contains('buckets for contacts'));
+    expect(uma.kt.fault!.kind, KtFaultKind.contacts);
     expect(uma.kt.statusOf(vic.myRid), isNull,
         reason: 'nothing was believed from it');
   });

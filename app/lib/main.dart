@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import 'l10n/app_localizations.dart';
+import 'l10n/failure_text.dart';
 import 'l10n/lock_text.dart';
 import 'package:flutter/services.dart'
     show SystemChrome, SystemUiMode, SystemUiOverlayStyle;
@@ -342,7 +343,7 @@ class _BootstrapperState extends State<Bootstrapper>
       if (mounted) {
         setState(() {
           _unlocking = false;
-          _unlockError = UnexpectedUnlockError('$e');
+          _unlockError = UnexpectedUnlockError(e);
         });
       }
     }
@@ -387,7 +388,7 @@ class _BootstrapperState extends State<Bootstrapper>
     } catch (e) {
       setState(() {
         _unlocking = false;
-        _unlockError = UnexpectedUnlockError('$e');
+        _unlockError = UnexpectedUnlockError(e);
       });
     }
   }
@@ -458,10 +459,10 @@ class _BootstrapperState extends State<Bootstrapper>
               body: Center(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
+                  // Said in the reader's language, from what failed —
+                  // never the error's text (`startupFailureText`).
                   child: Text(
-                    _fatal is VaultTooNewException
-                        ? l.vaultTooNew
-                        : l.startupFailed('$_fatal'),
+                    startupFailureText(l, _fatal!),
                     textAlign: TextAlign.center,
                     style: TextStyle(color: ctx.z.danger),
                   ),

@@ -672,6 +672,7 @@ void main() {
     final reason = alice.kt.fault!.reason;
     expect(reason, contains("a contact's label ${hexOf(label).substring(0, 16)}"));
     expect(reason, contains('(v2, entry ${s.logIndex}) is missing from the map'));
+    expect(alice.kt.fault!.kind, KtFaultKind.label);
     expect(alice.kt.sendsHeld(ben.myRid), isTrue);
     await expectLater(alice.sendText(ben.myRid, 'held?'),
         throwsA(isA<KtSendHeldException>()));
@@ -729,6 +730,7 @@ void main() {
         contains("a contact's label ${hexOf(label).substring(0, 16)}"));
     expect(alice.kt.fault!.reason,
         contains('(v2, entry ${s.logIndex}) is v1, entry $v1At, in the map'));
+    expect(alice.kt.fault!.kind, KtFaultKind.label);
     expect(alice.kt.sendsHeld(ben.myRid), isTrue);
     await expectLater(alice.sendText(ben.myRid, 'held?'),
         throwsA(isA<KtSendHeldException>()));
@@ -755,6 +757,7 @@ void main() {
     expect(ben.kt.fault!.reason,
         "this account's label ${hexOf(label).substring(0, 16)} (v1, entry $at) "
         'is missing from the map at size ${dropped.size}');
+    expect(ben.kt.fault!.kind, KtFaultKind.label);
     // The head that left it out is not kept; the one held before is.
     expect(dropped.size, greaterThan(before.size));
     expect(jsonEncode(ben.kt.head!.toJson()), jsonEncode(before.toJson()));
@@ -781,6 +784,7 @@ void main() {
     expect(cleo.kt.fault!.reason,
         contains("this account's label ${hexOf(cleoLabel).substring(0, 16)} "
             '(v2, entry $c2) is v1, entry $c1, in the map'));
+    expect(cleo.kt.fault!.kind, KtFaultKind.label);
     final moved = await log.head();
     expect(jsonEncode(cleo.kt.head!.toJson()), jsonEncode(held.toJson()));
     expect(jsonEncode(cleo.kt.fault!.held!.toJson()), jsonEncode(held.toJson()));
@@ -839,6 +843,7 @@ void main() {
     expect(alice.kt.health, KtHealth.fault);
     expect(alice.kt.fault!.reason, isNot(contains('label')),
         reason: 'the head, not a contact: ${alice.kt.fault!.reason}');
+    expect(alice.kt.fault!.kind, KtFaultKind.head);
     // And the history reset, as Settings asks: Ben is not in the new log,
     // and nothing read of him in the old one is held against it.
     await alice.kt.resetHistory();
@@ -1003,6 +1008,7 @@ void main() {
     expect(alice2.kt.health, KtHealth.fault);
     expect(alice2.kt.fault!.reason,
         contains("a contact's label ${hexOf(label).substring(0, 16)}"));
+    expect(alice2.kt.fault!.kind, KtFaultKind.label);
   });
 
   test('12. this account\'s own lookup answered under a head that does not '
@@ -1045,6 +1051,7 @@ void main() {
         reason: 'until 4.7.2 that answer was read as if its head were the '
             'one held: this account not in the log, and nothing said');
     expect(kt.fault!.reason, 'same size ${held.size}, different roots — a fork');
+    expect(kt.fault!.kind, KtFaultKind.head);
     expect(kt.fault!.held!.sameRootsAs(held), isTrue);
     expect(kt.fault!.served!.sameRootsAs(forked), isTrue);
     expect(kt.head!.sameRootsAs(held), isTrue,

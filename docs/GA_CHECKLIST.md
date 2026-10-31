@@ -209,7 +209,7 @@ as English sentences the same way, and the reason the system's unlock prompt
 gives, which was an English literal in the app‑lock code.
 
 **The app ships in two languages: English and Spanish** (`app_es.arb`,
-855 strings, every claim carried across — `locale_es_test.dart` checks the
+921 strings, every claim carried across — `locale_es_test.dart` checks the
 plurals, the stored system messages and that no string was copied through
 untranslated). Spanish was chosen because it is the second language Z's
 release notes have been published in since 2.0.
@@ -227,8 +227,10 @@ Still English, and named so that nobody meets them by surprise: the title and
 the cancel button of the system's fingerprint prompt — `local_auth`'s
 defaults, which this app cannot word without a dependency it does not declare,
 and the hardware‑bound prompt's title, written in `BioKey.kt`; the two lines of
-the push notification; and the one‑line diagnosis inside the transparency
-log's fault warning, English on purpose, for reports.
+the push notification; and the log client's own words for a transparency
+log fault, English on purpose, for reports — kept behind the fault's details
+in Settings, and since 4.9.0b no longer inside the warning itself, which says
+what the fault is about in the reader's language.
 
 ---
 

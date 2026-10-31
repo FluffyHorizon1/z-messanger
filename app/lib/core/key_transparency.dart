@@ -418,21 +418,61 @@ abstract class KtHost {
   void ktChanged();
 }
 
+/// What a log fault is about ([KtFault.kind]), so that a screen can say it
+/// in its reader's language. The client's own words for it are the
+/// evidence, and stay as they were in [KtFault.reason]: until 2026-10-31
+/// they were all a screen said, in English to every reader.
+enum KtFaultKind {
+  /// The log's signed head: one that cannot be read, is not signed with the
+  /// pinned key, or does not extend the head this device holds — a log gone
+  /// back, a fork, a consistency proof missing, unreadable or not proving it.
+  head,
+
+  /// The log and its pinned witness disagree about the log's history.
+  witness,
+
+  /// An entry this device read in the log's map, left out of it or moved
+  /// back by a head that covers it: the log contradicting itself.
+  label,
+
+  /// The log's answer about this account, its lookup or its history, does
+  /// not verify or cannot be read.
+  ownAccount,
+
+  /// The log's answers for checking the contacts — the bucket asked to size
+  /// the log, the contacts' buckets and the entries they name — do not
+  /// verify or cannot be read.
+  contacts,
+
+  /// A fault recorded before faults had a kind.
+  other,
+}
+
 class KtFault {
+  final KtFaultKind kind;
   final String reason;
   final KtTreeHead? held;
   final KtTreeHead? served;
   final int atMs;
-  KtFault({required this.reason, this.held, this.served, required this.atMs});
+  KtFault(
+      {required this.kind,
+      required this.reason,
+      this.held,
+      this.served,
+      required this.atMs});
 
   Map<String, Object?> toJson() => {
+        'k': kind.name,
         'r': reason,
         if (held != null) 'held': held!.toJson(),
         if (served != null) 'served': served!.toJson(),
         'at': atMs,
       };
 
+  /// A fault as [toJson] stored it; one stored before faults had a kind, or
+  /// with one this build does not know, is [KtFaultKind.other].
   static KtFault fromJson(Map<String, Object?> j) => KtFault(
+        kind: KtFaultKind.values.asNameMap()[j['k']] ?? KtFaultKind.other,
         reason: (j['r'] as String?) ?? '',
         held: j['held'] == null ? null : KtTreeHead.fromJson((j['held'] as Map).cast<String, Object?>()),
         served: j['served'] == null ? null : KtTreeHead.fromJson((j['served'] as Map).cast<String, Object?>()),
@@ -1221,7 +1261,7 @@ class KeyTransparency {
       r = await ktVerifyLookup(await KtLookup.fromJson(j),
           label: label, logPub: logPub);
     } on KtVerifyException catch (e) {
-      await _setFault('lookup for this account: ${e.reason}');
+      await _setFault(KtFaultKind.ownAccount, 'lookup for this account: ${e.reason}');
       return null;
     }
     if (!await _adopt(r.head, logPub)) return null;
@@ -1244,10 +1284,10 @@ class KeyTransparency {
       try {
         hh = KtTreeHead.fromJson((hj['sth'] as Map).cast<String, Object?>());
       } on KtVerifyException catch (e) {
-        await _setFault('history for this account: ${e.reason}');
+        await _setFault(KtFaultKind.ownAccount, 'history for this account: ${e.reason}');
         return null;
       } catch (_) {
-        await _setFault('history for this account could not be read');
+        await _setFault(KtFaultKind.ownAccount, 'history for this account could not be read');
         return null;
       }
       if (!await _adopt(hh, logPub)) return null;
@@ -1260,10 +1300,10 @@ class KeyTransparency {
           e = await ktVerifyHistoryItem((item as Map).cast<String, Object?>(),
               head: hh, label: label);
         } on KtVerifyException catch (err) {
-          await _setFault('history for this account: ${err.reason}');
+          await _setFault(KtFaultKind.ownAccount, 'history for this account: ${err.reason}');
           return null;
         } catch (_) {
-          await _setFault('history for this account could not be read');
+          await _setFault(KtFaultKind.ownAccount, 'history for this account could not be read');
           return null;
         }
         history.add(await entry(e));
@@ -1490,8 +1530,10 @@ class KeyTransparency {
     await vault.kvPut('kt_last_fail_ms', '$lastFailMs', sensitive: false);
   }
 
-  Future<void> _setFault(String reason, {KtTreeHead? served}) async {
-    fault = KtFault(reason: reason, held: head, served: served, atMs: now());
+  Future<void> _setFault(KtFaultKind kind, String reason,
+      {KtTreeHead? served}) async {
+    fault = KtFault(
+        kind: kind, reason: reason, held: head, served: served, atMs: now());
     await vault.kvPut('kt_fault', jsonEncode(fault!.toJson()), sensitive: false);
   }
 
@@ -1510,7 +1552,7 @@ class KeyTransparency {
       await vault.kvPut('kt_head', jsonEncode(before.toJson()),
           sensitive: false);
     }
-    await _setFault(reason, served: served);
+    await _setFault(KtFaultKind.label, reason, served: served);
   }
 
   /// Steps 1–3 of §19.5 for the log's current head. True when a head was
@@ -1525,7 +1567,7 @@ class KeyTransparency {
     try {
       fresh = KtTreeHead.fromJson(j);
     } on KtVerifyException catch (e) {
-      await _setFault('the head could not be read: ${e.reason}');
+      await _setFault(KtFaultKind.head, 'the head could not be read: ${e.reason}');
       return false;
     }
     final rb = j['bucketBits'];
@@ -1568,14 +1610,14 @@ class KeyTransparency {
       try {
         consistency = [for (final h in (c['proof'] as List)) unb64(h as String)];
       } catch (_) {
-        await _setFault('the consistency proof could not be read', served: fresh);
+        await _setFault(KtFaultKind.head, 'the consistency proof could not be read', served: fresh);
         return false;
       }
     }
     try {
       await ktCheckHeadExtends(held: held, fresh: fresh, consistency: consistency, logPub: logPub);
     } on KtVerifyException catch (e) {
-      await _setFault(e.reason, served: fresh);
+      await _setFault(KtFaultKind.head, e.reason, served: fresh);
       return false;
     }
     if (now() - fresh.ts > staleHead.inMilliseconds) {
@@ -1655,7 +1697,7 @@ class KeyTransparency {
     final current = now() - rec.head.ts <= witnessStale.inMilliseconds;
     if (rec.head.size == fresh.size) {
       if (!rec.head.sameRootsAs(fresh)) {
-        await _setFault('the witness saw a different head of size ${fresh.size}', served: fresh);
+        await _setFault(KtFaultKind.witness, 'the witness saw a different head of size ${fresh.size}', served: fresh);
         return false;
       }
       if (current) await _witnessAgreed(asked);
@@ -1679,7 +1721,7 @@ class KeyTransparency {
         secondRoot: fresh.logRoot,
         proof: proof);
     if (!ok) {
-      await _setFault('the log\'s head does not extend the one its witness verified', served: fresh);
+      await _setFault(KtFaultKind.witness, 'the log\'s head does not extend the one its witness verified', served: fresh);
       return false;
     }
     if (current) await _witnessAgreed(asked);
@@ -1734,7 +1776,7 @@ class KeyTransparency {
           secondRoot: witnessed.logRoot,
           proof: proof);
       if (!ok) {
-        await _setFault(
+        await _setFault(KtFaultKind.witness,
             'the log\'s head of size ${fresh.size} is not a prefix of the ${witnessed.size} its witness verified',
             served: fresh);
         return false;
@@ -1752,7 +1794,7 @@ class KeyTransparency {
     }
     if (!await current.verify(logPub)) return true;
     if (current.size < witnessed.size) {
-      await _setFault(
+      await _setFault(KtFaultKind.witness,
           'the log serves a head of size ${current.size}, smaller than the ${witnessed.size} its witness verified',
           served: current);
       return false;
@@ -1978,10 +2020,10 @@ class KeyTransparency {
         v = await ktVerifyBucketAnswer(j,
             asked: [q], logPub: logPub, mode: KtLogMode.kt);
       } on KtVerifyException catch (e) {
-        await _setFault('a bucket asked to size the log: ${e.reason}');
+        await _setFault(KtFaultKind.contacts, 'a bucket asked to size the log: ${e.reason}');
         return null;
       } catch (_) {
-        await _setFault('a bucket asked to size the log could not be read');
+        await _setFault(KtFaultKind.contacts, 'a bucket asked to size the log could not be read');
         return null;
       }
       if (!await _adopt(v.head, logPub)) return null;
@@ -2048,7 +2090,7 @@ class KeyTransparency {
       // on a phone, at a moment the user did not choose.
       final served = j['buckets'];
       if (served is! List || served.length != chunk.length) {
-        await _setFault(
+        await _setFault(KtFaultKind.contacts,
             'buckets for contacts: not the ${chunk.length} buckets asked for');
         return null;
       }
@@ -2061,10 +2103,10 @@ class KeyTransparency {
             'buckets': [served[n]],
           }, asked: [chunk[n]], logPub: logPub, mode: KtLogMode.kt);
         } on KtVerifyException catch (e) {
-          await _setFault('buckets for contacts: ${e.reason}');
+          await _setFault(KtFaultKind.contacts, 'buckets for contacts: ${e.reason}');
           return null;
         } catch (_) {
-          await _setFault('buckets for contacts could not be read');
+          await _setFault(KtFaultKind.contacts, 'buckets for contacts could not be read');
           return null;
         }
         at = v.head;
@@ -2100,10 +2142,10 @@ class KeyTransparency {
       try {
         v = await ktVerifyEntriesAnswer(r.$2!, asked: page, logPub: logPub);
       } on KtVerifyException catch (e) {
-        await _setFault('entries for contacts: ${e.reason}');
+        await _setFault(KtFaultKind.contacts, 'entries for contacts: ${e.reason}');
         return null;
       } catch (_) {
-        await _setFault('entries for contacts could not be read');
+        await _setFault(KtFaultKind.contacts, 'entries for contacts could not be read');
         return null;
       }
       if (!await _adopt(v.head, logPub)) return null;
@@ -2112,7 +2154,7 @@ class KeyTransparency {
         if (leaf == null ||
             !constantTimeEquals(e.label, leaf.label) ||
             e.version != leaf.version) {
-          await _setFault(
+          await _setFault(KtFaultKind.contacts,
               'the entry at index ${e.index} is not the one the map names for its label');
           return null;
         }
@@ -2397,7 +2439,7 @@ class KeyTransparency {
     try {
       r = await ktVerifyLookup(await KtLookup.fromJson(j), label: label, logPub: logPub);
     } on KtVerifyException catch (e) {
-      await _setFault('lookup for this account: ${e.reason}');
+      await _setFault(KtFaultKind.ownAccount, 'lookup for this account: ${e.reason}');
       return;
     }
     // The lookup's head is held to steps 1–3 before anything under it is
@@ -2526,10 +2568,10 @@ class KeyTransparency {
       try {
         hh = KtTreeHead.fromJson((hj['sth'] as Map).cast<String, Object?>());
       } on KtVerifyException catch (e) {
-        await _setFault('history for this account: ${e.reason}');
+        await _setFault(KtFaultKind.ownAccount, 'history for this account: ${e.reason}');
         return false;
       } catch (_) {
-        await _setFault('history for this account could not be read');
+        await _setFault(KtFaultKind.ownAccount, 'history for this account could not be read');
         return false;
       }
       if (!await _adopt(hh, logPub)) return false;
@@ -2542,10 +2584,10 @@ class KeyTransparency {
         try {
           out.add(await ktVerifyHistoryItem((item as Map).cast<String, Object?>(), head: hh, label: label));
         } on KtVerifyException catch (err) {
-          await _setFault('history for this account: ${err.reason}');
+          await _setFault(KtFaultKind.ownAccount, 'history for this account: ${err.reason}');
           return false;
         } catch (_) {
-          await _setFault('history for this account could not be read');
+          await _setFault(KtFaultKind.ownAccount, 'history for this account could not be read');
           return false;
         }
       }

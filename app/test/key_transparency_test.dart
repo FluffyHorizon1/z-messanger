@@ -605,6 +605,7 @@ void main() {
     await alice.kt.check();
     expect(alice.kt.health, KtHealth.fault);
     expect(alice.kt.fault!.reason, contains('shrank'));
+    expect(alice.kt.fault!.kind, KtFaultKind.head);
     // Nothing new is confirmed while the fault stands: the held head is the real one.
     expect(alice.kt.head!.size, 2);
     // The fork grows past the real log's size: still refused, now as a fork —
@@ -618,6 +619,7 @@ void main() {
     await alice.kt.check();
     expect(alice.kt.health, KtHealth.fault);
     expect(alice.kt.fault!.reason, contains('fork'));
+    expect(alice.kt.fault!.kind, KtFaultKind.head);
     expect(alice.kt.head!.size, 2);
     // The user resets the log's history (a deliberate change of log): the
     // fork's head is accepted as the new base.

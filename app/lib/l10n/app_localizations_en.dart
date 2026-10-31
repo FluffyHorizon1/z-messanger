@@ -30,9 +30,28 @@ class AppLocalizationsEn extends AppLocalizations {
       'The data on this device was saved by a newer version of Z. Update Z to open it — nothing has been changed.';
 
   @override
-  String startupFailed(String detail) {
-    return 'Z could not start:\n$detail';
-  }
+  String get startupFailedKey =>
+      'Z could not unlock its storage on this device with the key this device keeps for it, so it cannot open your chats. Nothing has been deleted.';
+
+  @override
+  String get startupFailedStorage =>
+      'Z could not open its storage on this device. Check that the device has space free, then start Z again.';
+
+  @override
+  String get startupFailedOther =>
+      'Z could not start on this device. Close it and start it again.';
+
+  @override
+  String get unlockFailedStorage =>
+      'This device could not open Z\'s storage. Check that it has space free, then try again.';
+
+  @override
+  String get unlockFailedKeystore =>
+      'This device\'s secure storage did not answer. Try again.';
+
+  @override
+  String get unlockFailedOther =>
+      'Z could not unlock. Try again; if it keeps failing, close Z and start it again.';
 
   @override
   String get unlockShowPassphrase => 'Show passphrase';
@@ -1921,9 +1940,32 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String homeKtFault(String reason) {
-    return 'The transparency log has shown two different histories: $reason. Nothing new is being confirmed. Settings › Transparency log has the details.';
-  }
+  String get homeKtFault =>
+      'Nothing new is being confirmed. Settings › Transparency log has the details.';
+
+  @override
+  String get ktFaultHead =>
+      'The transparency log served a signed head this device cannot accept: it cannot be read, is not signed with the log\'s key, or does not continue the history this device already holds.';
+
+  @override
+  String get ktFaultWitness =>
+      'The transparency log and its witness disagree about the log\'s history.';
+
+  @override
+  String get ktFaultLabel =>
+      'The transparency log contradicts itself: an entry it served before is now missing from it, or has gone back to an older one.';
+
+  @override
+  String get ktFaultOwnAccount =>
+      'The transparency log\'s answer about your own account does not verify, or cannot be read.';
+
+  @override
+  String get ktFaultContacts =>
+      'The transparency log\'s answers for checking your contacts do not verify, or cannot be read.';
+
+  @override
+  String get ktFaultOther =>
+      'The transparency log served something this device cannot accept.';
 
   @override
   String homeKtUnreachable(String when) {
@@ -1995,9 +2037,18 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String stKtHealthFault(String reason) {
-    return 'Fault: $reason';
-  }
+  String get stKtFaultDetails => 'What the log client recorded';
+
+  @override
+  String get stKtFaultDetailsHelp =>
+      'Its own words for this fault, to pass on to whoever runs the log';
+
+  @override
+  String get stKtFaultDetailsBody =>
+      'The log client\'s own words for this fault, as it recorded them. Copy puts them on the clipboard with the heads it compared, for whoever runs the log or reviews this device.';
+
+  @override
+  String get stKtFaultCopied => 'Copied, with the heads the client compared.';
 
   @override
   String get stKtWitnessCheck => 'Witness check';

@@ -1,5 +1,7 @@
-// What four screens say when something they started fails: the first
-// screen, Add contact, Backup and Settings (4.9.0).
+// What screens say when something they started fails: the first screen,
+// Add contact, Backup and Settings (4.9.0); and the screen Z shows when it
+// cannot start, the unlock screen, and a transparency log fault in Settings
+// and on the home screen (4.9.0b).
 //
 // Each of them showed the exception it caught, in English whatever the
 // reader's language: an identity or a contact the store would not take as
@@ -8,7 +10,11 @@
 // "Offline (SocketException: Connection refused (OS Error: ...))", and a
 // mistyped recovery code as the parser's English. Each says why in the
 // reader's words now (`lib/l10n/failure_text.dart`), and none shows an
-// exception's text.
+// exception's text. So, since 4.9.0b, do the screen Z shows when it cannot
+// start ("Z could not start:" and the error), the unlock screen (the error,
+// as it came), and a log fault, which showed the log client's English words
+// for it (`lib/l10n/kt_fault_text.dart`): those words are the evidence, and
+// Settings keeps them, untranslated, behind the fault's details.
 //
 // Criteria 1 to 5 drive a real screen into the failure, in English and in
 // Spanish, and read the words they expect from the ARB files as they run,
@@ -30,11 +36,26 @@
 //      relay is offline — it cannot be reached, or this device could not
 //      sign in to it;
 //   6. every failure's words, in English and in Spanish, from what failed,
-//      and no exception text in any of them.
+//      and no exception text in any of them;
+//   7. the app, started on a store whose database cannot be opened, or that
+//      the key this device keeps does not open, says so, in English and in
+//      Spanish, and not as the error;
+//   8. the unlock screen, given the passphrase of a store whose database
+//      cannot be opened, says so, in English and in Spanish, and not as the
+//      error;
+//   9. Settings and the home screen say what a log fault is about — a log
+//      gone back, an answer about this account that is no answer — in
+//      English and in Spanish, with none of the log client's own words; its
+//      details show those words as recorded, untranslated, and Copy carries
+//      them with the heads the client compared;
+//  10. every startup, unlock and log fault's words, in English and in
+//      Spanish, from what failed, and a fault stored before faults had a
+//      kind read as one of no kind, its words and heads as they were.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -51,12 +72,16 @@ import 'package:zapp/core/transport.dart';
 import 'package:zapp/core/vault.dart';
 import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/l10n/failure_text.dart';
+import 'package:zapp/l10n/kt_fault_text.dart';
 import 'package:zapp/l10n/refusal_text.dart';
+import 'package:zapp/main.dart' as zmain;
 import 'package:zapp/ui/add_contact_screen.dart';
 import 'package:zapp/ui/backup_screen.dart';
+import 'package:zapp/ui/home_screen.dart';
 import 'package:zapp/ui/onboarding_screen.dart';
 import 'package:zapp/ui/settings_screen.dart';
 import 'package:zapp/ui/theme.dart';
+import 'package:zapp/ui/unlock_screen.dart';
 
 /// The file picker as Android's hands a pick over (file_picker 8.3.7): the
 /// chosen file copied into the cache, the copy what the app is handed. A
@@ -129,6 +154,48 @@ class NoBoundKeys implements BoundKeyStore {
       throw const BoundKeyException('unavailable');
   @override
   Future<void> forget() async {}
+}
+
+/// A transparency log on loopback that this file answers for: the head it
+/// is given, the lookup answer it is given, and nothing else.
+class FakeLog implements KtFetcher {
+  String? sth;
+  String? lookup;
+
+  @override
+  Future<KtResponse> get(Uri url) async {
+    if (url.path.endsWith('/kt/v1/sth')) {
+      return sth == null ? KtResponse(503, '{}') : KtResponse(200, sth!);
+    }
+    if (url.path.contains('/kt/v1/lookup/') && lookup != null) {
+      return KtResponse(200, lookup!);
+    }
+    return KtResponse(404, '{}');
+  }
+
+  @override
+  Future<KtResponse> post(Uri url, String body) async => KtResponse(404, '{}');
+}
+
+/// A head of [size] that [key] really signed, so only what it says is in
+/// doubt.
+Future<KtTreeHead> signedHead(SimpleKeyPair key,
+    {required int size, required int ts}) async {
+  final unsigned = KtTreeHead(
+    size: size,
+    logRoot: Uint8List(32)..[0] = size,
+    mapRoot: Uint8List(32)..[1] = size,
+    ts: ts,
+    sig: Uint8List(64),
+  );
+  final sig = await Ed25519().sign(unsigned.signingInput, keyPair: key);
+  return KtTreeHead(
+    size: size,
+    logRoot: unsigned.logRoot,
+    mapRoot: unsigned.mapRoot,
+    ts: ts,
+    sig: Uint8List.fromList(sig.bytes),
+  );
 }
 
 /// Pump until [cond] holds, letting real work run in between: a widget
@@ -220,6 +287,42 @@ void main() {
           await svc.vault.db.close();
         } catch (_) {}
       });
+
+  /// A service over its own vault whose transparency log is [log], on
+  /// loopback under [config]; its relay a closed port.
+  Future<ChatService> ktService(
+      String name, FakeLog log, KtConfig config) async {
+    final vault = await Vault.open(rootOverride: temp(name));
+    final id = await ZIdentity.generate();
+    await vault.kvPut('identity', jsonEncode(id.toJson()));
+    return ChatService.init(
+        vault: vault,
+        identity: id,
+        displayName: name,
+        transport: Transport(identity: id, serverUrl: 'ws://127.0.0.1:1'),
+        ktConfig: config,
+        ktFetcher: log);
+  }
+
+  /// The app as it starts, its store under [dir]: the platform's
+  /// application-support directory, here a temp one.
+  void startOn(WidgetTester t, Directory dir) {
+    const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
+    t.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathChannel, (call) async => dir.path);
+    addTearDown(() => t.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathChannel, null));
+    // An operating system with no audio backend to load, so that no notice
+    // about one sits above the screen.
+    zmain.startApp(operatingSystem: 'android');
+  }
+
+  /// Where the database of the store under [z] was, a directory: SQLite
+  /// cannot open it.
+  Future<void> spoilDatabase(Directory z) async {
+    await File('${z.path}/z.db').delete();
+    await Directory('${z.path}/z.db').create();
+  }
 
   /// Every line of text on the screen, for a failure to say what it showed.
   List<String> onScreen() => [
@@ -663,5 +766,298 @@ void main() {
       expect(l.recoveryCodeLength(25, 7), contains('7'));
       expect(l.recoveryCodeCharacter('U'), contains('U'));
     }
+  });
+
+  testWidgets(
+      '7. the app, started on a store it cannot open, says why in the '
+      "reader's language and not as the error", (t) async {
+    addTearDown(t.platformDispatcher.clearLocalesTestValue);
+    for (final (what, spoil, key)
+        in <(String, Future<void> Function(Directory), String)>[
+      (
+        'a store whose database cannot be opened',
+        spoilDatabase,
+        'startupFailedStorage',
+      ),
+      (
+        'a store the key this device keeps does not open',
+        // Another key where this device keeps its own: in a test, the file
+        // the system keystore falls back to.
+        (z) => File('${z.path}/.device').writeAsString(b64(randomBytes(32))),
+        'startupFailedKey',
+      ),
+    ]) {
+      final dir = temp('start');
+      await t.runAsync(() async {
+        final z = Directory('${dir.path}/z');
+        final v = await Vault.open(rootOverride: z);
+        await v.db.close();
+        await spoil(z);
+      });
+      startOn(t, dir);
+      await says(t, words('en', key), 'en: $what');
+      t.platformDispatcher.localesTestValue = const [Locale('es')];
+      await t.pump();
+      await says(t, words('es', key), 'es: $what');
+      t.platformDispatcher.clearLocalesTestValue();
+      await t.pumpWidget(const SizedBox());
+    }
+  });
+
+  testWidgets(
+      '8. the unlock screen, given the passphrase of a store whose database '
+      "cannot be opened, says so in the reader's language and not as the "
+      'error', (t) async {
+    addTearDown(t.platformDispatcher.clearLocalesTestValue);
+    const passphrase = 'a passphrase of some length';
+    final dir = temp('unlock');
+    await t.runAsync(() async {
+      final z = Directory('${dir.path}/z');
+      final v = await Vault.open(rootOverride: z);
+      await v.setPassphrase(passphrase);
+      await v.db.close();
+      await spoilDatabase(z);
+    });
+    startOn(t, dir);
+    final en = lookupAppLocalizations(const Locale('en'));
+    await settleUntil(
+        t, () => find.byType(UnlockScreen).evaluate().isNotEmpty,
+        what: 'the unlock screen');
+    await t.enterText(find.byType(TextField), passphrase);
+    await t.tap(find.widgetWithText(FilledButton, en.unlockTitle));
+    const what = 'a store whose database cannot be opened';
+    await says(t, words('en', 'unlockFailedStorage'), 'en: $what');
+    t.platformDispatcher.localesTestValue = const [Locale('es')];
+    await t.pump();
+    await says(t, words('es', 'unlockFailedStorage'), 'es: $what');
+    t.platformDispatcher.clearLocalesTestValue();
+    await t.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '9. Settings and the home screen say what a log fault is about, and '
+      "keep the log client's own words behind its details", (t) async {
+    String? copied;
+    t.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied = (call.arguments as Map)['text'] as String?;
+      }
+      return null;
+    });
+    addTearDown(() => t.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+    final key = (await t.runAsync(() => Ed25519().newKeyPair()))!;
+    final logPub = (await t.runAsync(() async =>
+        Uint8List.fromList((await key.extractPublicKey()).bytes)))!;
+    final config =
+        KtConfig(logUrl: 'http://127.0.0.1:9', logPubB64: b64(logPub));
+    for (final (what, words0, kind, reason, heads, raise)
+        in <(
+      String,
+      String,
+      String,
+      String,
+      (int?, int?),
+      Future<void> Function(FakeLog, ChatService),
+    )>[
+      (
+        'a log gone back',
+        'ktFaultHead',
+        'head',
+        'the log shrank: held size 2, served 1',
+        (2, 1),
+        (log, svc) async {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          log.sth = jsonEncode(
+              (await signedHead(key, size: 2, ts: now - 2000)).toJson());
+          await svc.kt.check();
+          log.sth = jsonEncode(
+              (await signedHead(key, size: 1, ts: now - 1000)).toJson());
+          await svc.kt.check();
+        },
+      ),
+      (
+        'an answer about this account that is no answer',
+        'ktFaultOwnAccount',
+        'ownAccount',
+        'lookup for this account: lookup: sth and map are required',
+        (1, null),
+        (log, svc) async {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          log.sth = jsonEncode(
+              (await signedHead(key, size: 1, ts: now - 1000)).toJson());
+          log.lookup = '{}';
+          await svc.kt.check();
+        },
+      ),
+    ]) {
+      final log = FakeLog();
+      final svc = (await t.runAsync(() async {
+        final svc = await ktService('Kai_$kind', log, config);
+        await raise(log, svc);
+        return svc;
+      }))!;
+      expect(svc.kt.fault?.reason, reason, reason: '$what: the fault raised');
+      // Spanish first: where the client's English showed through.
+      for (final lang in ['es', 'en']) {
+        final l = lookupAppLocalizations(Locale(lang));
+        final dir = temp('kt_$lang');
+        final prefs = AppPrefs(root: dir);
+        await t.runAsync(prefs.load);
+        await t.pumpWidget(MultiProvider(
+          providers: [
+            ChangeNotifierProvider<ChatService>.value(value: svc),
+            ChangeNotifierProvider<Transport>.value(value: svc.transport),
+            ChangeNotifierProvider<PushService>.value(
+                value: PushService(transport: svc.transport, vault: svc.vault)),
+            ChangeNotifierProvider<AppLock>.value(
+                value: AppLock(root: dir, store: MemorySecretStore())),
+            ChangeNotifierProvider<AppPrefs>.value(value: prefs),
+          ],
+          child: app(lang, const SettingsScreen()),
+        ));
+        await settleUntil(
+            t, () => find.text(l.stSettings).evaluate().isNotEmpty,
+            what: '$lang: the Settings screen');
+        await t.scrollUntilVisible(find.text(l.stKtStatus), 200,
+            scrollable: find.byType(Scrollable).first);
+        await t.pump();
+        await says(t, words(lang, words0), '$lang, $what: Settings');
+        expect(find.textContaining(reason), findsNothing,
+            reason: "$lang, $what: none of the client's words on the screen");
+        // Its details: the client's words, as recorded, and Copy.
+        final details = find.text(words(lang, 'stKtFaultDetails'));
+        await t.scrollUntilVisible(details, 200,
+            scrollable: find.byType(Scrollable).first);
+        await t.pump();
+        await t.tap(details);
+        await settleUntil(t, () => find.text(reason).evaluate().isNotEmpty,
+            what: '$lang, $what: its details');
+        expect(find.text(words(lang, 'stKtFaultDetailsBody')), findsOneWidget);
+        copied = null;
+        await t.tap(find.descendant(
+            of: find.byType(AlertDialog), matching: find.text(l.copy)));
+        await settleUntil(t, () => copied != null,
+            what: '$lang, $what: the details copied');
+        final j = jsonDecode(copied!) as Map;
+        expect([j['k'], j['r']], [kind, reason]);
+        expect([(j['held'] as Map?)?['size'], (j['served'] as Map?)?['size']],
+            [heads.$1, heads.$2],
+            reason: 'with the heads the client compared');
+        await t.tap(find.descendant(
+            of: find.byType(AlertDialog), matching: find.text(l.ok)));
+        await t.pump();
+        // The home screen's alert.
+        await t.pumpWidget(MultiProvider(
+          providers: [
+            ChangeNotifierProvider<ChatService>.value(value: svc),
+            ChangeNotifierProvider<Transport>.value(value: svc.transport),
+          ],
+          child: app(lang, const HomeScreen()),
+        ));
+        await says(
+            t,
+            [words(lang, words0), words(lang, 'homeKtFault')].join(' '),
+            '$lang, $what: the home screen');
+        expect(find.textContaining(reason), findsNothing,
+            reason: "$lang, $what: none of the client's words on the screen");
+        await t.pumpWidget(const SizedBox());
+      }
+      await stop(t, svc);
+    }
+  });
+
+  test(
+      '10. every startup, unlock and log fault says what failed in English '
+      'and in Spanish, and a fault stored before faults had a kind reads as '
+      'one of no kind', () async {
+    final en = lookupAppLocalizations(const Locale('en'));
+    final es = lookupAppLocalizations(const Locale('es'));
+    for (final l in [en, es]) {
+      final checked = <(String, String)>[
+        // The screen Z shows when it cannot start.
+        for (final (error, want) in <(Object, String)>[
+          (const VaultTooNewException(14, 13), l.vaultTooNew),
+          (WrongPassphraseException(), l.startupFailedKey),
+          (const FileSystemException('cannot open'), l.startupFailedStorage),
+          (StateError('something nobody expected'), l.startupFailedOther),
+        ])
+          (startupFailureText(l, error), want),
+        // The unlock screen, for what is not a wrong passphrase.
+        for (final (error, want) in <(Object, String)>[
+          (const FileSystemException('cannot open'), l.unlockFailedStorage),
+          (PlatformException(code: 'NotAvailable'), l.unlockFailedKeystore),
+          (const BoundKeyException('failed', 'detail'), l.unlockFailedKeystore),
+          (StateError('something nobody expected'), l.unlockFailedOther),
+        ])
+          (unlockFailureText(l, error), want),
+        // A log fault, by its kind; none, as one of no kind.
+        for (final (kind, want) in <(KtFaultKind, String)>[
+          (KtFaultKind.head, l.ktFaultHead),
+          (KtFaultKind.witness, l.ktFaultWitness),
+          (KtFaultKind.label, l.ktFaultLabel),
+          (KtFaultKind.ownAccount, l.ktFaultOwnAccount),
+          (KtFaultKind.contacts, l.ktFaultContacts),
+          (KtFaultKind.other, l.ktFaultOther),
+        ])
+          (
+            ktFaultText(l,
+                KtFault(kind: kind, reason: 'the log shrank', atMs: 0)),
+            want
+          ),
+        (ktFaultText(l, null), l.ktFaultOther),
+      ];
+      for (final (got, want) in checked) {
+        expect(got, want);
+      }
+      for (final (s, _) in checked) {
+        expect(s, isNot(matches(rawText)), reason: s);
+        expect(s, isNot(contains('nobody expected')), reason: s);
+        expect(s, isNot(contains('the log shrank')), reason: s);
+      }
+    }
+    // Each language has its own words for each.
+    for (final (a, b) in [
+      (es.startupFailedKey, en.startupFailedKey),
+      (es.startupFailedStorage, en.startupFailedStorage),
+      (es.startupFailedOther, en.startupFailedOther),
+      (es.unlockFailedStorage, en.unlockFailedStorage),
+      (es.unlockFailedKeystore, en.unlockFailedKeystore),
+      (es.unlockFailedOther, en.unlockFailedOther),
+      (es.ktFaultHead, en.ktFaultHead),
+      (es.ktFaultWitness, en.ktFaultWitness),
+      (es.ktFaultLabel, en.ktFaultLabel),
+      (es.ktFaultOwnAccount, en.ktFaultOwnAccount),
+      (es.ktFaultContacts, en.ktFaultContacts),
+      (es.ktFaultOther, en.ktFaultOther),
+      (es.homeKtFault, en.homeKtFault),
+    ]) {
+      expect(a, isNot(b), reason: 'the Spanish has words of its own');
+    }
+    // A fault stored before faults had a kind, or with one this build does
+    // not know: of no kind, its words as they were.
+    final old = KtFault.fromJson(
+        {'r': 'the log shrank: held size 2, served 1', 'at': 5});
+    expect([old.kind, old.reason, old.atMs],
+        [KtFaultKind.other, 'the log shrank: held size 2, served 1', 5]);
+    expect(KtFault.fromJson({'k': 'newer', 'r': 'x', 'at': 1}).kind,
+        KtFaultKind.other);
+    // Stored and read back, every part of the evidence is as it was.
+    final key = await Ed25519().newKeyPair();
+    final held = await signedHead(key, size: 3, ts: 7);
+    final served = await signedHead(key, size: 2, ts: 8);
+    final fault = KtFault(
+        kind: KtFaultKind.witness,
+        reason: 'the witness saw a different head of size 3',
+        held: held,
+        served: served,
+        atMs: 9);
+    final back = KtFault.fromJson(
+        (jsonDecode(jsonEncode(fault.toJson())) as Map).cast<String, Object?>());
+    expect([back.kind, back.reason, back.atMs],
+        [fault.kind, fault.reason, fault.atMs]);
+    expect(back.held!.toJson(), held.toJson());
+    expect(back.served!.toJson(), served.toJson());
   });
 }

@@ -31,9 +31,28 @@ class AppLocalizationsEs extends AppLocalizations {
       'Los datos de este dispositivo los guardó una versión más reciente de Z. Actualiza Z para abrirlos; no se ha cambiado nada.';
 
   @override
-  String startupFailed(String detail) {
-    return 'Z no pudo iniciarse:\n$detail';
-  }
+  String get startupFailedKey =>
+      'Z no pudo desbloquear su almacenamiento en este dispositivo con la clave que este dispositivo guarda para él, así que no puede abrir tus chats. No se ha borrado nada.';
+
+  @override
+  String get startupFailedStorage =>
+      'Z no pudo abrir su almacenamiento en este dispositivo. Comprueba que el dispositivo tiene espacio libre y vuelve a iniciar Z.';
+
+  @override
+  String get startupFailedOther =>
+      'Z no pudo iniciarse en este dispositivo. Ciérralo y vuelve a iniciarlo.';
+
+  @override
+  String get unlockFailedStorage =>
+      'Este dispositivo no pudo abrir el almacenamiento de Z. Comprueba que tiene espacio libre y vuelve a intentarlo.';
+
+  @override
+  String get unlockFailedKeystore =>
+      'El almacenamiento seguro de este dispositivo no respondió. Vuelve a intentarlo.';
+
+  @override
+  String get unlockFailedOther =>
+      'Z no pudo desbloquearse. Vuelve a intentarlo; si sigue fallando, cierra Z y vuelve a iniciarlo.';
 
   @override
   String get unlockShowPassphrase => 'Mostrar la frase de contraseña';
@@ -1941,9 +1960,32 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
-  String homeKtFault(String reason) {
-    return 'El registro de transparencia ha mostrado dos historiales distintos: $reason. No se está confirmando nada nuevo. Ajustes › Registro de transparencia tiene los detalles.';
-  }
+  String get homeKtFault =>
+      'No se está confirmando nada nuevo. Ajustes › Registro de transparencia tiene los detalles.';
+
+  @override
+  String get ktFaultHead =>
+      'El registro de transparencia sirvió una cabecera firmada que este dispositivo no puede aceptar: no se puede leer, no está firmada con la clave del registro o no continúa el historial que este dispositivo ya tiene.';
+
+  @override
+  String get ktFaultWitness =>
+      'El registro de transparencia y su testigo no están de acuerdo sobre el historial del registro.';
+
+  @override
+  String get ktFaultLabel =>
+      'El registro de transparencia se contradice: una entrada que sirvió antes ya no está en él, o ha vuelto a una anterior.';
+
+  @override
+  String get ktFaultOwnAccount =>
+      'La respuesta del registro de transparencia sobre tu propia cuenta no se verifica o no se puede leer.';
+
+  @override
+  String get ktFaultContacts =>
+      'Las respuestas del registro de transparencia para comprobar a tus contactos no se verifican o no se pueden leer.';
+
+  @override
+  String get ktFaultOther =>
+      'El registro de transparencia sirvió algo que este dispositivo no puede aceptar.';
 
   @override
   String homeKtUnreachable(String when) {
@@ -2016,9 +2058,19 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
-  String stKtHealthFault(String reason) {
-    return 'Fallo: $reason';
-  }
+  String get stKtFaultDetails => 'Lo que anotó el cliente del registro';
+
+  @override
+  String get stKtFaultDetailsHelp =>
+      'Sus propias palabras sobre este fallo, para pasárselas a quien opera el registro';
+
+  @override
+  String get stKtFaultDetailsBody =>
+      'Las propias palabras del cliente del registro sobre este fallo, tal como las anotó. «Copiar» las pone en el portapapeles con las cabeceras que comparó, para quien opera el registro o revisa este dispositivo.';
+
+  @override
+  String get stKtFaultCopied =>
+      'Copiado, con las cabeceras que comparó el cliente.';
 
   @override
   String get stKtWitnessCheck => 'Comprobación con el testigo';

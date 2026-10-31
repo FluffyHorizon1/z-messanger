@@ -360,6 +360,7 @@ void main() {
             'recorded as agreeing, because the record verified, before it was compared)');
     expect(kt.fault, isNotNull);
     expect(kt.fault!.reason, contains('different head'));
+    expect(kt.fault!.kind, KtFaultKind.witness);
   });
 
   test('6. a witness address off loopback stops a test process making any request', () async {
@@ -506,6 +507,7 @@ void main() {
       await kt.check();
       expect(kt.fault, isNotNull);
       expect(kt.fault!.reason, contains('is not a prefix of the'));
+      expect(kt.fault!.kind, KtFaultKind.witness);
     });
 
     test('9. a log gone back below what its witness verified is still caught', () async {
@@ -521,6 +523,7 @@ void main() {
       await kt.check();
       expect(kt.fault, isNotNull);
       expect(kt.fault!.reason, contains('smaller than the ${signed.size} its witness verified'));
+      expect(kt.fault!.kind, KtFaultKind.witness);
     });
   });
 
@@ -576,6 +579,7 @@ void main() {
     await kt2.check();
     expect(kt2.fault, isNotNull);
     expect(kt2.fault!.reason, contains('the witness saw a different head of size 4'));
+    expect(kt2.fault!.kind, KtFaultKind.witness);
     expect(kt2.witnessOkMs, isNull);
   });
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 import '../l10n/account_alert_text.dart';
+import '../l10n/kt_fault_text.dart';
 import '../l10n/system_text.dart';
 import '../l10n/when_text.dart';
 import 'package:intl/intl.dart';
@@ -92,7 +93,8 @@ class HomeScreen extends StatelessWidget {
           // is reset in Settings, which is a deliberate act.
           if (service.kt.health == KtHealth.fault)
             _AccountAlertBanner(
-              message: l.homeKtFault(service.kt.fault?.reason ?? ''),
+              message: [ktFaultText(l, service.kt.fault), l.homeKtFault]
+                  .join(' '),
             ),
           if (service.kt.health == KtHealth.unreachable)
             _NoticeBanner(

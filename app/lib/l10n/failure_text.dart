@@ -1,11 +1,20 @@
 import 'dart:async' show TimeoutException;
 import 'dart:io'
-    show HttpException, SocketException, TlsException, WebSocketException;
+    show
+        FileSystemException,
+        HttpException,
+        SocketException,
+        TlsException,
+        WebSocketException;
 
+import 'package:flutter/services.dart' show PlatformException;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:z_protocol/z_protocol.dart'
     show RecoveryCodeInvalid, RecoveryCodeProblem, RecoveryCode, RelayException;
 
+import '../core/app_lock.dart' show BoundKeyException;
 import '../core/models.dart' show ContactCodeRefused;
+import '../core/vault.dart' show VaultTooNewException, WrongPassphraseException;
 import 'app_localizations.dart';
 import 'refusal_text.dart';
 
@@ -73,4 +82,31 @@ String relayOfflineText(AppLocalizations l, Object? error) => switch (error) {
       RelayException() => l.stRelayOfflineRefused,
       _ when _unreachable(error) => l.stRelayOfflineUnreachable,
       _ => l.stRelayOffline,
+    };
+
+/// Whether [error] is Z's storage on this device — its files or its
+/// database — failing to open or to be read.
+bool _storage(Object error) =>
+    error is FileSystemException || error is DatabaseException;
+
+/// What the full screen says when Z cannot start: data a newer version
+/// wrote, a store the key this device keeps for it does not open (with no
+/// passphrase set, the only key there is), a store that could not be opened
+/// or read, or anything else. Until 2026-10-31 it was "Z could not start:"
+/// and the error, as it came.
+String startupFailureText(AppLocalizations l, Object error) => switch (error) {
+      VaultTooNewException() => l.vaultTooNew,
+      WrongPassphraseException() => l.startupFailedKey,
+      _ when _storage(error) => l.startupFailedStorage,
+      _ => l.startupFailedOther,
+    };
+
+/// What the unlock screen says for a failure that is not a wrong passphrase
+/// or a biometric key gone stale or reset: a store that could not be opened
+/// or read, the system's secure storage or its prompt refusing, or anything
+/// else. Until 2026-10-31 it was the error, as it came.
+String unlockFailureText(AppLocalizations l, Object error) => switch (error) {
+      _ when _storage(error) => l.unlockFailedStorage,
+      PlatformException() || BoundKeyException() => l.unlockFailedKeystore,
+      _ => l.unlockFailedOther,
     };

@@ -1,6 +1,8 @@
+import 'dart:convert' show jsonEncode;
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
@@ -8,6 +10,7 @@ import '../core/update_check.dart';
 import '../l10n/app_localizations.dart';
 import '../l10n/failure_text.dart';
 import '../l10n/handle_text.dart';
+import '../l10n/kt_fault_text.dart';
 import '../l10n/link_text.dart';
 import '../l10n/ttl_text.dart';
 import '../l10n/when_text.dart';
@@ -507,6 +510,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(_ktHealthText(context, l, svc.kt),
                 style: const TextStyle(fontSize: 12)),
           ),
+          // A fault's own words are the evidence: kept as the client recorded
+          // them, shown here untranslated and copied with the heads it
+          // compared, for whoever runs the log. The status above says what
+          // the fault is in the reader's language.
+          if (svc.kt.health == KtHealth.fault && svc.kt.fault != null)
+            ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: Text(l.stKtFaultDetails),
+              subtitle: Text(l.stKtFaultDetailsHelp,
+                  style: const TextStyle(fontSize: 12)),
+              onTap: () => _showKtFault(context, svc.kt.fault!),
+            ),
           // §19.5: when the log last agreed with its witness — and, a day
           // without that, that the witness has gone quiet: withheld, stopped
           // or replayed, it is one the log is no longer checked against, and
@@ -804,8 +819,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
         KtHealth.unknown => l.stKtHealthUnknown,
         KtHealth.ok => l.stKtHealthOk(whenText(context, kt.lastOkMs), kt.head?.size ?? 0),
         KtHealth.unreachable => l.stKtHealthUnreachable(whenText(context, kt.lastOkMs)),
-        KtHealth.fault => l.stKtHealthFault(kt.fault?.reason ?? ''),
+        KtHealth.fault => ktFaultText(l, kt.fault),
       };
+
+  /// [fault] as the log client recorded it: its own words, selectable, and
+  /// Copy for them with the heads it compared ([KtFault.toJson]).
+  Future<void> _showKtFault(BuildContext context, KtFault fault) {
+    final l = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    return showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.stKtFaultDetails),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(l.stKtFaultDetailsBody,
+                  style: const TextStyle(fontSize: 12)),
+              const SizedBox(height: 12),
+              SelectableText(fault.reason,
+                  style:
+                      const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(
+                  ClipboardData(text: jsonEncode(fault.toJson())));
+              messenger
+                  .showSnackBar(SnackBar(content: Text(l.stKtFaultCopied)));
+            },
+            child: Text(l.copy),
+          ),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: Text(l.ok)),
+        ],
+      ),
+    );
+  }
 
   Future<void> _editKt(BuildContext context, ChatService svc, String title,
       String current, KtConfig Function(String) update) async {

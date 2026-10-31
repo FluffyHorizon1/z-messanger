@@ -7,10 +7,19 @@
 // finding 39). The bootstrapper now hands `UnlockScreen` a typed [UnlockError]
 // and the words are chosen here.
 //
+// Until 2026-10-31 the unexpected case showed its error's text, as it came,
+// in English to every reader, and criterion 2 held it to that. It says what
+// failed in the reader's language now (`unlockFailureText`).
+//
 // Criteria, each a test below:
 //   1. each error kind renders its own string, and follows the locale;
-//   2. the unexpected case shows its raw diagnostic, which has no translation.
+//   2. the unexpected case says what failed — a store that could not be
+//      opened, the system's secure storage refusing, anything else — in the
+//      reader's language, and never the error's text.
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/l10n/app_localizations.dart';
 import 'package:zapp/l10n/app_localizations_en.dart';
@@ -51,10 +60,33 @@ void main() {
     expect(find.text(es.lockIncorrectPassphrase), findsOneWidget);
   });
 
-  testWidgets('2. the unexpected case shows its raw diagnostic', (tester) async {
-    await pump(tester,
-        const UnexpectedUnlockError('Exception: keystore unavailable'),
-        const Locale('en'));
-    expect(find.text('Exception: keystore unavailable'), findsOneWidget);
+  testWidgets(
+      '2. the unexpected case says what failed in the reader\'s language, '
+      'never the error\'s text', (tester) async {
+    for (final (error, words) in <(Object, String Function(AppLocalizations))>[
+      (
+        const FileSystemException('Cannot open file', '/z/z.db'),
+        (l) => l.unlockFailedStorage
+      ),
+      (
+        PlatformException(code: 'NotAvailable', message: 'keystore unavailable'),
+        (l) => l.unlockFailedKeystore
+      ),
+      (StateError('something nobody expected'), (l) => l.unlockFailedOther),
+    ]) {
+      for (final (locale, l) in [
+        (const Locale('en'), en as AppLocalizations),
+        (const Locale('es'), es as AppLocalizations),
+      ]) {
+        await pump(tester, UnexpectedUnlockError(error), locale);
+        expect(find.text(words(l)), findsOneWidget, reason: '$error, $locale');
+        expect(
+            find.textContaining(
+                RegExp('Exception|Error|Cannot open|keystore unavailable|nobody')),
+            findsNothing,
+            reason: '$error, $locale: never the error\'s text');
+      }
+      expect(words(es), isNot(words(en)), reason: 'the Spanish its own');
+    }
   });
 }

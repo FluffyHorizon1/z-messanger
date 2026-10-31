@@ -24,14 +24,29 @@
   "@vaultTooNew": {
     "description": "Full-screen message at launch when the local encrypted store was written by a newer build than this one (the app was downgraded). The store is left exactly as it was; updating the app opens it again."
   },
-  "startupFailed": "Z could not start:\n{detail}",
-  "@startupFailed": {
-    "description": "Full-screen message when the app cannot start at all. {detail} is a raw diagnostic (an exception), shown untranslated.",
-    "placeholders": {
-      "detail": {
-        "type": "String"
-      }
-    }
+  "startupFailedKey": "Z could not unlock its storage on this device with the key this device keeps for it, so it cannot open your chats. Nothing has been deleted.",
+  "@startupFailedKey": {
+    "description": "Full-screen message at launch, no passphrase set: the key this device keeps for Z's storage does not open it (WrongPassphraseException at a start with no passphrase). One line in the reader's language, never the error's own text."
+  },
+  "startupFailedStorage": "Z could not open its storage on this device. Check that the device has space free, then start Z again.",
+  "@startupFailedStorage": {
+    "description": "Full-screen message at launch: Z's storage — its files or its database — could not be opened or read. One line in the reader's language, never the error's own text."
+  },
+  "startupFailedOther": "Z could not start on this device. Close it and start it again.",
+  "@startupFailedOther": {
+    "description": "Full-screen message at launch for any other failure. One line in the reader's language, never the error's own text."
+  },
+  "unlockFailedStorage": "This device could not open Z's storage. Check that it has space free, then try again.",
+  "@unlockFailedStorage": {
+    "description": "Unlock-screen error that is not a wrong passphrase or a biometric key: Z's storage — its files or its database — could not be opened or read. Never the error's own text."
+  },
+  "unlockFailedKeystore": "This device's secure storage did not answer. Try again.",
+  "@unlockFailedKeystore": {
+    "description": "Unlock-screen error that is not a wrong passphrase or a biometric key: the system's secure storage, or its biometric prompt, refused (a PlatformException). Never the error's own text."
+  },
+  "unlockFailedOther": "Z could not unlock. Try again; if it keeps failing, close Z and start it again.",
+  "@unlockFailedOther": {
+    "description": "Unlock-screen error for anything else that is not a wrong passphrase or a biometric key. Never the error's own text."
   },
   "unlockShowPassphrase": "Show passphrase",
   "@unlockShowPassphrase": {
@@ -2405,14 +2420,33 @@
       }
     }
   },
-  "homeKtFault": "The transparency log has shown two different histories: {reason}. Nothing new is being confirmed. Settings › Transparency log has the details.",
+  "homeKtFault": "Nothing new is being confirmed. Settings › Transparency log has the details.",
   "@homeKtFault": {
-    "description": "Home-screen alert for a log fault (a fork, a head signed by the wrong key, a witness that disagrees). {reason} is the client's short diagnosis, in English, for reporting.",
-    "placeholders": {
-      "reason": {
-        "type": "String"
-      }
-    }
+    "description": "Home-screen alert for a log fault, after the fault's own sentence (ktFaultHead and the others): what it means while it stands, and where its details are."
+  },
+  "ktFaultHead": "The transparency log served a signed head this device cannot accept: it cannot be read, is not signed with the log's key, or does not continue the history this device already holds.",
+  "@ktFaultHead": {
+    "description": "A transparency log fault (KtFaultKind.head): the log's signed head could not be read, was signed by another key, or does not extend the head this device holds — a fork, a log gone back, a consistency proof missing or not proving it. Settings' transparency status, and the first sentence of the home screen's alert. The log client's own English words for it are behind stKtFaultDetails, never here."
+  },
+  "ktFaultWitness": "The transparency log and its witness disagree about the log's history.",
+  "@ktFaultWitness": {
+    "description": "A transparency log fault (KtFaultKind.witness): the log's head and the one its pinned witness verified do not agree. Where ktFaultHead is shown."
+  },
+  "ktFaultLabel": "The transparency log contradicts itself: an entry it served before is now missing from it, or has gone back to an older one.",
+  "@ktFaultLabel": {
+    "description": "A transparency log fault (KtFaultKind.label): an entry this device read in the log's map, for a contact or for this account, is left out of it or moved back by a head that covers it. Where ktFaultHead is shown."
+  },
+  "ktFaultOwnAccount": "The transparency log's answer about your own account does not verify, or cannot be read.",
+  "@ktFaultOwnAccount": {
+    "description": "A transparency log fault (KtFaultKind.ownAccount): the log's lookup or history for this account did not verify, or was not a readable answer. Where ktFaultHead is shown."
+  },
+  "ktFaultContacts": "The transparency log's answers for checking your contacts do not verify, or cannot be read.",
+  "@ktFaultContacts": {
+    "description": "A transparency log fault (KtFaultKind.contacts): the buckets this device asked for its contacts, the bucket it asked to size the log, or the entries they name did not verify, or were not readable answers. Where ktFaultHead is shown."
+  },
+  "ktFaultOther": "The transparency log served something this device cannot accept.",
+  "@ktFaultOther": {
+    "description": "A transparency log fault recorded before faults had a kind (KtFaultKind.other). Where ktFaultHead is shown."
   },
   "homeKtUnreachable": "The transparency log has not been reachable since {when}. Device lists are being checked by your contacts' devices alone in the meantime.",
   "@homeKtUnreachable": {
@@ -2531,14 +2565,21 @@
       }
     }
   },
-  "stKtHealthFault": "Fault: {reason}",
-  "@stKtHealthFault": {
-    "description": "Health value: the log misbehaved; {reason} is the client's diagnosis.",
-    "placeholders": {
-      "reason": {
-        "type": "String"
-      }
-    }
+  "stKtFaultDetails": "What the log client recorded",
+  "@stKtFaultDetails": {
+    "description": "Settings, under the transparency status while a log fault stands: the row that opens the log client's own words for the fault — the evidence, kept as it was recorded — to pass on."
+  },
+  "stKtFaultDetailsHelp": "Its own words for this fault, to pass on to whoever runs the log",
+  "@stKtFaultDetailsHelp": {
+    "description": "Subtitle of stKtFaultDetails."
+  },
+  "stKtFaultDetailsBody": "The log client's own words for this fault, as it recorded them. Copy puts them on the clipboard with the heads it compared, for whoever runs the log or reviews this device.",
+  "@stKtFaultDetailsBody": {
+    "description": "The dialog stKtFaultDetails opens, above the client's own words, which are shown as recorded and not translated: they are the evidence. Names the Copy button (copy)."
+  },
+  "stKtFaultCopied": "Copied, with the heads the client compared.",
+  "@stKtFaultCopied": {
+    "description": "Snackbar once Copy in the fault's details has put the client's words and the heads it compared on the clipboard."
   },
   "stKtWitnessCheck": "Witness check",
   "@stKtWitnessCheck": {

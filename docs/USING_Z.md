@@ -627,7 +627,9 @@ account it showed your app before, a contact's or your own — Z says so at
 the top of the chat list and confirms nothing new until you reset it in
 Settings; your conversations continue on the checks that existed before the
 log, and a disagreement that was holding your messages to someone goes on
-holding them.
+holding them. Settings › Transparency log says what the log did, and keeps
+the app's own record of it — in English, for whoever runs the log — under
+"What the log client recorded", where Copy puts it on the clipboard.
 
 The built-in log also has a **witness**: a copy of the log that somebody
 other than its operator runs, there to catch a log showing different people

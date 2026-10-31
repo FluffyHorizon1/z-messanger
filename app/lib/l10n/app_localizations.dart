@@ -134,11 +134,41 @@ abstract class AppLocalizations {
   /// **'The data on this device was saved by a newer version of Z. Update Z to open it — nothing has been changed.'**
   String get vaultTooNew;
 
-  /// Full-screen message when the app cannot start at all. {detail} is a raw diagnostic (an exception), shown untranslated.
+  /// Full-screen message at launch, no passphrase set: the key this device keeps for Z's storage does not open it (WrongPassphraseException at a start with no passphrase). One line in the reader's language, never the error's own text.
   ///
   /// In en, this message translates to:
-  /// **'Z could not start:\n{detail}'**
-  String startupFailed(String detail);
+  /// **'Z could not unlock its storage on this device with the key this device keeps for it, so it cannot open your chats. Nothing has been deleted.'**
+  String get startupFailedKey;
+
+  /// Full-screen message at launch: Z's storage — its files or its database — could not be opened or read. One line in the reader's language, never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'Z could not open its storage on this device. Check that the device has space free, then start Z again.'**
+  String get startupFailedStorage;
+
+  /// Full-screen message at launch for any other failure. One line in the reader's language, never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'Z could not start on this device. Close it and start it again.'**
+  String get startupFailedOther;
+
+  /// Unlock-screen error that is not a wrong passphrase or a biometric key: Z's storage — its files or its database — could not be opened or read. Never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not open Z\'s storage. Check that it has space free, then try again.'**
+  String get unlockFailedStorage;
+
+  /// Unlock-screen error that is not a wrong passphrase or a biometric key: the system's secure storage, or its biometric prompt, refused (a PlatformException). Never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'This device\'s secure storage did not answer. Try again.'**
+  String get unlockFailedKeystore;
+
+  /// Unlock-screen error for anything else that is not a wrong passphrase or a biometric key. Never the error's own text.
+  ///
+  /// In en, this message translates to:
+  /// **'Z could not unlock. Try again; if it keeps failing, close Z and start it again.'**
+  String get unlockFailedOther;
 
   /// Screen-reader label for the reveal control. Says what it DOES, not what the icon looks like.
   ///
@@ -3062,11 +3092,47 @@ abstract class AppLocalizations {
   /// **'A device list you did not issue has been published to the transparency log for your account (version {v}). Check your linked devices now.'**
   String homeKtOwnAlert(int v);
 
-  /// Home-screen alert for a log fault (a fork, a head signed by the wrong key, a witness that disagrees). {reason} is the client's short diagnosis, in English, for reporting.
+  /// Home-screen alert for a log fault, after the fault's own sentence (ktFaultHead and the others): what it means while it stands, and where its details are.
   ///
   /// In en, this message translates to:
-  /// **'The transparency log has shown two different histories: {reason}. Nothing new is being confirmed. Settings › Transparency log has the details.'**
-  String homeKtFault(String reason);
+  /// **'Nothing new is being confirmed. Settings › Transparency log has the details.'**
+  String get homeKtFault;
+
+  /// A transparency log fault (KtFaultKind.head): the log's signed head could not be read, was signed by another key, or does not extend the head this device holds — a fork, a log gone back, a consistency proof missing or not proving it. Settings' transparency status, and the first sentence of the home screen's alert. The log client's own English words for it are behind stKtFaultDetails, never here.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log served a signed head this device cannot accept: it cannot be read, is not signed with the log\'s key, or does not continue the history this device already holds.'**
+  String get ktFaultHead;
+
+  /// A transparency log fault (KtFaultKind.witness): the log's head and the one its pinned witness verified do not agree. Where ktFaultHead is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log and its witness disagree about the log\'s history.'**
+  String get ktFaultWitness;
+
+  /// A transparency log fault (KtFaultKind.label): an entry this device read in the log's map, for a contact or for this account, is left out of it or moved back by a head that covers it. Where ktFaultHead is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log contradicts itself: an entry it served before is now missing from it, or has gone back to an older one.'**
+  String get ktFaultLabel;
+
+  /// A transparency log fault (KtFaultKind.ownAccount): the log's lookup or history for this account did not verify, or was not a readable answer. Where ktFaultHead is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log\'s answer about your own account does not verify, or cannot be read.'**
+  String get ktFaultOwnAccount;
+
+  /// A transparency log fault (KtFaultKind.contacts): the buckets this device asked for its contacts, the bucket it asked to size the log, or the entries they name did not verify, or were not readable answers. Where ktFaultHead is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log\'s answers for checking your contacts do not verify, or cannot be read.'**
+  String get ktFaultContacts;
+
+  /// A transparency log fault recorded before faults had a kind (KtFaultKind.other). Where ktFaultHead is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'The transparency log served something this device cannot accept.'**
+  String get ktFaultOther;
 
   /// Home-screen notice after a day without the log. Reassuring in tone: messaging works, the extra check is what is missing.
   ///
@@ -3170,11 +3236,29 @@ abstract class AppLocalizations {
   /// **'Unreachable since {when}'**
   String stKtHealthUnreachable(String when);
 
-  /// Health value: the log misbehaved; {reason} is the client's diagnosis.
+  /// Settings, under the transparency status while a log fault stands: the row that opens the log client's own words for the fault — the evidence, kept as it was recorded — to pass on.
   ///
   /// In en, this message translates to:
-  /// **'Fault: {reason}'**
-  String stKtHealthFault(String reason);
+  /// **'What the log client recorded'**
+  String get stKtFaultDetails;
+
+  /// Subtitle of stKtFaultDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Its own words for this fault, to pass on to whoever runs the log'**
+  String get stKtFaultDetailsHelp;
+
+  /// The dialog stKtFaultDetails opens, above the client's own words, which are shown as recorded and not translated: they are the evidence. Names the Copy button (copy).
+  ///
+  /// In en, this message translates to:
+  /// **'The log client\'s own words for this fault, as it recorded them. Copy puts them on the clipboard with the heads it compared, for whoever runs the log or reviews this device.'**
+  String get stKtFaultDetailsBody;
+
+  /// Snackbar once Copy in the fault's details has put the client's words and the heads it compared on the clipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied, with the heads the client compared.'**
+  String get stKtFaultCopied;
 
   /// Row label, below Status, for whether the log is being checked against its witness: a copy of the log that somebody else runs, there to catch the log showing different people different histories.
   ///

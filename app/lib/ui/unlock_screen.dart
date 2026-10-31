@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/failure_text.dart';
 
 import 'theme.dart';
 
@@ -35,10 +36,13 @@ class BiometricInvalidated extends UnlockError {
   const BiometricInvalidated();
 }
 
-/// Anything else — carries a raw diagnostic that has no translated form.
+/// Anything else: what failed, said here in the reader's words
+/// (`unlockFailureText`) — a store that could not be opened, the system's
+/// secure storage refusing, or anything else. Until 2026-10-31 it carried
+/// the error's text, and the screen showed it as it came.
 class UnexpectedUnlockError extends UnlockError {
-  final String detail;
-  const UnexpectedUnlockError(this.detail);
+  final Object error;
+  const UnexpectedUnlockError(this.error);
 }
 
 /// Shown at launch when the vault is passphrase-protected. The passphrase is
@@ -116,12 +120,12 @@ class _UnlockScreenState extends State<UnlockScreen> {
 
   /// The error in the reader's language. `WrongPassphrase` reuses the app-lock
   /// overlay's own string; the biometric cases have their own; the unexpected
-  /// case shows its raw diagnostic, which has no translation.
+  /// case says what failed, never the error's text.
   String _errorText(AppLocalizations l, UnlockError e) => switch (e) {
         WrongPassphrase() => l.lockIncorrectPassphrase,
         BiometricStale() => l.unlockBiometricStale,
         BiometricInvalidated() => l.unlockBiometricInvalidated,
-        UnexpectedUnlockError(:final detail) => detail,
+        UnexpectedUnlockError(:final error) => unlockFailureText(l, error),
       };
 
   @override
