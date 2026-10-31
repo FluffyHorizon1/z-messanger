@@ -1508,6 +1508,7 @@ void main() {
       // Started again on that disk, and Abel's request accepted.
       final back = await boot(name,
           id: rex.identity, vault: await Vault.open(rootOverride: dir));
+      back.handles.onForeground(); // the shortened timings from here on
       await connected([back]);
       expect(back.requestsByRid[abelRid]?.viaLink, isTrue);
       await back.acceptRequest(abelRid);
