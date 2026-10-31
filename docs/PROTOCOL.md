@@ -2293,9 +2293,12 @@ device's, and this device cannot see it: the next attempt's login closes it
 in turn, and the digits still stand between it and the account. A stopped
 attempt that had answered the new device's commitment leaves its code with
 no ceremony to run, since the new device answers the first reply it gets and
-no other (rule 5): the reference client's attempt that stopped it says so at
-once, with how to get a new code, where until 2026‑10‑31 it waited out its
-timer for a commitment that would not come. An attempt
+no other (rule 5): the reference client keeps that code as it keeps a spent
+one — by its v3 rendezvous id, the last 32, with no time bound, in no backup
+— and an attempt on it, whether the one that stopped the first or any later
+one, across restarts, says so at once, with how to get a new code, where
+until 2026‑10‑31 it waited out its timer for a commitment that would not
+come. An attempt
 that has handed the enrollment over is not stopped — the new device may come
 to hold the account, and only the report lists it — so it runs on to its
 end, and an attempt on its code that came meanwhile ends as it does. The

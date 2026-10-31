@@ -9610,8 +9610,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// report the attempt waits for lists it — so it runs on to its end, and a
   /// call that came for its code meanwhile ends as it does. One that had
   /// answered the new device and is stopped leaves its code with no ceremony
-  /// to run, the new device taking no second answer: the call that stopped
-  /// it says so at once ([PairingCodeAnswered]).
+  /// to run, the new device taking no second answer: the code is kept, by
+  /// its rendezvous id — the last [_spentLinkCodesKept] such codes — and the
+  /// call that stopped it, or any later one, says so at once
+  /// ([PairingCodeAnswered]), across restarts. Until 2026-10-31 only a call
+  /// that came while the stopped attempt still ran said so; one after it
+  /// waited out its timer for a commitment that would not come.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -9648,6 +9652,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             throw const PairingCodeSpent();
           }
           mine.answeredBefore = true;
+          await _keepAnsweredLinkCode(mark);
           throw const PairingCodeAnswered();
         }
       }
@@ -9681,6 +9686,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // ([PairingCodeSpent]): whoever did it still has it.
     if ((await _spentLinkCodes()).contains(mark)) {
       throw const PairingCodeSpent();
+    }
+    // One whose link this device stopped once it had answered the new
+    // device: that device holds the answer and takes no other (§10.2 rule
+    // 5), so the code has no ceremony left ([PairingCodeAnswered]).
+    if ((await _keptLinkCodes(_answeredLinkCodesKey)).contains(mark)) {
+      throw const PairingCodeAnswered();
     }
     // The new device needs the ACCOUNT's post-quantum public key, or it would
     // have no v3 identity to show and would fall back to classical codes
@@ -9740,7 +9751,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // connection closed the same way, as the attempt does for one it sees
       // while it runs (§10.2). Until 2026-10-31 it said only that the link
       // was cancelled, and kept nothing.
-      if (!cancel.closedByAnotherLogin) rethrow;
+      if (!cancel.closedByAnotherLogin) {
+        // Stopped once it had answered the new device: the code is kept, so
+        // that an attempt on it, now or after a restart, says at once that
+        // it has no ceremony left.
+        if (cancel.answered) await _keepAnsweredLinkCode(mark);
+        rethrow;
+      }
       try {
         await _spendLinkCode(mark);
       } catch (_) {
@@ -9766,9 +9783,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   static const String _spentLinkCodesKey = 'link_spent_codes';
   static const int _spentLinkCodesKept = 32;
 
+  /// The vault key under which this device keeps the codes whose link it
+  /// stopped once it had answered the new device (§10.2), kept as the spent
+  /// ones are: each by its v3 rendezvous id, the last [_spentLinkCodesKept],
+  /// with no time bound, in no backup and handed to no device this one
+  /// links (`DATA_MAP.md`).
+  static const String _answeredLinkCodesKey = 'link_answered_codes';
+
   /// The codes [hostDeviceLink] will not use again, by rendezvous id.
-  Future<List<String>> _spentLinkCodes() async {
-    final raw = await vault.kvGet(_spentLinkCodesKey);
+  Future<List<String>> _spentLinkCodes() => _keptLinkCodes(_spentLinkCodesKey);
+
+  /// The rendezvous ids kept under [key].
+  Future<List<String>> _keptLinkCodes(String key) async {
+    final raw = await vault.kvGet(key);
     if (raw == null) return const [];
     try {
       final j = jsonDecode(raw);
@@ -9779,12 +9806,26 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// Keeps [mark], a code's rendezvous id, among [_spentLinkCodes].
-  Future<void> _spendLinkCode(String mark) async {
-    final kept = [...await _spentLinkCodes()];
+  Future<void> _spendLinkCode(String mark) =>
+      _keepLinkCode(_spentLinkCodesKey, mark);
+
+  /// Keeps [mark] among the codes whose link this device stopped once it had
+  /// answered the new device. What the screen says is the same whether or
+  /// not the store takes it: if it refuses the write, a later attempt on the
+  /// code waits out its timer, as every one did until 2026-10-31.
+  Future<void> _keepAnsweredLinkCode(String mark) async {
+    try {
+      await _keepLinkCode(_answeredLinkCodesKey, mark);
+    } catch (_) {}
+  }
+
+  /// Keeps [mark] under [key], the last [_spentLinkCodesKept].
+  Future<void> _keepLinkCode(String key, String mark) async {
+    final kept = [...await _keptLinkCodes(key)];
     if (kept.contains(mark)) return;
     kept.add(mark);
     await vault.kvPut(
-        _spentLinkCodesKey,
+        key,
         jsonEncode(kept.length > _spentLinkCodesKept
             ? kept.sublist(kept.length - _spentLinkCodesKept)
             : kept));

@@ -130,7 +130,11 @@
 //      screen among its reasons, and shows a new code;
 //  26. leaving the new device's link screen stops the attempt it started,
 //      at once, and nothing of the attempt reaches the screen once it has
-//      gone, nor moves the app on.
+//      gone, nor moves the app on;
+//  27. a code entered again on the phone once the link it stopped had
+//      answered the laptop, and that attempt is over, says at once that the
+//      laptop needs a new code — once restarted too — the phone keeping the
+//      code by its rendezvous id, not the code itself.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -2496,5 +2500,80 @@ void main() {
       await vault.db.close();
       await rec.close();
     });
+  });
+
+  test(
+      '27. a code entered again once the link it stopped had answered the '
+      'laptop, and that attempt is over, says at once that the laptop needs '
+      'a new code', () async {
+    final alice = await person('Alice27');
+    await connected([alice]);
+    const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    final comparing = Completer<void>();
+    final leave = PairingCancel();
+    // The phone has answered the laptop, and its person leaves the link
+    // screen while the digits are up.
+    final first = alice.svc
+        .hostDeviceLink(code,
+            confirmSas: (_) {
+              comparing.complete();
+              return Completer<bool>().future;
+            },
+            cancel: leave)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final laptop = n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: timeout,
+          margin: margin,
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    await comparing.future;
+    leave.cancel();
+    expect(phoneScreen(await first), en.linkCancelled,
+        reason: 'leaving the link screen stopped it');
+    // That attempt is over when the person comes back and enters the code.
+    final waited = Stopwatch()..start();
+    final again = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    waited.stop();
+    expect([phoneScreen(again), hostLinkFailureText(es, again!)],
+        [codeAnswered, codeAnsweredEs],
+        reason: 'the laptop holds the first answer and takes no other');
+    expect(waited.elapsed, lessThan(timeout),
+        reason: 'at once, and not when a wait for a commitment ran out');
+    // Kept by the code's rendezvous id, never the code.
+    final mark = await PairingCode.parse(code).rendezvousRoutingIdV3();
+    final kept = await alice.vault.kvGet('link_answered_codes');
+    expect(jsonDecode(kept!), [mark]);
+    expect(kept, isNot(contains(code)));
+    expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+        reason: 'nobody else had the code');
+    // And once the phone has restarted.
+    alice.svc.dispose();
+    await alice.svc.transport.stop();
+    live.remove(alice);
+    final restarted = await boot(alice.dir, 'Alice27', vault: alice.vault);
+    restarted.svc.linkTimeout = timeout;
+    restarted.svc.linkMargin = margin;
+    final waitedAfter = Stopwatch()..start();
+    final later = await restarted.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    waitedAfter.stop();
+    expect(phoneScreen(later), codeAnswered, reason: 'once restarted too');
+    expect(waitedAfter.elapsed, lessThan(timeout), reason: 'at once');
+    final l = await laptop;
+    expect([laptopScreen(l), newDeviceLinkFailureText(es, l!)],
+        [laptopNoEnrolment, laptopNoEnrolmentEs],
+        reason: 'the laptop, sent nothing, says why');
+    expect(n.code, isNot(code), reason: 'and shows a new code');
+    expect(await restarted.svc.linkedDevices(), isEmpty);
   });
 }
