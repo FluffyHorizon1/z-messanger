@@ -4435,8 +4435,13 @@ The members that carry them, a new kind and two optional members (§14):
   at its first start of 4.8.1, each device an older build's record holds a
   stamp from with no announcement beside it — sent on the first message there
   that may carry one: once their session is post‑quantum, and not beside
-  `pqct`. A session reset costs nothing: each side keeps its record of what
-  it gave, so the other's next stamp counts at once. One window remains: a
+  `pqct`. For a linked device it costs more: each `pqseal` it sends its root
+  is also its ask for its `pqdc` (§9), which the root answers in a
+  16 384‑bucket envelope — measured after a linked device's restore that kept
+  its key, two `pqseal`s and one `pqdc`, 5 802 bytes each and 22 186 at the
+  relay, where 4.8.0 sent none. A session reset costs nothing: each side
+  keeps its record of what it gave, so the other's next stamp counts at
+  once. One window remains: a
   stamp the other device sent before the announcement reached it, arriving
   after the announcement left, is taken; were that announcement then lost at
   the relay, the pair would wait for its next new session.
