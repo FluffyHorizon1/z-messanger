@@ -4589,7 +4589,10 @@ The members that carry them, a new kind and two optional members (§14):
   its own reset — or had stamped `pqs:1` since the announcement: this device
   announces its key again at once rather than on its clock, so a contact
   added back is linked again without waiting six hours, and a session reset
-  costs each side one `pqseal` there. Nothing is forgotten on the first
+  costs each side one `pqseal` there — within the three announcements a
+  device makes to another in one run of the app: past them, each sets the
+  other's `pqs:1` aside until the app next starts, which nothing notices
+  before 44.7 and which is to be closed before it. Nothing is forgotten on the first
   session after a CONNECT ceremony of version 3, whose reveal carried the
   key. One window remains: a stamp the other device sent before the
   announcement reached it, arriving after the announcement left, is taken;
@@ -4598,8 +4601,8 @@ The members that carry them, a new kind and two optional members (§14):
   next stamp counted again, and measured, a reset by either side and eight
   messages each way later the other device still held the old key, with no
   `pqseal` sent. From 4.9.0 a new session with a contact's device, opened by
-  either side, mends it: the device announces its key again, and the contact
-  ends holding it (`restore_truth_test` 23). Between a device and its own
+  either side, mends it, within the same three a run: the device announces
+  its key again, and the contact ends holding it (`restore_truth_test` 23). Between a device and its own
   other devices 4.9.0 forgets the stamp alone, as 4.8.1 did — every `pqseal`
   a linked device sends its root is also its ask for its `pqdc`, answered in
   a 16 384‑bucket envelope, and announcing on every new self‑sync session
