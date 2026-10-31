@@ -2289,8 +2289,16 @@ once, with how to get a new code, where until 2026‑10‑31 it waited out its
 timer for a commitment that would not come. An attempt
 that has handed the enrollment over is not stopped — the new device may come
 to hold the account, and only the report lists it — so it runs on to its
-end, and an attempt on its code that came meanwhile ends as it does. No
-frame changes.
+end, and an attempt on its code that came meanwhile ends as it does. The
+reference client's new device stops its own attempt when its link screen is
+left, in the same way, until it begins to install the enrollment: stopped,
+it acknowledges nothing — not the reply, so the existing device sends
+nothing of the account, nor an enrollment it was sent, so the existing device
+lists nothing — while an install that has begun runs to its end and is
+acknowledged, so that a device holding the account is listed. Until
+2026‑10‑31 an attempt went on behind a screen that had gone, and could
+install an account into the store the first screen goes on to use. No frame
+changes.
 
 Vectors: [`vectors/pair-v3/`](vectors/pair-v3/). §10's and §10.1's remain
 untouched.

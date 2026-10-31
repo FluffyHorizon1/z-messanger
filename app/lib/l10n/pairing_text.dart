@@ -90,6 +90,7 @@ String newDeviceLinkFailureText(AppLocalizations l, Object error) =>
       PairingNoEnrolment() => l.linkNoEnrolment,
       PairingInstallFailed() => l.linkInstallFailed,
       PairingTakenOver() => l.linkTakenOver,
+      PairingCancelled() => l.linkCancelled,
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,
       _ when _unreachable(error) => l.linkRelayUnreachable,

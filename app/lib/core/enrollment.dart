@@ -93,12 +93,17 @@ class NewDeviceLink {
   /// install that fails leaves this device unlisted. [margin] is what the
   /// enrolment is allowed beyond [timeout] to arrive in
   /// (`RelayPairing.enrolmentMargin`).
+  ///
+  /// [cancel] stops the attempt — the link screen stops it when its person
+  /// leaves it — until it begins to install the enrolment, after which it
+  /// runs to its end ([PairingCancel], `RelayPairing.runNewDeviceV3`).
   Future<PairingResult?> run({
     required String relayUrl,
     required Future<bool> Function(String sas) confirm,
     Duration timeout = const Duration(seconds: 40),
     Duration margin = RelayPairing.enrolmentMargin,
     Future<void> Function(PairingResult result)? install,
+    PairingCancel? cancel,
   }) async {
     final v2 = _v2;
     if (v2 != null) {
@@ -116,7 +121,8 @@ class NewDeviceLink {
           confirm: confirm,
           timeout: timeout,
           margin: margin,
-          install: install);
+          install: install,
+          cancel: cancel);
     } on PairingTakenOver {
       // Someone else holds this code: another connection logged in as its
       // mailbox. The next attempt is a new ceremony whatever was spent.

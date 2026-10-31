@@ -127,7 +127,10 @@
 //      answered the laptop says at once, in both languages, that the laptop
 //      needs a new code — the laptop takes no second answer — and the
 //      laptop, sent nothing, names its other device's leaving the link
-//      screen among its reasons, and shows a new code.
+//      screen among its reasons, and shows a new code;
+//  26. leaving the new device's link screen stops the attempt it started,
+//      at once, and nothing of the attempt reaches the screen once it has
+//      gone, nor moves the app on.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -1172,6 +1175,8 @@ void main() {
           l.linkCancelled);
       expect(hostLinkFailureText(l, const PairingCodeAnswered()),
           l.linkCodeAnswered);
+      expect(newDeviceLinkFailureText(l, const PairingCancelled()),
+          l.linkCancelled);
       // Each way to a new code names the choice the new device offers, as
       // its onboarding screen words it.
       for (final words in [
@@ -2417,5 +2422,79 @@ void main() {
     expect(await alice.svc.linkedDevices(), isEmpty);
     expect(await alice.vault.kvGet('link_spent_codes'), isNull,
         reason: 'nobody else had the code');
+  });
+
+  testWidgets(
+      "26. leaving the new device's link screen stops the attempt it "
+      'started, at once, and nothing of it reaches the screen once it has '
+      'gone', (t) async {
+    late Recorder rec;
+    late Vault vault;
+    await t.runAsync(() async {
+      rec = await Recorder.start(relayUrl());
+      vault = await Vault.open(rootOverride: await tempDir('laptop26'));
+    });
+    var movedOn = 0;
+    await t.pumpWidget(MaterialApp(
+      theme: ZTheme.light(),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(
+            key: const ValueKey('open'),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => NewDeviceLinkScreen(
+                    vault: vault, onDone: () async => movedOn++))),
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    ));
+    await t.tap(find.byKey(const ValueKey('open')));
+    await drive(t, () => find.byType(SelectableText).evaluate().isNotEmpty,
+        what: 'the code the new device shows');
+    // The relay is the test's, through the front: the developer field.
+    await t.tap(find.text(en.devOptions));
+    await t.pump();
+    await t.enterText(find.byType(TextField), rec.url);
+    final code = t.widget<SelectableText>(find.byType(SelectableText)).data!;
+    late String mailbox;
+    await t.runAsync(() async {
+      mailbox = await (await RelayPairing.relayIdentityV3(
+              PairingCode.parse(code), 'i'))
+          .routingId();
+    });
+    await t.tap(find.text(en.linkStart));
+    await drive(t, () => rec.welcomed.contains(mailbox),
+        what: "the screen's attempt logged in as the new device's mailbox");
+    // The person goes back.
+    await t.pageBack();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 500));
+    expect(find.byType(NewDeviceLinkScreen), findsNothing);
+    await drive(t, () => rec.left.contains(mailbox),
+        within: const Duration(seconds: 10),
+        what: 'the attempt the screen started stopped once the screen was '
+            'left, its mailbox closed');
+    // A negative check over a window: for a second of both clocks after
+    // the attempt closed, nothing of it reaches the screen it left — a
+    // state set once it is gone fails the test — nor moves the app on.
+    final until = DateTime.now().add(const Duration(seconds: 1));
+    while (DateTime.now().isBefore(until)) {
+      await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    expect(movedOn, 0, reason: 'the app was not moved on');
+    await t.runAsync(() async {
+      expect(await vault.kvGet('identity'), isNull,
+          reason: 'and nothing was installed');
+    });
+    await t.pumpWidget(const SizedBox());
+    await t.runAsync(() async {
+      await vault.db.close();
+      await rec.close();
+    });
   });
 }

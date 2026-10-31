@@ -201,6 +201,14 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
   /// The last attempt spent its code, and the one now shown is new.
   bool _newCode = false;
 
+  /// What stops the attempt this screen started, while it runs: leaving the
+  /// screen stops it, unless it has begun to install the account
+  /// (`NewDeviceLink.run`). Until 2026-10-31 an attempt went on after its
+  /// screen was left — and could install an account into the vault the
+  /// first screen goes on to use — and set this screen's state once it was
+  /// gone.
+  PairingCancel? _attempt;
+
   @override
   void initState() {
     super.initState();
@@ -217,6 +225,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
     if (!await confirmInsecureRelay(context, url)) return;
     if (!mounted) return;
     final code = n.code;
+    final attempt = _attempt = PairingCancel();
     setState(() {
       _busy = true;
       _error = null;
@@ -228,7 +237,10 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
       // nothing from this one, and this one says it may be older.
       final result = await n.run(
         relayUrl: url,
-        confirm: (sas) => confirmSasDialog(context, sas),
+        // Asked only while the screen is there to ask on.
+        confirm: (sas) async =>
+            mounted && await confirmSasDialog(context, sas),
+        cancel: attempt,
         // Installed before the enrolment is acknowledged: the phone lists
         // this device on that acknowledgement (§10.2), so a device whose
         // install failed is not listed. The account, the device that linked
@@ -241,6 +253,7 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
         },
       );
       if (result == null) {
+        if (!mounted) return;
         setState(() {
           _busy = false;
           _error = l.linkCancelled;
@@ -248,14 +261,27 @@ class _NewDeviceLinkScreenState extends State<NewDeviceLinkScreen> {
         });
         return;
       }
+      // Installed and acknowledged: this device is linked, and the app goes
+      // on to the account it holds — whether or not the screen is still
+      // there, as an install a cancel came during runs to its end.
       await widget.onDone();
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _busy = false;
         _error = newDeviceLinkFailureText(l, e);
         _newCode = n.code != code;
       });
+    } finally {
+      if (identical(_attempt, attempt)) _attempt = null;
     }
+  }
+
+  @override
+  void dispose() {
+    _attempt?.cancel();
+    _server.dispose();
+    super.dispose();
   }
 
   @override

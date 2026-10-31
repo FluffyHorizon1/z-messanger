@@ -70,7 +70,10 @@ class PairingResult {
 /// attempt it started when its person leaves it, and the app stops an
 /// attempt on a code before it starts another on the same code, which would
 /// otherwise log in as the same mailbox and have the relay close the first
-/// as if someone else held the code.
+/// as if someone else held the code. The new device's link screen stops its
+/// own attempt the same way when it is left ([RelayPairing.runNewDeviceV3]):
+/// until it begins to install the enrolment, after which it runs to its
+/// end, so that a device that holds the account is listed.
 ///
 /// The attempt stops at its next step — while it waits for a frame, for the
 /// relay or for its person — in [PairingCancelled], until it sends the
@@ -90,6 +93,7 @@ class PairingCancel {
   bool _sentEnrolment = false;
   bool _closedByAnotherLogin = false;
   bool _answered = false;
+  bool _installing = false;
 
   /// Asks the attempt to stop.
   void cancel() {
@@ -114,8 +118,9 @@ class PairingCancel {
   /// run unless this one finished it.
   bool get answered => _answered;
 
-  /// Whether the attempt is to stop: asked to, with the enrolment not sent.
-  bool get _stops => isCancelled && !_sentEnrolment;
+  /// Whether the attempt is to stop: asked to, with the enrolment neither
+  /// sent (an existing device) nor being installed (a new device).
+  bool get _stops => isCancelled && !_sentEnrolment && !_installing;
 }
 
 class RelayPairing {
@@ -388,6 +393,14 @@ class RelayPairing {
   /// ends in when it happened while [confirm] was asking, whatever the
   /// person answered: that login can acknowledge the reply, and the existing
   /// device may list this device on it (§10.2).
+  ///
+  /// [cancel] stops the attempt from outside it, at its next step, until it
+  /// begins to install the enrolment ([PairingCancel]): it ends in
+  /// [PairingCancelled], and acknowledges nothing — not the reply, so the
+  /// existing device sends nothing of the account, nor an enrolment it was
+  /// sent, so the existing device lists nothing. An install that has begun
+  /// runs to its end and is acknowledged: a device that holds the account
+  /// is listed.
   static Future<PairingResult?> runNewDeviceV3({
     required String relayUrl,
     required PairingInitiatorV3 n,
@@ -395,9 +408,12 @@ class RelayPairing {
     Duration timeout = const Duration(seconds: 40),
     Duration margin = enrolmentMargin,
     Future<void> Function(PairingResult result)? install,
+    PairingCancel? cancel,
   }) async {
-    final box =
-        await _Mailbox.open(relayUrl, await relayIdentityV3(n.code, 'i'));
+    if (cancel != null && cancel._stops) throw const PairingCancelled();
+    final box = await _Mailbox.open(
+        relayUrl, await relayIdentityV3(n.code, 'i'),
+        cancel: cancel);
     try {
       final rMailbox = await (await relayIdentityV3(n.code, 'r')).routingId();
       await _post(box,
@@ -422,7 +438,7 @@ class RelayPairing {
       // which the relay reports to the existing device, is what lets it send
       // the enrolment (§10.2). A person who says they differ leaves the
       // reply unacknowledged, and is sent nothing of the account.
-      final matched = await confirm(session.sas);
+      final matched = await _unlessCancelled(box, () => confirm(session.sas));
       // While the person compared, someone else holding the code may have
       // logged in as this mailbox, and the relay closed this connection for
       // it: that login is handed the reply and can acknowledge it, which the
@@ -432,6 +448,9 @@ class RelayPairing {
       // enrolment that now goes to the other login.
       if (_takenOver(box)) throw const PairingTakenOver();
       if (!matched) return null;
+      // Stopped before the reply is acknowledged: the existing device then
+      // sends nothing of the account.
+      if (box.cancelled) throw const PairingCancelled();
       box.acknowledge(replied.$2);
 
       final (Map<String, Object?>, RelayInbound) enrolment;
@@ -440,23 +459,43 @@ class RelayPairing {
       } on TimeoutException catch (e) {
         throw PairingNoEnrolment(e.message ?? 'pairing: no enrolment');
       }
+      // An enrolment that does not open, breaks a rule, or fails to install
+      // is one failure to this device's person: it is not linked, and the
+      // enrolment is not acknowledged.
       final PairingResult result;
       try {
         final blob = enrolment.$1['blob'];
         if (blob is! String) throw const FormatException('no sealed blob');
         final data = await session.openEnrollment(unb64(blob));
         result = PairingResult(await n.installFromData(data), data);
+      } catch (e) {
+        throw PairingInstallFailed(e);
+      }
+      // The last point a cancel stops ([PairingCancel]): from here the
+      // install writes this device's store, and one that has begun runs to
+      // its end and is acknowledged, so that no device holds an account its
+      // existing device does not list.
+      if (box.cancelled) throw const PairingCancelled();
+      cancel?._installing = true;
+      try {
         if (install != null) await install(result);
       } catch (e) {
-        // An enrolment that does not open, breaks a rule, or fails to
-        // install is one failure to this device's person: it is not linked,
-        // and the enrolment is not acknowledged.
         throw PairingInstallFailed(e);
       }
       box.acknowledge(enrolment.$2);
       return result;
+    } on Exception {
+      // Stopped on this device ([cancel]), whatever closed the connection
+      // meanwhile; whether another login had closed it is kept for the
+      // caller.
+      if (cancel != null && cancel._stops) {
+        cancel._closedByAnotherLogin = _takenOver(box);
+        throw const PairingCancelled();
+      }
+      rethrow;
     } finally {
-      await box.close();
+      // A cancelled attempt acknowledges nothing it did not read.
+      await box.close(acknowledge: !(cancel?._stops ?? false));
     }
   }
 

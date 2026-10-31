@@ -449,13 +449,14 @@ that code again: if the new device still shows the old code, go back on it
 and choose "Link to an existing account" again for a new one. If you leave
 Link a device on your phone while a link is running, the phone stops it —
 unless it has already started sending your account, which then finishes —
-and your phone does not take that for someone else using the code. You can
-enter the same code again until the new device shows its digits; once it
-has, the link you stopped has used that code up — your phone says so if you
-enter it again — and the new device shows a new one when it gives up: start
-again on both devices with that. And if
-your phone ever lists a device you did not
-finish linking, revoke it in Settings → Linked devices.
+and your phone does not take that for someone else using the code; leaving
+the link screen on the new device stops its link too, unless it has already
+started installing your account. You can enter the same code again until the
+new device shows its digits; once it has, the link you stopped has used that
+code up — your phone says so if you enter it again — and the new device
+shows a new one when it gives up: start again on both devices with that. And
+if your phone ever lists a device you did not finish linking, revoke it in
+Settings → Linked devices.
 
 **Both devices need this version of Z or later.** Linking changed in this
 version, and neither device falls back to the way older versions link. If
