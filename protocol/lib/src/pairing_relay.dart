@@ -79,7 +79,10 @@ class PairingResult {
 /// relay or for its person — in [PairingCancelled], until it sends the
 /// enrolment: from then on the new device may come to hold the account, and
 /// only the report the attempt goes on to wait for can list it, so it runs
-/// to its end whatever [cancel] says ([sentEnrolment]). What the relay holds
+/// to its end whatever [cancel] says ([sentEnrolment]). The one wait it sees
+/// out is the relay's word on the existing device's reply, once that is on
+/// its way: whether the new device can hold the reply is what decides
+/// whether the code has a ceremony left ([answered]). What the relay holds
 /// for this side that it had not read, or not answered, when it stopped is
 /// left unacknowledged, for the next attempt on the code to read.
 ///
@@ -112,10 +115,13 @@ class PairingCancel {
   /// holding the code, unless it was the caller's own next attempt on it.
   bool get closedByAnotherLogin => _closedByAnotherLogin;
 
-  /// Whether the attempt had handed its reply to the new device's
-  /// commitment over. The new device answers the first reply it gets and no
-  /// other (§10.2 rule 5), so a later attempt on the code has no ceremony to
-  /// run unless this one finished it.
+  /// Whether the relay has taken the attempt's reply to the new device's
+  /// commitment. The new device answers the first reply it gets and no other
+  /// (§10.2 rule 5), so once the relay has one for it a later attempt on the
+  /// code has no ceremony to run unless this one finished it. A reply the
+  /// relay never said it took leaves this false: until 2026-10-31 it was set
+  /// before the reply went, and a code whose reply never left the device
+  /// could be taken for one answered.
   bool get answered => _answered;
 
   /// Whether the attempt is to stop: asked to, with the enrolment neither
@@ -602,12 +608,19 @@ class RelayPairing {
       // at the relay, and the next attempt on the code answers it.
       if (box.cancelled) throw const PairingCancelled();
       box.acknowledge(committed);
-      cancel?._answered = true;
       final (reply, pending) = answer;
+      // A stop that comes while the reply is going up waits for the relay's
+      // word on it: taken, the new device can hold this reply and will take
+      // no other, so the code has had its answer ([PairingCancel.answered]);
+      // not taken, the next attempt on the code may find the commitment and
+      // answer it. Either way the attempt then stops.
       await _post(box,
           to: iMailbox,
           id: 'z-pair-reply',
-          payload: jsonEncode({'k': 'reply-v3', ...reply}));
+          payload: jsonEncode({'k': 'reply-v3', ...reply}),
+          whole: true);
+      cancel?._answered = true;
+      if (box.cancelled) throw const PairingCancelled();
 
       final open = await _awaitFrame(box, 'open-v3', timeout);
       final session = await pending.accept(open);
@@ -735,14 +748,22 @@ class RelayPairing {
   /// same mailbox — and not in the send's own words, which say only that the
   /// connection closed: the relay closes a connection for another login
   /// whether or not it has yet taken a frame still going up from it. An
-  /// attempt cancelled before or meanwhile stops ([_unlessCancelled]).
+  /// attempt cancelled before or meanwhile stops ([_unlessCancelled]) —
+  /// meanwhile, unless [whole]: then a send under way is seen to its end, the
+  /// relay's word on it or the connection's failure.
   static Future<void> _post(_Mailbox box,
       {required String to,
       required String id,
-      required String payload}) async {
+      required String payload,
+      bool whole = false}) async {
     try {
-      await _unlessCancelled(
-          box, () => box.client.send(to: to, id: id, payload: payload));
+      if (whole) {
+        if (box.cancelled) throw const PairingCancelled();
+        await box.client.send(to: to, id: id, payload: payload);
+      } else {
+        await _unlessCancelled(
+            box, () => box.client.send(to: to, id: id, payload: payload));
+      }
     } on RelayException {
       if (!box.client.isOpen) throw _closed(box);
       rethrow;

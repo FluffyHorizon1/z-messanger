@@ -512,9 +512,11 @@ unless it has already started sending your account, which then finishes —
 and your phone does not take that for someone else using the code; leaving
 the link screen on the new device stops its link too, unless it has already
 started installing your account. You can enter the same code again until the
-new device shows its digits; once it has, the link you stopped has used that
-code up — your phone says so if you enter it again — and the new device
-shows a new one when it gives up: start again on both devices with that. And
+new device shows its digits; once it has, a link that does not finish has
+used that code up — one you stopped, one whose codes were said to differ,
+one that timed out or lost its connection — and your phone says so if you
+enter it again, and the new device shows a new one when it gives up: start
+again on both devices with that. And
 if your phone ever lists a device you did not finish linking, revoke it in
 Settings → Linked devices.
 

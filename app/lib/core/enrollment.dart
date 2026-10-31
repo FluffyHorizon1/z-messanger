@@ -148,18 +148,18 @@ class PairingCodeSpent implements Exception {
       'over, and will not use it again';
 }
 
-/// What `ChatService.hostDeviceLink` throws for a code it was still hosting
-/// a link with when it was entered again, once it has stopped that link,
-/// when the link had already answered the new device: the new device holds
-/// that answer and takes no other (§10.2 rule 5), so the code has no
-/// ceremony left, and the new device shows a new one once it gives up.
-/// Said at once, where the call used to wait out its timer for a commitment
-/// that would not come. Nothing is sent.
+/// What `ChatService.hostDeviceLink` throws for a code whose link on this
+/// device ended without linking once the relay had taken its reply to the
+/// new device — stopped, the digits said to differ, a wait run out, a
+/// connection dropped: the new device can hold that answer and takes no
+/// other (§10.2 rule 5), so the code has no ceremony left, and the new device
+/// shows a new one once it gives up. Said at once, where the call used to
+/// wait out its timer for a commitment that would not come. Nothing is sent.
 class PairingCodeAnswered implements Exception {
   const PairingCodeAnswered();
   @override
-  String toString() => 'PairingCodeAnswered: the link this device stopped '
-      'had answered the new device with this code';
+  String toString() => 'PairingCodeAnswered: a link on this device that did '
+      'not finish had answered the new device with this code';
 }
 
 /// The per-contact `kv` families an enrolment carries (§10 `cstate`): the

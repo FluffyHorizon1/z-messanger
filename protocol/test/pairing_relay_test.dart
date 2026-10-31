@@ -1259,6 +1259,136 @@ void main() {
           reason: 'it waited for the report, and links the new device on it');
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // The new device answers the first reply it gets (§10.2 rule 5): once the
+    // relay has taken a reply the code has had its answer, and a reply the
+    // relay never took leaves the commitment for the next attempt. Until
+    // 2026-10-31 the existing device counted its reply as given before it
+    // went ([PairingCancel.answered]), so a code whose reply never left it
+    // could be taken for one answered. Here the phone's connection closes
+    // as it acknowledges the commitment: neither that acknowledgement nor the
+    // reply after it reaches the relay.
+    test('an existing device whose connection closes before the relay takes '
+        'its reply has not answered, and the next attempt on the code links',
+        () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final me = await AccountIdentity.generate();
+      String? commitment;
+      var cut = false;
+      final watch = await front(url, (frame) {
+        if (kindOfFrame(frame) == 'commit-v3') {
+          commitment = (jsonDecode(frame) as Map)['id'] as String?;
+        }
+        return [frame];
+      }, cutUp: (frame) {
+        if (cut || commitment == null) return false;
+        final f = jsonDecode(frame);
+        return cut = f is Map && f['t'] == 'recv' && f['id'] == commitment;
+      });
+      try {
+        final laptop = RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final cancel = PairingCancel();
+        final first = await RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          code: code,
+          me: me,
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+          cancel: cancel,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(cut, isTrue,
+            reason: 'the connection closed as the phone acknowledged the '
+                'commitment');
+        expect('$first', contains('connection closed'));
+        expect(cancel.answered, isFalse,
+            reason: 'the relay never took its reply');
+        final second = await RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: me,
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(second, isA<DeviceCertificate>(),
+            reason: 'the next attempt finds the commitment, answers it and '
+                'links');
+        expect(await laptop, isA<PairingResult>());
+      } finally {
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // What a stopped attempt's code is left with turns on whether the relay
+    // took its reply, so a stop that comes while the reply is going up waits
+    // for the relay's word on it, and then stops. Until 2026-10-31 it stopped
+    // at once, with the reply's fate unknown.
+    test('an existing device stopped while its reply is going up waits for '
+        "the relay's word on it, and then says it has answered", () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final release = Completer<void>();
+      var going = false;
+      final watch = await front(url, (frame) => [frame], holdUp: (frame) {
+        if (!isSendOf(frame, 'z-pair-reply')) return null;
+        going = true;
+        return release.future;
+      });
+      try {
+        final laptop = RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final cancel = PairingCancel();
+        var ended = false;
+        final phone = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+          cancel: cancel,
+        ).then<Object?>((r) => r, onError: (Object e) => e)
+          ..whenComplete(() => ended = true);
+        await waitUntil(() => going, what: "the phone's reply on its way up");
+        cancel.cancel();
+        // A negative check over a window: for a second after the stop, the
+        // relay not having taken the reply, the attempt has not ended.
+        await Future<void>.delayed(const Duration(seconds: 1));
+        expect(ended, isFalse,
+            reason: "it waits for the relay's word on its reply");
+        release.complete();
+        expect(await phone, isA<PairingCancelled>(),
+            reason: 'and then stops');
+        expect(cancel.answered, isTrue, reason: 'the relay took its reply');
+        expect(await laptop, isNot(isA<PairingResult>()),
+            reason: 'the new device, sent no enrolment, links nothing');
+      } finally {
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {

@@ -597,7 +597,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get linkCodeAnswered =>
-      'That code was used in the link this device stopped: the new device already has this device\'s answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.';
+      'That code was used in a link that did not finish: the new device already has this device\'s answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.';
 
   @override
   String get linkADevice => 'Link a device';

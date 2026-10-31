@@ -135,7 +135,15 @@
 //      answered the laptop, and that attempt is over, says at once that the
 //      laptop needs a new code — once restarted too — the phone keeping the
 //      code by its rendezvous id, not the code itself, and logging in as the
-//      code's mailbox for neither.
+//      code's mailbox for neither;
+//  28. a code entered again on the phone once the link it answered ended
+//      without a stop — its person said the digits differ, its wait for the
+//      laptop's opening ran out, or its connection dropped once the relay had
+//      taken its reply — says at once, in both languages, that the laptop
+//      needs a new code, the phone keeping each code by its rendezvous id;
+//  29. a code whose reply never reached the relay — the phone's connection
+//      closed as it acknowledged the laptop's commitment — is not kept, and
+//      entered again links the laptop.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -412,12 +420,12 @@ void main() {
       'alguien más lo haya visto. En el dispositivo nuevo, vuelve atrás y '
       'elige «Vincular a una cuenta existente» otra vez para obtener un '
       'código nuevo, e introdúcelo aquí.';
-  const codeAnswered = 'That code was used in the link this device stopped: '
+  const codeAnswered = 'That code was used in a link that did not finish: '
       "the new device already has this device's answer to it, and will not "
       'take another. On the new device, go back and choose "Link to an '
       'existing account" again for a new code, then enter that one here.';
-  const codeAnsweredEs = 'Ese código se usó en la vinculación que este '
-      'dispositivo detuvo: el dispositivo nuevo ya tiene la respuesta de este '
+  const codeAnsweredEs = 'Ese código se usó en una vinculación que no '
+      'terminó: el dispositivo nuevo ya tiene la respuesta de este '
       'y no aceptará otra. En el dispositivo nuevo, vuelve atrás y elige '
       '«Vincular a una cuenta existente» otra vez para obtener un código '
       'nuevo, e introdúcelo aquí.';
@@ -2587,5 +2595,133 @@ void main() {
         .routingId();
     expect(rec.welcomed.where((id) => id == box), hasLength(1),
         reason: 'the first attempt alone logged in as the phone\'s mailbox');
+  });
+
+  test(
+      '28. a code entered again once the link it answered ended without a '
+      'stop says at once that the laptop needs a new code', () async {
+    // The phone reaches the relay through a front this test steers: it
+    // keeps the laptop's opening from the phone, or closes the phone's
+    // connection as the opening comes.
+    var mode = '';
+    final rec = await Recorder.start(relayUrl(),
+        hand: (frame) =>
+            mode == 'no opening' && Recorder.kindOf(frame) == 'open-v3'
+                ? const <String>[]
+                : [frame],
+        cut: (frame) =>
+            mode == 'dropped' && Recorder.kindOf(frame) == 'open-v3');
+    addTearDown(rec.close);
+    final alice = await person('Alice28', url: rec.url);
+    await connected([alice]);
+    const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final kept = <String>[];
+    final laptops = <Future<Object?>>[];
+    for (final (what, how, first) in <(String, String, Matcher)>[
+      ('its person says the digits differ', 'differ', isFalse),
+      ("its wait for the laptop's opening runs out", 'no opening',
+          isA<TimeoutException>()),
+      ('its connection drops once the relay has its reply', 'dropped',
+          isA<RelayException>()),
+    ]) {
+      final n = await NewDeviceLink.create();
+      final code = n.code;
+      laptops.add(n
+          .run(
+            relayUrl: relayUrl(),
+            confirm: (_) async => true,
+            timeout: timeout,
+            margin: margin,
+          )
+          .then<Object?>((r) => r, onError: (Object e) => e));
+      mode = how;
+      final ended = await alice.svc
+          .hostDeviceLink(code, confirmSas: (_) async => how != 'differ')
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      mode = '';
+      expect(ended, first, reason: '$what: how the link ended');
+      final waited = Stopwatch()..start();
+      final again = await alice.svc
+          .hostDeviceLink(code, confirmSas: (_) async => true)
+          .then<Object?>((r) => r, onError: (Object e) => e);
+      waited.stop();
+      expect([phoneScreen(again), hostLinkFailureText(es, again!)],
+          [codeAnswered, codeAnsweredEs],
+          reason: '$what: the laptop holds that answer and takes no other');
+      expect(waited.elapsed, lessThan(timeout),
+          reason: '$what: at once, and not when a wait ran out');
+      kept.add(await PairingCode.parse(code).rendezvousRoutingIdV3());
+      final stored = await alice.vault.kvGet('link_answered_codes');
+      expect(jsonDecode(stored!), kept,
+          reason: '$what: kept by its rendezvous id');
+      expect(stored, isNot(contains(code)));
+    }
+    for (final l in await Future.wait(laptops)) {
+      expect(l, isNot(isA<PairingResult>()), reason: 'nothing installed');
+    }
+    expect(await alice.svc.linkedDevices(), isEmpty);
+    expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+        reason: 'nobody else had a code');
+  });
+
+  test(
+      '29. a code whose reply never reached the relay is not kept, and '
+      'entered again links the laptop', () async {
+    // The phone's connection closes as it acknowledges the laptop's
+    // commitment: neither that acknowledgement nor the reply written after
+    // it reaches the relay, which keeps the commitment for the next login.
+    String? commitment;
+    var cut = false;
+    final rec = await Recorder.start(relayUrl(), hand: (frame) {
+      if (Recorder.kindOf(frame) == 'commit-v3') {
+        commitment = (jsonDecode(frame) as Map)['id'] as String?;
+      }
+      return [frame];
+    }, cutUp: (frame) {
+      if (cut || commitment == null) return false;
+      final f = jsonDecode(frame);
+      return cut = f is Map && f['t'] == 'recv' && f['id'] == commitment;
+    });
+    addTearDown(rec.close);
+    final alice = await person('Alice29', url: rec.url);
+    await connected([alice]);
+    const timeout = Duration(seconds: 6), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    final dir = await tempDir('laptop29');
+    final vault = await Vault.open(rootOverride: dir);
+    final laptop = n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: timeout,
+          margin: margin,
+          install: (r) async {
+            await setRelayUrl(vault, relayUrl(), acceptedInsecure: true);
+            await installEnrollment(vault, r, sealingKey: n.sealingKey);
+          },
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final first = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    expect(cut, isTrue,
+        reason: 'the connection closed as the phone acknowledged the '
+            'commitment');
+    expect(first, isA<RelayException>(), reason: 'its connection dropped');
+    expect(await alice.vault.kvGet('link_answered_codes'), isNull,
+        reason: 'not kept: the relay never took the reply');
+    final again = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    expect(again, isTrue,
+        reason: 'the next attempt finds the commitment, answers it and links');
+    expect(await laptop, isA<PairingResult>());
+    expect(await alice.svc.linkedDevices(), hasLength(1));
+    await vault.db.close();
   });
 }

@@ -604,7 +604,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get linkCodeAnswered =>
-      'Ese código se usó en la vinculación que este dispositivo detuvo: el dispositivo nuevo ya tiene la respuesta de este y no aceptará otra. En el dispositivo nuevo, vuelve atrás y elige «Vincular a una cuenta existente» otra vez para obtener un código nuevo, e introdúcelo aquí.';
+      'Ese código se usó en una vinculación que no terminó: el dispositivo nuevo ya tiene la respuesta de este y no aceptará otra. En el dispositivo nuevo, vuelve atrás y elige «Vincular a una cuenta existente» otra vez para obtener un código nuevo, e introdúcelo aquí.';
 
   @override
   String get linkADevice => 'Vincular un dispositivo';

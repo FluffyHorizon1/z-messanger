@@ -2278,7 +2278,10 @@ client now hosts one link per code: an attempt on a code it is already
 hosting first stops the earlier one, and starts once it is over, and
 leaving the link screen stops the attempt it started. A stopped attempt
 ends at once in any wait — for a frame, for the relay, for its user's answer
-— sends nothing more, logs in as no other mailbox, keeps nothing as spent,
+— but one: once its reply is on its way, it waits for the relay's word on
+the reply (`sent`), or for its connection to fail, since whether the new
+device can hold that reply is what the code is left with (below); it then
+sends nothing more, logs in as no other mailbox, keeps nothing as spent,
 and acknowledges nothing it had not read, nor the commitment when it had not
 yet sent its reply, so that the next attempt on the code reads them. It
 cannot say what closed its connection, if something did — this device's own
@@ -2294,15 +2297,23 @@ stand between it and the account, while one that is answered at once,
 because the stopped attempt had answered the new device (below), never logs
 in, and that login stays until it leaves, as it does when no attempt follows
 — with nothing of the account to read, since this device sends nothing more
-on the code. A stopped
-attempt that had answered the new device's commitment leaves its code with
-no ceremony to run, since the new device answers the first reply it gets and
-no other (rule 5): the reference client keeps that code as it keeps a spent
-one — by its v3 rendezvous id, the last 32, with no time bound, in no backup
-— and an attempt on it, whether the one that stopped the first or any later
-one, across restarts, says so at once, with how to get a new code, where
-until 2026‑10‑31 it waited out its timer for a commitment that would not
-come. An attempt
+on the code. An attempt
+whose reply the relay has taken, and that then ends without linking —
+stopped, its user saying the digits differ, a wait run out, its connection
+dropped, the new device not confirming — leaves its code with no ceremony to
+run, since the new device answers the first reply it gets and no other
+(rule 5): the reference client keeps that code as it keeps a spent one — by
+its v3 rendezvous id, the last 32, with no time bound, in no backup — and an
+attempt on it, whether the one that stopped the first or any later one,
+across restarts, says so at once, with how to get a new code, where until
+2026‑10‑31 it waited out its timer for a commitment that would not come.
+Until 2026‑10‑31, too, only a stopped attempt kept its code, and it counted
+its reply as given before it went. A reply the relay never took is not
+counted: the attempt acknowledged the commitment on the same connection just
+before the reply, so if the reply never reached the relay that
+acknowledgement may not have either, and the next attempt may find the
+commitment and answer it — the new device, having had no reply, takes that
+one. An attempt
 that has handed the enrollment over is not stopped — the new device may come
 to hold the account, and only the report lists it — so it runs on to its
 end, and an attempt on its code that came meanwhile ends as it does. The

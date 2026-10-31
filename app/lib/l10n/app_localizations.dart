@@ -1052,10 +1052,10 @@ abstract class AppLocalizations {
   /// **'This device will not use that code again: another connection took over a link with it, so someone else may have seen it. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.'**
   String get linkCodeSpent;
 
-  /// On the existing device (Link a device), when the code typed is one this device was still linking with, in a link it stopped for this entry (its person left the screen and entered the code again), and that link had already answered the new device: the new device takes no second answer, so the code cannot link. Nothing was sent. The person gets a new code on the new device by going back and choosing "Link to an existing account" (onbLinkExisting) again.
+  /// On the existing device (Link a device), when the code typed is one whose link here ended without linking once the relay had taken this device's answer for the new device: stopped (its person left the screen, or entered the code again), the digits said to differ, a wait run out, or a connection dropped. The new device takes no second answer, so the code cannot link. Nothing was sent. The person gets a new code on the new device by going back and choosing "Link to an existing account" (onbLinkExisting) again.
   ///
   /// In en, this message translates to:
-  /// **'That code was used in the link this device stopped: the new device already has this device\'s answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.'**
+  /// **'That code was used in a link that did not finish: the new device already has this device\'s answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.'**
   String get linkCodeAnswered;
 
   /// Title of the screen that adds a device, and the action that opens it.
