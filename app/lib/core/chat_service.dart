@@ -4567,10 +4567,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// key's state. A `pqdc` and the key held are bound ([DeviceSeal.pqdcBound])
   /// when the `pqdc` follows the key, in order, on the session the key last
   /// came on; or precedes it there, and the key is the first held for that
-  /// device or one held before the `pqdc` arrived. Anything else may be of
-  /// two states: a restore is heard from on new sessions, where its `pqid`
-  /// can arrive before its `pqseal`; a device whose seed no longer reads
-  /// keeps the sessions its old `pqdc` came on. A different key ends what
+  /// device or one held before the `pqdc` arrived — in each case with
+  /// nothing that device sent between the two skipped over ([_gapOn]), where
+  /// an announcement the relay lost would lie. Anything else may be of two
+  /// states: a restore is heard from on new sessions, where its `pqid` can
+  /// arrive before its `pqseal`; a device whose seed no longer reads keeps
+  /// the sessions its old `pqdc` came on. A different key ends what
   /// was bound to the one it replaces — the `pqdc` bound to it goes with it,
   /// an unbound one waits for the key it may be of — and [account], the
   /// account key the carrying `pqid` named, is kept with the `pqdc`. As a
@@ -4733,6 +4735,54 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       dec.createdNewSession &&
       conv != null &&
       conv.sessions.values.any((s) => s.sid != dec.sid && s.receivedAny);
+
+  /// 4.9.0 (§18.11): the position each of [conv]'s sessions last skipped
+  /// over, by session — what [_skippedOver] holds a decrypt against.
+  static Map<String, String?> _lastSkips(Conversation conv) => {
+        for (final e in conv.sessions.entries)
+          e.key: e.value.ratchet.skipped.isEmpty
+              ? null
+              : e.value.ratchet.skipped.keys.last,
+      };
+
+  /// 4.9.0 (§18.11): whether reading [dec] skipped over a message its sender
+  /// sent before it on that session — lost at the relay, or yet to come: the
+  /// ratchet keeps a key it had not kept before [before] ([_lastSkips]), and
+  /// a key it skips is kept last. A message read out of order fills such a
+  /// gap, and opens none.
+  static bool _skippedOver(
+      Conversation conv, DecryptResult dec, Map<String, String?> before) {
+    if (dec.outOfOrder) return false;
+    final skipped = conv.sessions[dec.sid]?.ratchet.skipped;
+    final last = skipped == null || skipped.isEmpty ? null : skipped.keys.last;
+    return last != before[dec.sid];
+  }
+
+  /// 4.9.0 (§18.11): a message from [deviceRid], one of [owner]'s devices,
+  /// was read on session [sid] past one it sent there before
+  /// ([_skippedOver]) — which may have announced a key it drew, as the
+  /// announcement of a seed that no longer reads is sent ahead of what
+  /// follows. So what came there before the gap is not known to be of the
+  /// state of what comes after it: [sid] stops being the session that
+  /// device's key, or its `pqdc`, is held to have come on
+  /// ([DeviceSeal.ekSid], [DeviceSeal.pqdcSid]) until either comes there
+  /// again, and nothing read across the gap is bound ([_keepSeal]). In
+  /// memory; whether anything changed.
+  bool _gapOn(String owner, String deviceRid, String sid) {
+    if (debugBuildBefore445) return false;
+    final d = _contactSeals[owner]?.devices[deviceRid];
+    if (d == null) return false;
+    var changed = false;
+    if (d.ekSid == sid) {
+      d.ekSid = null;
+      changed = true;
+    }
+    if (d.pqdcSid == sid) {
+      d.pqdcSid = null;
+      changed = true;
+    }
+    return changed;
+  }
 
   /// 44.3 (§18.11): what [inner], from [deviceRid] — one of [owner]'s
   /// devices — says about sealing keys, taken in memory: the key its
@@ -6295,6 +6345,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         final conv = await _convFor(contact);
         final snapshot = jsonEncode(conv.toJson()); // for rollback
         final cacheBefore = _skippedShape(conv);
+        final skipsBefore = _lastSkips(conv);
         final probe = _debugOnDecrypted;
         if (probe != null &&
             await _debugPeek(
@@ -6342,6 +6393,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                 startedOver: _peerStartedOver(conv, dec))) {
           sealsChanged = true;
         }
+        // 4.9.0 (§18.11): read past a message their device sent before it on
+        // this session, which may have announced a key it drew: what came
+        // there before is not taken as of the state of what comes after
+        // ([_gapOn]) — before what this message says is taken, and written
+        // down in the step that writes the session, below.
+        final gap = !debugBuildBeforeSealingKeys &&
+            _skippedOver(conv, dec, skipsBefore) &&
+            _gapOn(contact.rid, contact.rid, dec.sid);
+        if (gap) sealsChanged = true;
 
         // The envelope decrypted, so the ratchet has validly advanced; the
         // plaintext inside can still be garbage — a peer's buggy or hostile
@@ -6394,8 +6454,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             // messages when they arrive.
             await _saveConv(contact.rid, txn: txn);
             // 4.8.1: and, on a session their device opened, what this one
-            // holds of it with the forgetting above ([_forgetHeldMine]).
-            if (dec.createdNewSession && !debugBuildBeforeSealingKeys) {
+            // holds of it with the forgetting above ([_forgetHeldMine]) — and
+            // (4.9.0) with a gap read past ([_gapOn]).
+            if ((dec.createdNewSession || gap) &&
+                !debugBuildBeforeSealingKeys) {
               await _writeSealsLocked(contact.rid, txn: txn);
             }
             // Only when the cache changed. An in-order message — the common

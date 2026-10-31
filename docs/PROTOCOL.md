@@ -4458,8 +4458,10 @@ state. A receiver takes a `pqdc` and the key held as of one state when the
 `pqdc` is read after the key on the session the key last came on, in the
 order it was sent (not from keys the ratchet skipped over); or before it on
 that session, when the key is the first held for that device, or one held
-before the `pqdc` came. Anything else may be of two states, and is evidence
-of nothing. A device restored from an archive that carried no sealing key —
+before the `pqdc` came — each with no message the device sent between the
+two skipped over, where an announcement the relay lost would lie. Anything
+else may be of two states, and is evidence of nothing. A device restored
+from an archive that carried no sealing key —
 one made before 44.3, or a `.zid` identity backup — has lost its ratchet
 sessions and is heard from on new ones, its own or one opened to it, where
 its `pqid` can arrive before its `pqseal`, which waits for that session to be

@@ -110,10 +110,12 @@ class DeviceSeal {
   bool byCeremony;
 
   /// 4.9.0 (§18.11): the ratchet session [ek] last arrived on, and the one
-  /// [pqdc] arrived on — the session ids the ratchet names them by. What
-  /// says whether the two are of one state of that device
-  /// ([pqdcBound]); null for a record an older build wrote, and for what
-  /// came by another door than the ratchet's.
+  /// [pqdc] arrived on — the session ids the ratchet names them by — while
+  /// nothing that device sent there since has been skipped over, lost at
+  /// the relay or yet to come ([ChatService]'s `_gapOn`). What says whether
+  /// the two are of one state of that device ([pqdcBound]); null for a
+  /// record an older build wrote, for what came by another door than the
+  /// ratchet's, and once such a gap has been read past.
   String? ekSid, pqdcSid;
 
   /// 4.9.0 (§18.11): [pqdc] and [ek] are known to be of one state of that
@@ -125,7 +127,9 @@ class DeviceSeal {
   /// on the session the key came on, in the order it was sent. And one read
   /// before it on that session is of the key's state when the key is the
   /// first this device holds of that device, or one it held before that
-  /// `pqdc` arrived. Anything else may be of two states — a restore's new
+  /// `pqdc` arrived. Each with nothing that device sent between the two
+  /// skipped over ([ekSid]): an announcement the relay lost would lie
+  /// there. Anything else may be of two states — a restore's new
   /// `pqid` can arrive before its new `pqseal`, and a device whose seed no
   /// longer reads keeps the sessions its old `pqdc` came on — and is
   /// evidence of nothing. A key that replaces the one held takes with it a

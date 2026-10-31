@@ -119,7 +119,16 @@
 //  18. a finding of the key their device held before is not said of the key
 //      it holds now: left by a stop between the new key's being written and
 //      its judgement, the link reads classical, not post-quantum, and the
-//      next start judges it again (4.9.0).
+//      next start judges it again (4.9.0);
+//  19. a contact's device whose stored seed no longer reads draws a new key
+//      and announces it on the session it has, and the relay loses that
+//      announcement: its `pqdc` over the new key, read past the gap on the
+//      session the old key came on, is not set against the old key — nothing
+//      is refused, the link classical — and once this device resets the
+//      session, its device announces the new key again there and the `pqdc`
+//      kept links it (the state of a device whose `pqdc` had not reached
+//      this one, built in the vaults; the key, the session, the loss and the
+//      `pqdc` real) (4.9.0).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -2010,6 +2019,111 @@ void main() {
     expect(alice.svc.contacts[bRid]!.deviceLinkVerdict, isNull,
         reason: 'judged again at the start: the finding of the old key gone');
     expect(await alice.vault.kvGet('dlink_$bRid'), isNull);
+    await closeAll();
+  });
+
+  test(
+      '19. the relay loses the announcement of the new key a contact device '
+      'drew on the sessions it has: its pqdc over that key, read past the gap, '
+      'is not set against the old key, and a reset links it again', () async {
+    var alice = await person('alice19');
+    var bob = await person('bob19');
+    await pairUp(alice, bob);
+    await linkedBothWays(alice, bob);
+    final bRid = bob.svc.myRid;
+    final oldKey = bob.svc.sealingKey!;
+
+    // Where Alice stands with a device whose `pqdc` has not reached her — one
+    // whose app was older than 4.7 when she added them, say, and updated
+    // since: its key held, from the session it came on, and nothing found.
+    alice = await restart(alice, before: (v) async {
+      final rec = SealRecord.decode(await v.kvGet('cseal_$bRid'));
+      final d = rec.devices[bRid]!;
+      expect(d.ekSid, isNotNull,
+          reason: 'the premise: the session his key came on is held');
+      d
+        ..pqdc = null
+        ..pqdcSid = null
+        ..pqdcBound = false
+        ..pqdcAfterKey = false
+        ..pqdcAccount = null;
+      await v.kvPut('cseal_$bRid', rec.encode());
+      await v.kvDelete('dlink_$bRid');
+    });
+    await connected([alice, bob]);
+    expect(alice.svc.deviceLinkWith(bRid), DeviceLink.classical);
+
+    // Bob's app stops, and the seed it stored is damaged: his device draws a
+    // new key at its next start and announces it on the session it has,
+    // ahead of its next message there — and the relay loses that
+    // announcement, Alice's probe dropping it unread. The `pqid` once more is
+    // on, as the seam has it, and not due for hours yet.
+    var lost = 0;
+    alice.svc.debugOnDecrypted = (path, from, dec) {
+      if (path != 'primary' || from != bRid || lost > 0) return false;
+      final Uint8List? announced;
+      try {
+        announced = InnerMessage.fromBytes(dec.plaintext).pqSealKey;
+      } catch (_) {
+        return false;
+      }
+      if (announced == null || constantTimeEquals(announced, oldKey)) {
+        return false;
+      }
+      lost++;
+      return true;
+    };
+    bob = await restart(bob, resends: true, before: (v) async {
+      await v.kvPut(sealSeedKey, b64(randomBytes(12)));
+    });
+    await connected([alice, bob]);
+    final newKey = bob.svc.sealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key drawn');
+    await talkUntil(bob, alice, () => lost == 1,
+        what: "Bob's announcement of his new key lost");
+
+    // The `pqid` once more, made due now, brings the pqdc over the new key on
+    // that session, past the gap the lost announcement left.
+    bob.svc.pqdcResendDelay = const Duration(milliseconds: 300);
+    final newPqdc = bob.svc.debugOwnPqdc!;
+    Future<bool> pqdcWritten() async {
+      final d = SealRecord.decode(await alice.vault.kvGet('cseal_$bRid'))
+          .devices[bRid];
+      return d?.pqdc != null && constantTimeEquals(d!.pqdc!, newPqdc);
+    }
+
+    await talkUntil(alice, bob, pqdcWritten,
+        what: "Alice's vault holding Bob's pqdc over his new key");
+    expect(constantTimeEquals(alice.svc.debugPqSealOf(bRid)!, oldKey), isTrue,
+        reason: 'the premise: his announcement lost, the old key still held');
+    // Judged by the door that took it, or — this — at the next start, which
+    // judges every contact holding a key and a pqdc and no finding.
+    alice = await restart(alice);
+    await alice.svc.debugHeldLinksJudged;
+    expect(alice.svc.deviceLinkWith(bRid), DeviceLink.classical,
+        reason: 'a pqdc read past a gap is no evidence against the key '
+            'held: ${await linkState(alice, bRid)}');
+    expect(alice.svc.contacts[bRid]!.deviceLinkVerdict, isNull);
+    expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0,
+        reason: 'nothing said against his device');
+
+    // Alice resets the session. His device, which had taken her word for
+    // holding its key, announces the new one again on her new session at
+    // once (4.9.0), and the pqdc kept beside the old key links it.
+    await connected([alice, bob]);
+    await alice.svc.resetSecureSession(bRid);
+    var refusedOnTheWay = false;
+    await talkUntil(alice, bob, () {
+      if (alice.svc.deviceLinkWith(bRid) == DeviceLink.refused) {
+        refusedOnTheWay = true;
+      }
+      return alice.svc.deviceLinkWith(bRid) == DeviceLink.attested;
+    }, what: "Bob's device linked again, over its new key");
+    expect(refusedOnTheWay, isFalse);
+    expect(constantTimeEquals(alice.svc.debugPqSealOf(bRid)!, newKey), isTrue);
+    expect(alice.svc.contacts[bRid]!.deviceLinkVerdict!.sk,
+        await sha256Bytes(newKey));
+    expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0);
     await closeAll();
   });
 }
