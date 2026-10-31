@@ -3452,7 +3452,7 @@ abstract class AppLocalizations {
   /// **'Check now'**
   String get connectCheck;
 
-  /// Shown under a pending invite when the last attempt to carry it forward failed at the relay: it could not be reached, refused a step, or did not answer in time. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown.
+  /// Shown under a pending invite when the last attempt to carry it forward failed at the relay: it could not be reached, or did not answer in time. A step the relay refused has a line of its own. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown.
   ///
   /// In en, this message translates to:
   /// **'Could not reach the relay — will keep trying.'**
@@ -5443,6 +5443,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The group could not be created. Try again.'**
   String get grpCreateFailedOther;
+
+  /// Shown on the CONNECT tab when discarding a pending invite, or stopping the wait for someone who answered a group invite link, could not be saved because this device's own storage refused the write (a full disk, a locked or closed database). Nothing was discarded or stopped: the invite, or the wait, is as it was, and the person can press again; load-bearing clause: nothing has changed. No detail of the failure is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not save that, so nothing has changed. Try again; if this goes on, check that the device has free storage.'**
+  String get connectNotSaved;
+
+  /// Shown under a pending invite when the last attempt to carry it forward reached the relay and the relay refused it — the other side's mailbox there full, too many attempts at once, the relay's storage full. Not a relay that could not be reached, which has a line of its own. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'The relay was reached but refused this step — will keep trying.'**
+  String get connectFailedRefused;
 }
 
 class _AppLocalizationsDelegate

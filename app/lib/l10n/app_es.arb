@@ -580,7 +580,7 @@
   "connectDiscard": "Descartar",
   "connectCheck": "Comprobar ahora",
   "connectFailedRelay": "No se pudo contactar con el relay; se seguirá intentando.",
-  "@connectFailedRelay": {"description": "Shown under a pending invite when the last attempt to carry it forward failed at the relay: it could not be reached, refused a step, or did not answer in time. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown."},
+  "@connectFailedRelay": {"description": "Shown under a pending invite when the last attempt to carry it forward failed at the relay: it could not be reached, or did not answer in time. A step the relay refused has a line of its own. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown."},
   "connectFailedVault": "Este dispositivo no pudo guardar el progreso de esta invitación; se seguirá intentando. Si sigue pasando, comprueba que el dispositivo tiene espacio libre.",
   "@connectFailedVault": {"description": "Shown under a pending invite when this device's own storage refused to save the invite's progress (a full disk, a locked or closed database) — not a problem with the relay. The invite is kept in memory and saved again at the next attempt; load-bearing clause: it says the app will keep trying, and it points at the device's storage, not the network."},
   "connectFailedOther": "Algo falló en este dispositivo; se seguirá intentando.",
@@ -920,5 +920,9 @@
   "chatSaveFailedOther": "No se pudo guardar el archivo. Vuelve a intentarlo.",
   "@chatSaveFailedOther": {"description": "Shown in a chat when saving the decrypted copy of a file or a voice message failed. No detail of the failure is shown; the person can try again."},
   "grpCreateFailedOther": "No se pudo crear el grupo. Vuelve a intentarlo.",
-  "@grpCreateFailedOther": {"description": "Shown on the new-group screen when the group could not be made, for a reason the app does not name. No detail of the failure is shown; the person can try again."}
+  "@grpCreateFailedOther": {"description": "Shown on the new-group screen when the group could not be made, for a reason the app does not name. No detail of the failure is shown; the person can try again."},
+  "connectNotSaved": "Este dispositivo no pudo guardar eso, así que nada ha cambiado. Vuelve a intentarlo; si sigue pasando, comprueba que el dispositivo tiene espacio libre.",
+  "@connectNotSaved": {"description": "Shown on the CONNECT tab when discarding a pending invite, or stopping the wait for someone who answered a group invite link, could not be saved because this device's own storage refused the write (a full disk, a locked or closed database). Nothing was discarded or stopped: the invite, or the wait, is as it was, and the person can press again; load-bearing clause: nothing has changed. No detail of the failure is shown."},
+  "connectFailedRefused": "Se contactó con el relay, pero rechazó este paso; se seguirá intentando.",
+  "@connectFailedRefused": {"description": "Shown under a pending invite when the last attempt to carry it forward reached the relay and the relay refused it — the other side's mailbox there full, too many attempts at once, the relay's storage full. Not a relay that could not be reached, which has a line of its own. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown."}
 }

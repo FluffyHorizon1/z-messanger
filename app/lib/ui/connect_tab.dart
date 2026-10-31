@@ -70,6 +70,19 @@ class _ConnectTabState extends State<ConnectTab> {
     }
   }
 
+  /// Discard [invite]. A write the vault refuses leaves the invite as it was
+  /// ([ConnectInvites.discard]), and the person is told so in their words.
+  Future<void> _discard(ConnectInvites invites, PendingInvite invite) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
+    try {
+      await invites.discard(invite);
+    } catch (e) {
+      messenger
+          .showSnackBar(SnackBar(content: Text(connectStopFailureText(l, e))));
+    }
+  }
+
   Future<void> _copy(String value) async {
     await Clipboard.setData(ClipboardData(text: value));
     if (!mounted) return;
@@ -344,7 +357,7 @@ class _ConnectTabState extends State<ConnectTab> {
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(
-                onPressed: () => invites.discard(invite),
+                onPressed: () => _discard(invites, invite),
                 child: Text(l.connectDiscard),
               ),
             ),
@@ -637,10 +650,21 @@ class ConnectLinkWaits extends StatelessWidget {
                 final name = chat.contacts[w.rid]?.name ?? '';
                 final group = chat.groups[w.gid]?.name ?? '';
                 final messenger = ScaffoldMessenger.of(context);
+                final LinkWaitStop stop;
+                try {
+                  stop = await chat.cancelLinkJoin(w.id);
+                } catch (e) {
+                  // Not stopped: a write the vault refused leaves the wait
+                  // as it was (ChatService.cancelLinkJoin), and the person
+                  // is told so in their words.
+                  messenger.showSnackBar(
+                      SnackBar(content: Text(connectStopFailureText(l, e))));
+                  return;
+                }
                 // Their answer can have come, and the add begun, since this
                 // row was drawn: then it is too late, and that is what the
                 // person is told — not nothing.
-                if (await chat.cancelLinkJoin(w.id) == LinkWaitStop.adding) {
+                if (stop == LinkWaitStop.adding) {
                   messenger.showSnackBar(SnackBar(
                       content: Text(l.connectLinkWaitTooLate(name, group))));
                 }

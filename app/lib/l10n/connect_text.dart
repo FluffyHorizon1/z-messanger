@@ -1,3 +1,7 @@
+import 'dart:io' show FileSystemException;
+
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
+
 import '../core/connect_invites.dart';
 import '../core/models.dart';
 import 'app_localizations.dart';
@@ -16,12 +20,16 @@ import 'refusal_text.dart';
 // — "SqfliteFfiException(sqlite_error: 1811, …)" for a write the vault
 // refused — and the tab and the comparison showed an action's exception as
 // it came, but for a refused contact code: its message for a
-// FormatException, all of it for anything else.
+// FormatException, all of it for anything else. And until 2026-10-31 a step
+// the relay refused was said as a relay that could not be reached, and a
+// discard, or a stop to a group link's wait, that the vault refused went
+// unsaid.
 
 /// The card's line for why the last round did not carry its invite forward.
 String connectRoundFailureText(AppLocalizations l, ConnectFailure failure) =>
     switch (failure) {
       ConnectFailure.relay => l.connectFailedRelay,
+      ConnectFailure.refused => l.connectFailedRefused,
       ConnectFailure.vault => l.connectFailedVault,
       ConnectFailure.fault => l.connectFailedOther,
     };
@@ -37,3 +45,14 @@ String connectActionFailureText(AppLocalizations l, Object error) =>
       ConnectWriteRefused() => l.connectSaveFailed,
       _ => l.connectActionFailed,
     };
+
+/// What the tab says when discarding an invite, or stopping the wait for
+/// someone who answered a group link, did not happen: a write this device's
+/// storage refused — the invite or the wait then as it was — or anything
+/// else, in one line.
+String connectStopFailureText(AppLocalizations l, Object error) =>
+    error is ConnectWriteRefused ||
+            error is DatabaseException ||
+            error is FileSystemException
+        ? l.connectNotSaved
+        : l.connectActionFailed;

@@ -140,10 +140,16 @@ final class _HybridRun implements InviteRun {
 /// card says each in the reader's words (`connect_text.dart`), and none of
 /// them carries an exception's text.
 enum ConnectFailure {
-  /// The relay could not be reached, refused a step, or did not answer in
-  /// time: a socket, WebSocket, TLS or HTTP error, the relay client's own,
-  /// or a timeout.
+  /// The relay could not be reached, or did not answer in time: a socket,
+  /// WebSocket, TLS or HTTP error, a link the relay client lost, or a
+  /// timeout.
   relay,
+
+  /// The relay was reached and refused a step, with one of its own refusals
+  /// (`PROTOCOL.md` §12.2): the other side's mailbox there full, too many
+  /// frames at once, its store full ([relayRefused]). Until 2026-10-31 it
+  /// was said as a relay that could not be reached.
+  refused,
 
   /// This device's vault refused a write of the invites
   /// ([ConnectWriteRefused]).
@@ -152,6 +158,22 @@ enum ConnectFailure {
   /// Anything else: a fault in this build rather than in the network.
   fault,
 }
+
+/// Whether [e] is the relay's own refusal of a frame — one of the error
+/// codes of `PROTOCOL.md` §12.2, as the relay client puts it in a
+/// [RelayException], `refused` when an error frame named none, and
+/// `auth failed: ` and a code when it was the authentication that was
+/// refused — rather than a link lost, an answer that did not come in time,
+/// or something that is not a Z relay at all.
+bool relayRefused(RelayException e) =>
+    _relayRefusals.contains(e.message) || e.message.startsWith('auth failed: ');
+
+const _relayRefusals = {
+  'rate_limited', 'bad_json', 'internal', 'bad_auth', 'not_authed',
+  'bad_send', 'too_large', 'bad_push', 'unknown_frame', 'queue_full',
+  'store_full', 'pow_required', 'bad_intro', 'push_refused', 'intro_full',
+  'bad_ikey', 'anon_only', 'refused',
+};
 
 /// A write of the invites that this device's vault refused — a full disk, a
 /// locked or closed database. What refused it stays with it, for logs; the
@@ -768,6 +790,8 @@ class ConnectInvites extends ChangeNotifier {
       // Disposed while this pass was in flight: the round it was in has
       // ended, and nothing more is carried forward ([_disposed]).
       if (_disposed) return;
+      // Discarded since the pass began, or on its way out ([discard]).
+      if (!_invites.contains(invite)) continue;
       // Spent, or finished and waiting on a human: nothing a round trip can
       // change. (Stepping a finished run only turns `confirm` into `done`,
       // which the card does not distinguish and the poll should not pay for.)
@@ -830,10 +854,11 @@ class ConnectInvites extends ChangeNotifier {
         // after "Could not reach the relay".
         await _threw(invite, ConnectFailure.vault);
         continue;
-      } on RelayException {
+      } on RelayException catch (e) {
         // The relay refused something, or nothing answered: not a fact about
-        // the invite. Say so, and try again next time.
-        await _threw(invite, ConnectFailure.relay);
+        // the invite. Say which, and try again next time.
+        await _threw(invite,
+            relayRefused(e) ? ConnectFailure.refused : ConnectFailure.relay);
         continue;
       } on IOException {
         await _threw(invite, ConnectFailure.relay);
@@ -1075,10 +1100,27 @@ class ConnectInvites extends ChangeNotifier {
 
   /// The user gave up on an invite. Like [mismatch], it ends this invite and
   /// nothing else.
+  ///
+  /// Ended once the vault holds the invites without it. A write the vault
+  /// refuses leaves the invite as it was, in memory as in the vault — on
+  /// the card, and carried forward — and throws [ConnectWriteRefused], for
+  /// the screen to say. Until 2026-10-31 the run was ended and the invite
+  /// taken out of memory first, and the refusal went uncaught; the vault
+  /// held the invite until a later write of the invites went through, and a
+  /// start before that read it back and carried it forward.
   Future<void> discard(PendingInvite invite) async {
-    invite.run.abandon();
-    _invites.removeWhere((i) => i.id == invite.id);
-    await _save();
+    final at = _invites.indexWhere((i) => i.id == invite.id);
+    if (at < 0) return;
+    final going = _invites.removeAt(at);
+    try {
+      await _save();
+    } on ConnectWriteRefused {
+      _invites.insert(at.clamp(0, _invites.length), going);
+      _arm();
+      notifyListeners();
+      rethrow;
+    }
+    going.run.abandon();
     _arm();
     notifyListeners();
   }

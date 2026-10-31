@@ -12004,14 +12004,33 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// come, and one already read and not yet acted on — and the group says
   /// so; they stay a contact. Too late only once the add itself has begun,
   /// and then the answer says so rather than nothing.
+  ///
+  /// Stopped once the vault holds the waits without it. A write the vault
+  /// refuses leaves the wait where it was, in memory as in the vault, and
+  /// throws, for the screen to say. Until 2026-10-31 it went from memory and
+  /// stayed in the vault until a later write of the waits went through: this
+  /// run of the app added nobody on a go-ahead for it, and a start before
+  /// that write read it back, and a go-ahead after the start added them.
   Future<LinkWaitStop> cancelLinkJoin(String id) async {
+    final at = _linkAdds.keys.toList().indexOf(id);
     final rec = _linkAdds.remove(id);
     if (rec == null) {
       return _linkAdding.contains(id)
           ? LinkWaitStop.adding
           : LinkWaitStop.gone;
     }
-    await _saveLinks();
+    try {
+      await _saveLinks();
+    } catch (_) {
+      if (!_linkAdds.containsKey(id)) {
+        final rest = _linkAdds.entries.toList()
+          ..insert(min(at, _linkAdds.length), MapEntry(id, rec));
+        _linkAdds
+          ..clear()
+          ..addEntries(rest);
+      }
+      rethrow;
+    }
     if (groups[rec.gid] != null) {
       await _insertSystemMessage(
           rec.gid,

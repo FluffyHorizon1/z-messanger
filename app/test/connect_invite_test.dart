@@ -104,7 +104,23 @@
 //     and tells nobody, and a pump after it starts nothing. Until
 //     2026-10-31 the pass went on to the next invite's round and armed the
 //     polls as it ended, and they ran rounds for as long as the isolate
-//     lived.
+//     lived;
+// 15. a discard the vault refuses leaves the invite as it was — on the
+//     card, in memory and in the vault, carried forward — and says so in a
+//     line of its own, in English and in Spanish; pressed again once the
+//     vault takes writes, the invite goes from all three. Until 2026-10-31
+//     the refusal went uncaught, the invite gone from memory and still in
+//     the vault;
+// 16. so does a stop to a group link's wait: refused by the vault, the wait
+//     is still held, listed and in the vault, and the screen says so in a
+//     line of its own, in both languages; stopped again, it goes. Until
+//     2026-10-31 the refusal went uncaught, the wait gone from memory and
+//     still in the vault;
+// 17. a step the relay refuses — the other side's mailbox there full — is
+//     said on the card as the relay's refusal, not as a relay that could
+//     not be reached, in English and in Spanish, and once the relay takes
+//     it nothing is said. Until 2026-10-31 the card said "Could not reach
+//     the relay".
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -160,10 +176,13 @@ void main() {
   // it carries is written down in [linkSends]. With [holdAt] instead, the
   // relay's answer to that post is held back and the connection left open,
   // and `taken` is completed with the means to cut it: the relay has the
-  // message, and the app that posted it has not heard.
+  // message, and the app that posted it has not heard. With [refuseAt]
+  // instead (criterion 17), that post never reaches the relay: it is
+  // answered with the refusal [refuseAt] names, as the relay words one, once.
   late HttpServer link;
   ({String id, bool relayTakes})? dropAt;
   ({String id, Completer<void Function()> taken})? holdAt;
+  ({String id, String code})? refuseAt;
   final linkSends = <Map<String, Object?>>[];
 
   setUpAll(() async {
@@ -214,6 +233,13 @@ void main() {
         final drop = dropAt;
         if (f != null && f['t'] == 'send') {
           linkSends.add(f);
+          final refuse = refuseAt;
+          if (refuse != null && f['id'] == refuse.id) {
+            refuseAt = null;
+            down.add(jsonEncode(
+                {'t': 'error', 'code': refuse.code, 'id': refuse.id}));
+            return;
+          }
           if (drop != null && f['id'] == drop.id) {
             dropAt = null;
             if (!drop.relayTakes) {
@@ -1427,5 +1453,194 @@ void main() {
         'the pass: $ended; a pump after it: $again',
         'rounds begun after dispose(): 0; polls armed after it: 0; the pass: '
         'over; a pump after it: began 0 rounds');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  /// The line [key] of the ARB [lang]'s screens read, or null when it has
+  /// none: read from the ARB rather than the generated class, so that the
+  /// criteria below say the same of a build that has no such line.
+  String? arbLine(String lang, String key) =>
+      (jsonDecode(File('${Directory.current.path}/lib/l10n/app_$lang.arb')
+              .readAsStringSync()) as Map<String, Object?>)[key] as String?;
+
+  /// Whether the line [key] of [lang]'s ARB is on screen.
+  bool showing(String lang, String key) {
+    final line = arbLine(lang, key);
+    return line != null && find.text(line).evaluate().isNotEmpty;
+  }
+
+  /// The snackbar that is up, put away for the next.
+  Future<void> dismissSnackBar(WidgetTester t) async {
+    t
+        .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+        .removeCurrentSnackBar();
+    await t.pump();
+  }
+
+  testWidgets(
+      '15. a discard the vault refuses leaves the invite as it was, and says '
+      'so', (t) async {
+    // Tall enough for the whole of the card, Discard at its foot.
+    await t.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final l = lookupAppLocalizations(locale);
+      late Person dee;
+      late String id;
+      await t.runAsync(() async {
+        dee = await person('Dee$lang', url: 'ws://127.0.0.1:1');
+        id = (await dee.invites.create()).id;
+      });
+      await t.pumpWidget(tab(dee, const ConnectTab(), locale: locale));
+      await t.pump();
+      await drain(t, [dee.invites]); // the round the tab began, over
+      final discard = find.text(l.connectDiscard);
+      // Where the invite is: in memory, and whether its run goes on; on
+      // screen; in the vault.
+      Future<String> where() async {
+        final held =
+            dee.invites.invites.where((i) => i.id == id).firstOrNull;
+        final raw =
+            await t.runAsync(() => dee.vault.kvGet('connect_invites'));
+        final stored = raw != null &&
+            (jsonDecode(raw) as List).any((e) => (e as Map)['id'] == id);
+        final memory = held == null
+            ? 'gone from memory'
+            : held.run.finished
+                ? 'in memory, ended'
+                : 'in memory, carried forward';
+        return '$memory; '
+            '${discard.evaluate().isEmpty ? 'no card' : 'its card shown'}; '
+            '${stored ? 'in the vault' : 'not in the vault'}';
+      }
+
+      await t.runAsync(() => refuseWrites(dee));
+      await t.tap(discard);
+      await settleUntil(t, () => find.byType(SnackBar).evaluate().isNotEmpty);
+      final own = showing(lang, 'connectNotSaved');
+      seen.add('$lang, refused: ${own ? 'its own line' : 'not its line'}; '
+          '${await where()}');
+      await dismissSnackBar(t);
+      await t.runAsync(() => allowWrites(dee));
+      await t.tap(discard);
+      await settleUntil(t, () => discard.evaluate().isEmpty);
+      seen.add('$lang, pressed again: ${await where()}');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es']) ...[
+        '$lang, refused: its own line; in memory, carried forward; its card '
+            'shown; in the vault',
+        '$lang, pressed again: gone from memory; no card; not in the vault',
+      ],
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  testWidgets(
+      '16. a stop to a group link\'s wait that the vault refuses leaves the '
+      'wait as it was, and says so', (t) async {
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final l = lookupAppLocalizations(locale);
+      late Person owen;
+      late String id;
+      // Owen made a group link, and went ahead with whoever answered it:
+      // their go-ahead is awaited.
+      await t.runAsync(() async {
+        owen = await person('Owen$lang', url: 'ws://127.0.0.1:1');
+        final joiner = await ZIdentity.generate();
+        final code = (await joiner.bundle(displayName: 'Jo')).encode();
+        await owen.svc.addContactFromCode(code);
+        final rid = await (await ContactBundle.decode(code)).routingId();
+        final gid = await owen.svc.createGroup('Book club', [rid]);
+        final waiting = await owen.svc.expectLinkJoin(rid, gid,
+            issuedMs: DateTime.now().millisecondsSinceEpoch,
+            joinerKnows: true,
+            tag: Uint8List.fromList(
+                List.generate(connectGoAheadTagBytes, (i) => i + 1)));
+        expect(waiting, LinkJoinOutcome.waiting);
+        id = owen.svc.pendingLinkJoins.single.id;
+      });
+      await t.pumpWidget(tab(owen, const ConnectLinkWaits(), locale: locale));
+      await t.pump();
+      final stop = find.text(l.connectLinkWaitStop);
+      Future<String> where() async {
+        final raw = await t.runAsync(() => owen.vault.kvGet('group_links'));
+        final stored = raw != null &&
+            ((jsonDecode(raw) as Map)['adds'] as Map).containsKey(id);
+        final held = owen.svc.pendingLinkJoins.any((w) => w.id == id);
+        return '${held ? 'awaited' : 'not awaited'}; '
+            '${stop.evaluate().isEmpty ? 'not listed' : 'listed'}; '
+            '${stored ? 'in the vault' : 'not in the vault'}';
+      }
+
+      await t.runAsync(() => owen.vault.db.execute(
+          'CREATE TEMP TRIGGER refuse_links BEFORE INSERT ON kv '
+          "WHEN NEW.k = 's:group_links' "
+          "BEGIN SELECT RAISE(ABORT, 'database is locked'); END"));
+      await t.tap(stop);
+      await settleUntil(t, () => find.byType(SnackBar).evaluate().isNotEmpty);
+      final own = showing(lang, 'connectNotSaved');
+      seen.add('$lang, refused: ${own ? 'its own line' : 'not its line'}; '
+          '${await where()}');
+      await dismissSnackBar(t);
+      await t.runAsync(
+          () => owen.vault.db.execute('DROP TRIGGER refuse_links'));
+      await t.tap(stop);
+      await settleUntil(t, () => stop.evaluate().isEmpty);
+      seen.add('$lang, stopped again: ${await where()}');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es']) ...[
+        '$lang, refused: its own line; awaited; listed; in the vault',
+        '$lang, stopped again: not awaited; not listed; not in the vault',
+      ],
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  testWidgets(
+      '17. a step the relay refuses is said as its refusal, not as a relay '
+      'that could not be reached', (t) async {
+    final via = 'ws://127.0.0.1:${link.port}';
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      // What the card says of the last round.
+      String card() => showing(lang, 'connectFailedRefused')
+          ? 'the relay refused it'
+          : showing(lang, 'connectFailedRelay')
+              ? 'the relay could not be reached'
+              : 'nothing';
+      late Person alice;
+      await t.runAsync(() async {
+        alice = await person('Alice$lang', url: via);
+        await alice.invites.create();
+        // Message 1 refused as the relay refuses a send to a mailbox that
+        // holds all it may (§12.4).
+        refuseAt = (id: 'z-connect-c1', code: 'queue_full');
+        await alice.invites.pump();
+      });
+      expect(refuseAt, isNull, reason: 'the post met the refusal');
+      await t.pumpWidget(tab(alice, const ConnectTab(), locale: locale));
+      await t.pump();
+      seen.add('$lang, its mailbox full: ${card()}');
+      // The round the tab began posts it again, and the relay takes it.
+      await drain(t, [alice.invites]);
+      await t.pump();
+      seen.add('$lang, taken: ${card()}');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es']) ...[
+        '$lang, its mailbox full: the relay refused it',
+        '$lang, taken: nothing',
+      ],
+    ]);
   }, timeout: const Timeout(Duration(minutes: 2)));
 }

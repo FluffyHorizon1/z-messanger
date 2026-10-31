@@ -3499,4 +3499,12 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get grpCreateFailedOther =>
       'The group could not be created. Try again.';
+
+  @override
+  String get connectNotSaved =>
+      'This device could not save that, so nothing has changed. Try again; if this goes on, check that the device has free storage.';
+
+  @override
+  String get connectFailedRefused =>
+      'The relay was reached but refused this step — will keep trying.';
 }
