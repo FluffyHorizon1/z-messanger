@@ -134,7 +134,8 @@
 //  27. a code entered again on the phone once the link it stopped had
 //      answered the laptop, and that attempt is over, says at once that the
 //      laptop needs a new code — once restarted too — the phone keeping the
-//      code by its rendezvous id, not the code itself.
+//      code by its rendezvous id, not the code itself, and logging in as the
+//      code's mailbox for neither.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -2506,7 +2507,10 @@ void main() {
       '27. a code entered again once the link it stopped had answered the '
       'laptop, and that attempt is over, says at once that the laptop needs '
       'a new code', () async {
-    final alice = await person('Alice27');
+    // The phone reaches the relay through a front that notes each login.
+    final rec = await Recorder.start(relayUrl());
+    addTearDown(rec.close);
+    final alice = await person('Alice27', url: rec.url);
     await connected([alice]);
     const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
     alice.svc.linkTimeout = timeout;
@@ -2559,7 +2563,8 @@ void main() {
     alice.svc.dispose();
     await alice.svc.transport.stop();
     live.remove(alice);
-    final restarted = await boot(alice.dir, 'Alice27', vault: alice.vault);
+    final restarted =
+        await boot(alice.dir, 'Alice27', vault: alice.vault, url: rec.url);
     restarted.svc.linkTimeout = timeout;
     restarted.svc.linkMargin = margin;
     final waitedAfter = Stopwatch()..start();
@@ -2575,5 +2580,12 @@ void main() {
         reason: 'the laptop, sent nothing, says why');
     expect(n.code, isNot(code), reason: 'and shows a new code');
     expect(await restarted.svc.linkedDevices(), isEmpty);
+    // Neither attempt answered at once logged in as the code's mailbox: a
+    // login someone else made there after the first stopped would stay.
+    final box = await (await RelayPairing.relayIdentityV3(
+            PairingCode.parse(code), 'r'))
+        .routingId();
+    expect(rec.welcomed.where((id) => id == box), hasLength(1),
+        reason: 'the first attempt alone logged in as the phone\'s mailbox');
   });
 }

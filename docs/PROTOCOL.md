@@ -2288,9 +2288,13 @@ attempt is over, takes such a login for someone else's: it says the link was
 taken over, keeps the code as spent and closes the new device's connection,
 as for any takeover. Until 2026‑10‑31 it said only that the link was
 cancelled, and kept nothing. A login that comes after the stopped attempt has
-closed and before the next attempt logs in closes no connection of this
-device's, and this device cannot see it: the next attempt's login closes it
-in turn, and the digits still stand between it and the account. A stopped
+closed closes no connection of this device's, and this device cannot see
+it: a next attempt that logs in closes it in turn, and the digits still
+stand between it and the account, while one that is answered at once,
+because the stopped attempt had answered the new device (below), never logs
+in, and that login stays until it leaves, as it does when no attempt follows
+— with nothing of the account to read, since this device sends nothing more
+on the code. A stopped
 attempt that had answered the new device's commitment leaves its code with
 no ceremony to run, since the new device answers the first reply it gets and
 no other (rule 5): the reference client keeps that code as it keeps a spent
