@@ -22,12 +22,12 @@
 //     given one by its root over self-sync (§9, `dir:"pqdc"`); in the archive
 //     beside the seed;
 //   * `cseal_<rid>` — one [SealRecord] per contact: each of their devices'
-//     sealing key and `pqdc` as announced, whether the key came since a
-//     ratchet session with that device last began and the `pqdc` since it
-//     last opened one here, whether that device has
-//     said it holds this one's (`pqs:1`) since this one gave it its key,
-//     when this one last did, and whether this one's `pqdc` has reached it.
-//     Gone with the contact
+//     sealing key and `pqdc` as announced, the ratchet session each came on
+//     and whether the two are known to be of one state of that device, the
+//     post-quantum account key the `pqid` that carried the `pqdc` named,
+//     whether that device has said it holds this one's (`pqs:1`) since this
+//     one gave it its key, when this one last did, and whether this one's
+//     `pqdc` has reached it. Gone with the contact
 //     (`ChatService.contactKvFamilies`);
 //   * `oseal` — the same for this account's own other devices.
 //
@@ -35,11 +35,13 @@
 // restore, a contact deleted and added back, a device linked again — learns
 // the keys again because it opens new ratchet sessions, and a new session
 // with a device forgets that the device holds this one's key
-// ([DeviceSeal.holdsMine]), so each side announces again. And the device
-// that lost them takes no device's word that it holds its key until it has
-// announced it there (4.8.1, [DeviceSeal.announcedMs]): a restore that drew
-// a new key is told "I hold your key" of the old one, by devices of every
-// build.
+// ([DeviceSeal.holdsMine]), so each side announces again — from 4.9.0, with
+// a contact's device, at once, when that device started over or had said it
+// holds this one's key: what this device had announced there goes too. And
+// the device that lost them takes no device's word that it holds its key
+// until it has announced it there (4.8.1, [DeviceSeal.announcedMs]): a
+// restore that drew a new key is told "I hold your key" of the old one, by
+// devices of every build.
 //
 // The keys of other devices are judged here by nothing beyond FIPS 203 §7.2's
 // check, which `InnerMessage.pqSealKey` applies before any key is taken;
@@ -55,9 +57,20 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:z_protocol/z_protocol.dart';
 
 import 'vault.dart';
+
+final Expando<Uint8List> _hashes = Expando<Uint8List>('sha256');
+
+/// The SHA-256 of [bytes], worked out at once and kept beside them: what the
+/// device link compares a key with — the hash a finding was made of
+/// (`dlink_`'s `sk`), and the account key a `pqdc` came with
+/// ([DeviceSeal.pqdcAccount]) — on every build of the contact screen, where
+/// a [Future] will not do.
+Uint8List keyHash(Uint8List bytes) => _hashes[bytes] ??=
+    Uint8List.fromList(const DartSha256().hashSync(bytes).bytes);
 
 /// What this device holds about one other device's sealing key, and what it
 /// has told that device about its own.
@@ -75,15 +88,18 @@ class DeviceSeal {
   /// this device's announcements to it stop — until a new ratchet session
   /// with it begins, accepted from it or opened to it, which forgets this (a
   /// restore, a contact deleted and added back and a device linked again all
-  /// open one), and they resume on their clock. 4.8.1: a stamp with nothing
-  /// given before it is not this ([ChatService]'s `_keepSeal`).
+  /// open one), and they resume on their clock — at once, for a contact's
+  /// device, from 4.9.0 ([announcedMs]). 4.8.1: a stamp with nothing given
+  /// before it is not this ([ChatService]'s `_keepSeal`).
   bool holdsMine;
 
   /// When this device last gave that one its own key — announced it in a
   /// `pqseal` queued there, or (44.6) handed it over in a CONNECT ceremony of
   /// version 3's reveal — in ms since the epoch; 0 for never, and 0 again
-  /// once this device draws another key. The re-announcement clock runs from
-  /// here, and (4.8.1) a `pqs:1` from that device stands only beside it.
+  /// once this device draws another key, and (4.9.0, for a contact's device)
+  /// once a new ratchet session with it begins after it started over or had
+  /// stamped `pqs:1`. The re-announcement clock runs from here, and (4.8.1)
+  /// a `pqs:1` from that device stands only beside it.
   int announcedMs;
 
   /// 44.6 (§20.9): [ek] came in the reveal of a CONNECT ceremony of version
@@ -93,23 +109,41 @@ class DeviceSeal {
   /// different key from the device clears it, as it clears [pqdc].
   bool byCeremony;
 
-  /// 44.5 (§18.11): [ek] came since a ratchet session with that device last
-  /// began, accepted from it or opened to it — the moment this device
-  /// forgets its `pqs:1` too, written down with that session (4.8.1) — and
-  /// [pqdc] since that device last opened one here. A device draws a key it
-  /// did not have in one of two ways: restored, it has lost its sessions and
-  /// is heard from on new ones, its own or one opened to it, the first of
-  /// which may be either; finding its seed unreadable, it announces the new
-  /// key before anything else it sends on the sessions it has. So a `pqdc`
-  /// that misses the key held is evidence against the device only when both
-  /// are marked ([ChatService]'s `_judgeDeviceLink`). A key from before such
-  /// a session and a `pqdc` from since are of two states of the device — a
-  /// restore's new `pqid` can arrive before its new `pqseal` — and the
-  /// `pqdc` waits for the key it announces next; a key that replaces one
-  /// marked is the unreadable seed's, and the `pqdc` held goes with the key
-  /// it replaces. The key's mark goes when the next session with that
-  /// device begins, the `pqdc`'s when that device next opens one.
-  bool ekFresh, pqdcFresh;
+  /// 4.9.0 (§18.11): the ratchet session [ek] last arrived on, and the one
+  /// [pqdc] arrived on — the session ids the ratchet names them by. What
+  /// says whether the two are of one state of that device
+  /// ([pqdcBound]); null for a record an older build wrote, and for what
+  /// came by another door than the ratchet's.
+  String? ekSid, pqdcSid;
+
+  /// 4.9.0 (§18.11): [pqdc] and [ek] are known to be of one state of that
+  /// device, so a `pqdc` that misses the key is evidence against it
+  /// ([ChatService]'s `_judgeDeviceLink`). A device announces a key it draws
+  /// ahead of the next message it sends on the session it has — a mixed one
+  /// that carries no ML-KEM ciphertext — so what it sends after that key on
+  /// the same session is of the key's state: a `pqdc` read after the key held,
+  /// on the session the key came on, in the order it was sent. And one read
+  /// before it on that session is of the key's state when the key is the
+  /// first this device holds of that device, or one it held before that
+  /// `pqdc` arrived. Anything else may be of two states — a restore's new
+  /// `pqid` can arrive before its new `pqseal`, and a device whose seed no
+  /// longer reads keeps the sessions its old `pqdc` came on — and is
+  /// evidence of nothing. A key that replaces the one held takes with it a
+  /// `pqdc` bound to that one, which was of the state it ends.
+  bool pqdcBound;
+
+  /// 4.9.0: a key was held for that device when [pqdc] arrived, and has not
+  /// been replaced since — so a re-announcement of it after the `pqdc`, on
+  /// the session the `pqdc` came on, binds the two ([pqdcBound]).
+  bool pqdcAfterKey;
+
+  /// 4.9.0 (§18.11): the SHA-256 of the post-quantum account key (ML-DSA)
+  /// the `pqid` that carried [pqdc] named. A `pqdc` is checked under the
+  /// contact's established key; one that came with another — their account
+  /// drew a new one, as a restore from a backup made before 2.2.4 or from a
+  /// `.zid` does — is evidence of nothing here, and the screen says their
+  /// post-quantum key changed. Null for a record an older build wrote.
+  Uint8List? pqdcAccount;
 
   /// 44.5 (§18.11): this device's own `pqdc` has reached that device in a
   /// `pqid`, sent while that device had shown it reads one — it had
@@ -126,8 +160,11 @@ class DeviceSeal {
       this.holdsMine = false,
       this.announcedMs = 0,
       this.byCeremony = false,
-      this.ekFresh = false,
-      this.pqdcFresh = false,
+      this.ekSid,
+      this.pqdcSid,
+      this.pqdcBound = false,
+      this.pqdcAfterKey = false,
+      this.pqdcAccount,
       this.pqdcSent = false});
 
   /// Whether that device has shown it runs 44.3 or later, which keeps a
@@ -141,8 +178,11 @@ class DeviceSeal {
         if (holdsMine) 'pqs': 1,
         if (announcedMs > 0) 'at': announcedMs,
         if (byCeremony && ek != null) 'c3': 1,
-        if (ekFresh && ek != null) 'ef': 1,
-        if (pqdcFresh && pqdc != null) 'df': 1,
+        if (ekSid != null && ek != null) 'es': ekSid,
+        if (pqdcSid != null && pqdc != null) 'ds': pqdcSid,
+        if (pqdcBound && pqdc != null && ek != null) 'db': 1,
+        if (pqdcAfterKey && pqdc != null && ek != null) 'dk': 1,
+        if (pqdcAccount != null && pqdc != null) 'da': b64(pqdcAccount!),
         if (pqdcSent) 'pd': 1,
       };
 
@@ -170,10 +210,20 @@ class DeviceSeal {
     if (at is int && at > 0) out.announcedMs = at;
     // Only beside the key it was said of.
     out.byCeremony = out.ek != null && raw['c3'] == 1;
-    // Only beside what they are said of. A record from before 44.5 has
-    // neither, so nothing it holds is taken as evidence against a device.
-    out.ekFresh = out.ek != null && raw['ef'] == 1;
-    out.pqdcFresh = out.pqdc != null && raw['df'] == 1;
+    // Only beside what they are said of. A record from 4.8.1 or before has
+    // none of them, so nothing it holds is taken as evidence against a
+    // device, nor as of another account key.
+    String? sid(Object? v) => v is String && v.isNotEmpty && v.length <= 64
+        ? v
+        : null;
+    if (out.ek != null) out.ekSid = sid(raw['es']);
+    if (out.pqdc != null) {
+      out.pqdcSid = sid(raw['ds']);
+      out.pqdcBound = out.ek != null && raw['db'] == 1;
+      out.pqdcAfterKey = out.ek != null && raw['dk'] == 1;
+      final da = bytes(raw['da']);
+      if (da != null && da.length == 32) out.pqdcAccount = da;
+    }
     out.pqdcSent = raw['pd'] == 1;
     return out;
   }

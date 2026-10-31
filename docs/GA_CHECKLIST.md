@@ -197,7 +197,7 @@ description on every string, and `tool/check_l10n.py` holding the migrated
 screens — **25 of 25 screens** — to zero hardcoded literals and, now,
 holding every other locale to exactly the English key set with the same
 placeholders and plural cases.
-The service stores its forty-six kinds of system message as a kind and its
+The service stores its forty-seven kinds of system message as a kind and its
 parameters (`core/system_messages.dart`), rendered through the ARB when
 shown, so they read in the user's language too — and, since 2026‑09‑13, the
 five device‑list banners as well, which had been built as English sentences by

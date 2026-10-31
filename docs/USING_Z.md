@@ -394,10 +394,23 @@ words "Device link"):
   a backup made before 4.7 comes back with new keys, and the line says
   classical again until a signature for those comes; with that re-send off,
   it comes when something else asks for it — **Reset secure session**, on
-  their contact screen, does. A contact added by a post-quantum invite is
-  linked by its eight digits instead, and keeps the label the invite gave
-  it; if you did not compare them, nothing else ever links that device, and
-  the line says so.
+  their contact screen, does — unless the backup was made before 2.2.4 or is
+  a .zid backup, which the next case covers. A contact added by a
+  post-quantum invite is linked by its eight digits instead, and keeps the
+  label the invite gave it; if you did not compare them, nothing else ever
+  links that device, and the line says so.
+* **"…its post-quantum signature came with a different post-quantum key"**,
+  under a warning, **"Their post-quantum key changed"** — their app now
+  signs with a different post-quantum key from the one you hold for them.
+  Restoring a backup made before 2.2.4, or a .zid backup, does that; so
+  would an app that is not theirs. Z refuses nothing, and can check nothing
+  signed with that key: the device stays linked classically — for a contact
+  added since this version the label reads **"Device link classical"** — and
+  a post-quantum signature for their device list can read as never arrived,
+  for the same reason. Reset secure session does not change it. Speak to
+  them another way: if they did restore such a backup, deleting them and
+  adding them again from their code takes their new key and links the device
+  again — and deletes your chat with them on this device.
 * **"Device link refused"** — a signature came for that device and did not
   match its keys, so Z refused it. A line in the chat says so once, and the
   contact's screen keeps a warning. For a contact added since this version

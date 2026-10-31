@@ -98,10 +98,11 @@
 //      for the new and announced nothing, so the contact holds the old key;
 //      once the device starts on this build it announces its key, and the
 //      contact ends holding it;
-//  20. a session reset loses nothing and costs nothing: on the shipped
-//      clock — six hours between announcements — each side goes on holding
-//      the other's key and hearing that the other holds its own, within a
-//      few messages of the reset, and neither announces again;
+//  20. a session reset loses nothing, and costs each side one announcement
+//      (4.9.0): on the shipped clock — six hours between announcements —
+//      each side goes on holding the other's key and hearing that the other
+//      holds its own, within a few messages of the reset, having announced
+//      its own key once more on the new session, and no more;
 //  21. a device whose stored seed no longer reads as one draws a new key,
 //      and what it held of devices holding the old one goes with it: it
 //      announces the new key, and its contact ends holding it;
@@ -109,7 +110,12 @@
 //      fails, and is done again from the relay's redelivery, writes down
 //      that the restored device no longer holds its key, so that after a
 //      restart it still announces its key there, and the restored device
-//      ends holding it.
+//      ends holding it;
+//  23. (4.9.0, PROTOCOL §18.11) a pair whose one announcement the relay
+//      lost — the restored device holding its contact's word for its old
+//      key as word for the new, the contact holding the old — stays so
+//      through more messages, and a new session from either side mends it:
+//      the device announces its key again, and its contact ends holding it.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -1842,9 +1848,9 @@ void main() {
   });
 
   test(
-      '20. a session reset loses nothing and costs nothing on the shipped '
-      'clock: each side goes on hearing that the other holds its key, and '
-      'neither announces again', () async {
+      '20. a session reset loses nothing and costs each side one '
+      'announcement on the shipped clock: each goes on hearing that the other '
+      'holds its key, and announces its own once more', () async {
     final (alice, _) = await fresh('alice20');
     final (bob, _) = await fresh('bob20');
     await befriend(alice, bob);
@@ -1871,8 +1877,12 @@ void main() {
           '${alice.debugHoldsMySealKey(bob.myRid)}, Bob hears Alice holds '
           'his: ${bob.debugHoldsMySealKey(alice.myRid)}');
     }
-    expect(alice.debugPqSealSends, aliceSends, reason: 'no announcement');
-    expect(bob.debugPqSealSends, bobSends, reason: 'none from Bob either');
+    // 4.9.0: each side forgets what it announced there with the session —
+    // Alice because Bob's device started over, Bob because he had her word —
+    // so each announces once more, and the other's next stamp ends it.
+    expect(alice.debugPqSealSends, aliceSends + 1,
+        reason: 'one announcement from Alice');
+    expect(bob.debugPqSealSends, bobSends + 1, reason: 'and one from Bob');
   });
 
   test(
@@ -1950,5 +1960,77 @@ void main() {
       return holdsKey(revived, again.myRid, aliceKey) &&
           again.debugHoldsMySealKey(revived.myRid);
     }, what: "the restored device holding Alice's key, and saying so");
+  });
+
+  test(
+      '23. a pair whose one announcement the relay lost stays so, and a new '
+      'session from either side mends it: the device announces its key '
+      'again, and its contact ends holding it', () async {
+    for (final bobResets in [true, false]) {
+      final tag = bobResets ? 'b' : 'a';
+      final (alice, aliceDir) = await fresh('alice23$tag');
+      final (bob, _) = await fresh('bob23$tag');
+      await befriend(alice, bob);
+      await sealsStamped(alice, bob, 'k$tag');
+      final oldKey = alice.debugSealingKey!;
+      final aRid = alice.myRid;
+      // Bob's device drops the first announcement of a key that comes from
+      // her device, as the relay losing it would: her restored device's.
+      var dropped = 0;
+      bob.debugOnDecrypted = (path, from, dec) {
+        if (path != 'primary' || from != aRid || dropped > 0) return false;
+        try {
+          if (InnerMessage.fromBytes(dec.plaintext).kind == 'pqseal') {
+            dropped++;
+            return true;
+          }
+        } catch (_) {}
+        return false;
+      };
+      final revived = await restoredOntoNewKey(alice, aliceDir, 'alice23$tag');
+      final newKey = revived.debugSealingKey!;
+      expect(newKey, isNot(oldKey), reason: 'the premise: a new key');
+      revived.pqOfferRetry = 300;
+      var m = 0;
+      await waitFor(() async {
+        await exchange(revived, bob, 'stuck$tag${m++}');
+        return dropped == 1 && revived.debugHoldsMySealKey(bob.myRid);
+      }, what: "[$tag] the restored device taking Bob's word, its "
+          'announcement lost');
+      // A negative check over a window: three more exchanges, and the pair
+      // is as the lost announcement left it.
+      for (var i = 0; i < 3; i++) {
+        await exchange(revived, bob, 'still$tag$i');
+      }
+      expect(holdsKey(bob, aRid, oldKey), isTrue,
+          reason: '[$tag] the premise: Bob holds the old key');
+      expect(revived.debugHoldsMySealKey(bob.myRid), isTrue,
+          reason: "[$tag] the premise: the restored device takes Bob's word");
+
+      // A new session: Bob's reset, or the restored device's own.
+      if (bobResets) {
+        await bob.resetSecureSession(aRid);
+      } else {
+        await revived.resetSecureSession(bob.myRid);
+      }
+      var n = 0;
+      try {
+        await waitFor(() async {
+          if (bobResets) {
+            await exchange(bob, revived, 'mend$tag${n++}');
+          } else {
+            await exchange(revived, bob, 'mend$tag${n++}');
+          }
+          return holdsKey(bob, aRid, newKey) &&
+              revived.debugHoldsMySealKey(bob.myRid);
+        }, timeout: const Duration(seconds: 30),
+            what: "[$tag] Bob holding the restored device's new key");
+      } on TimeoutException {
+        fail('[$tag] after $n exchanges: Bob holds the new key: '
+            '${holdsKey(bob, aRid, newKey)}, the old: '
+            '${holdsKey(bob, aRid, oldKey)}; the restored device sent '
+            '${revived.debugPqSealSends} announcements');
+      }
+    }
   });
 }

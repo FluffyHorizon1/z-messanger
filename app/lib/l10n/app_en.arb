@@ -1295,11 +1295,28 @@
   "@ciDeviceLinkRefused": {
     "description": "Shown under the safety number when the attestation for the device the contact was added from failed to verify and was refused (ADR 0033 section 2). The banner above explains what to do; this line states the outcome. 'refused' is active, as in ciPqRefused."
   },
+  "ciDeviceLinkKeyChanged": "The device you added them from is linked classically: its post-quantum signature came with a different post-quantum key from the one you hold for them, so it cannot be checked here.",
+  "@ciDeviceLinkKeyChanged": {
+    "description": "Shown under the safety number when the attestation of the device the contact was added from came in a message naming another post-quantum account key than the one held for them (4.9.0, PROTOCOL section 18.11) — their account drew a new key, as restoring an old backup does. Load-bearing: the device is linked CLASSICALLY, and the signature was NOT refused (an honest restore does this) — only not checkable. The banner ciPqKeyChangedTitle above says what to do."
+  },
   "ciDeviceLinkLabel": "Device link: {line}",
   "@ciDeviceLinkLabel": {
     "description": "What a screen reader says for the device-link line under the safety number (ADR 0033 section 2): a short heading, then {line}, which is that line's own text (one of the ciDeviceLink... strings). The link is between the contact's account and the device they were added from.",
     "placeholders": {
       "line": {
+        "type": "String"
+      }
+    }
+  },
+  "ciPqKeyChangedTitle": "Their post-quantum key changed",
+  "@ciPqKeyChangedTitle": {
+    "description": "Banner heading on the contact screen when their device's post-quantum signature came with another post-quantum account key than the one held for them (4.9.0). Deliberately not 'refused': nothing was refused, and an honest restore of an old backup is the usual cause."
+  },
+  "ciPqKeyChangedBody": "{name}'s app now signs with a different post-quantum key from the one this device holds for them. Restoring a backup made before version 2.2.4, or a .zid backup, does that; so would an app that is not theirs. Nothing signed with that key can be checked here, so the device you added them from stays linked classically, and a post-quantum signature for their device list can read as never arrived. Speak to them another way. If they restored such a backup, deleting them and adding them again from their code takes their new key, and deletes your chat with them on this device.",
+  "@ciPqKeyChangedBody": {
+    "description": "Body of ciPqKeyChangedTitle. Load-bearing: the two live explanations (an old backup restored; an app that is not theirs), stated without deciding which; that nothing is checked, so the device link is classical and a device-list signature can show as never arrived; and the way to take the new key, with its cost (the chat on this device goes). A translation must not call anything refused or tell the reader to compare the number: the number on this device is for the key it holds, not the new one.",
+    "placeholders": {
+      "name": {
         "type": "String"
       }
     }

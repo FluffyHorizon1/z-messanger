@@ -1037,8 +1037,20 @@ class AppLocalizationsEn extends AppLocalizations {
       'The post-quantum signature their account sent for the device you added them from did not check out, so it was refused: the device is not linked post-quantum.';
 
   @override
+  String get ciDeviceLinkKeyChanged =>
+      'The device you added them from is linked classically: its post-quantum signature came with a different post-quantum key from the one you hold for them, so it cannot be checked here.';
+
+  @override
   String ciDeviceLinkLabel(String line) {
     return 'Device link: $line';
+  }
+
+  @override
+  String get ciPqKeyChangedTitle => 'Their post-quantum key changed';
+
+  @override
+  String ciPqKeyChangedBody(String name) {
+    return '$name\'s app now signs with a different post-quantum key from the one this device holds for them. Restoring a backup made before version 2.2.4, or a .zid backup, does that; so would an app that is not theirs. Nothing signed with that key can be checked here, so the device you added them from stays linked classically, and a post-quantum signature for their device list can read as never arrived. Speak to them another way. If they restored such a backup, deleting them and adding them again from their code takes their new key, and deletes your chat with them on this device.';
   }
 
   @override

@@ -543,6 +543,13 @@ user replacing a lost phone should not have to know which artifact they kept,
 and the restore screen says up front whether the file carries history or only
 an identity.
 
+A `.zid`, and an archive made before 2.2.4, carry no post‑quantum seed, so
+the account they restore draws a new post‑quantum key, which its contacts
+hold no commitment to. From 4.9.0 a contact's screen says that key changed,
+refuses nothing, and checks nothing the new key signs; deleting the contact
+and adding them again from their code takes the new key (`USING_Z.md`,
+`PROTOCOL.md` §18.11).
+
 ### 8.5 Automatic backup (off by default)
 
 Off is the honest default: a backup the user did not ask for is a copy of

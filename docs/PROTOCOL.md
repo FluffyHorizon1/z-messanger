@@ -3192,25 +3192,26 @@ device holds as retired (§4) so a kept opening envelope cannot re‑create one.
 Since 44.3 the vault also keeps, sealed, the device's sealing seed
 (`seal_seed`, 64 bytes, drawn once at the first start of that build) and its
 `pqdc`; and for each device it has a session with — a contact's devices
-(`cseal_` and the contact's routing id, removed with the contact) and its own
-other devices (`oseal`) — the sealing key that device announced, its `pqdc`
-when one came, whether it has said it holds this device's (`pqs`) and when
-this device last announced its own to it (§18.11) — and, since 44.5, for a
-contact's device, whether its key came since a ratchet session with it
-last began and its `pqdc` since it last opened one here, and whether this
-device's own `pqdc` has reached it. Since 44.5 the vault
-also keeps, for each contact, whether it added them on 44.5 or later
-(`dlreq_`) and what it found of the device they were added from (`dlink_`),
-both in the archive's contact record (`BACKUP.md`). The `.zbk` carries the
-seed and the `pqdc` in a record of their own that an older build keeps and
-writes back (`BACKUP.md`), so a restore brings back the same key; a 44.3
-build that finds that record kept by an older one takes the key from it
-rather than drawing another. The keys other devices announced are not in the
-archive. A restored device learns them again: it opens new ratchet sessions,
-and a new session with a device makes that device forget that this one holds
-its key (§18.11), so it announces it again; and the restored device takes
-no device's word that it holds its key until it has announced it there,
-in case the restore drew another (4.8.1).
+(`cseal_` and the contact's routing id, removed with the contact) and its
+own other devices (`oseal`) — the sealing key that device announced, its
+`pqdc` when one came, whether it has said it holds this device's (`pqs`) and
+when this device last announced its own to it (§18.11) — and, since 44.5,
+for a contact's device, the ratchet session its key and its `pqdc` each came
+on, whether the two are known to be of one state of that device, the
+post-quantum account key the `pqid` that carried the `pqdc` named, and
+whether this device's own `pqdc` has reached it. Since 44.5 the vault also
+keeps, for each contact, whether it added them on 44.5 or later (`dlreq_`)
+and what it found of the device they were added from (`dlink_`), both in the
+archive's contact record (`BACKUP.md`). The `.zbk` carries the seed and the
+`pqdc` in a record of their own that an older build keeps and writes back
+(`BACKUP.md`), so a restore brings back the same key; a 44.3 build that
+finds that record kept by an older one takes the key from it rather than
+drawing another. The keys other devices announced are not in the archive. A
+restored device learns them again: it opens new ratchet sessions, and a new
+session with a device makes that device forget that this one holds its key
+(§18.11), so it announces it again; and the restored device takes no
+device's word that it holds its key until it has announced it there, in case
+the restore drew another (4.8.1).
 
 What a restore looks like on the wire is a device‑list update, never a
 rollback. The first start of a restored root, before it sends anything, asks
@@ -3842,21 +3843,23 @@ device a contact was added from — the one their code, request or invite
 named — is shown to be theirs post‑quantum: by their account's `pqdc`
 verifying, under the established key, over that device's keys and the
 sealing key it announced (§18.11), or by a compared CONNECT ceremony of
-version 3 (§20.9). A `pqdc` that does not verify is refused, recorded
-durably and announced once, as a key that misses its commitment is; with
-neither, the link is classical; and the reference client says which beside
-the number. For a contact a vault added on 44.5 or later, a client
-MUST NOT present `hybrid` under its success label until the link is
-post‑quantum — the reference client's label reads "Device link classical",
-or "Link refused", in its place (`adr/0033` decision 3). For one added
-before, the label is what it was, and the link is only said — a refusal
-too, by a banner and a line in the chat, the label left as it was (the
-reference client's `pillSaysRefusedForEarlierContacts`; whether the label
-should change for such a contact as well is open). A contact a CONNECT
-invite of version 3 added is not one of those a vault requires the link of,
-whenever it was added: its compared digits are its link (§20.9), and no
-`pqdc` comes to a contact added that way, so its label stays what 44.6
-gave it.
+version 3 (§20.9). A `pqdc` that does not verify, known to be of the
+device's present state, is refused, recorded durably and announced once, as
+a key that misses its commitment is; one that came with another post‑quantum
+account key than the one established is not checked, and the reference
+client says their key changed (§18.11, 4.9.0); with neither, the link is
+classical; and the reference client says which beside the number. For a
+contact a vault added on 44.5 or later, a client MUST NOT present `hybrid`
+under its success label until the link is post‑quantum — the reference
+client's label reads "Device link classical", or "Link refused", in its
+place (`adr/0033` decision 3). For one added before, the label is what it
+was, and the link is only said — a refusal too, by a banner and a line in
+the chat, the label left as it was (the reference client's
+`pillSaysRefusedForEarlierContacts`; whether the label should change for
+such a contact as well is open). A contact a CONNECT invite of version 3
+added is not one of those a vault requires the link of, whenever it was
+added: its compared digits are its link (§20.9), and no `pqdc` comes to a
+contact added that way, so its label stays what 44.6 gave it.
 
 ### 18.4 Device certificates under v3
 
@@ -4440,45 +4443,59 @@ none once its digits are compared: its sealing key came in that ceremony's
 reveal, as authentic as the digits (§20.9, `adr/0033` §4), and from 44.6 the
 reference client holds that link as post‑quantum and says so.
 
-**The device link (44.5).** For the device a contact was added from — the
-one whose routing id is theirs — a receiver holding the contact's ML-DSA key
-established, that device's `pqdc` and the sealing key it announced checks
-the one over the other: it verifies, and the link is post‑quantum; it fails,
-and the `pqdc` is refused, recorded durably and announced once (§18.3);
-neither yet, or the key only a candidate, and the link is classical. A
-device draws a key it did not have in one of two ways. Restored from an
-archive that carried none — one made before 44.3, or a `.zid` identity
-backup — it has lost its ratchet sessions and is heard from on new ones, its
-own or one opened to it, where the `pqid` it sends can arrive before its
-`pqseal`, which waits for that session to be post‑quantum. Finding its seed
-unreadable, it keeps its sessions, which are post‑quantum already, and
-announces the new key on each ahead of the next message it sends there, so
-the new key comes before any `pqdc` over it can. So a key and a `pqdc` are
-set against each other as evidence only when the key came since a ratchet
-session with that device last began, accepted from it or opened to it — the
-moment its `pqs:1` is forgotten too (below), which the reference client
-writes down with that session (4.8.1) — and the `pqdc` since that device
-last opened one: a session opened to it may be the first a restore of theirs
-is heard on, and says nothing of what it sent since its own. A pair of which
-one half is older than that waits: the `pqdc` for the key the device
-announces next. A new key keeps the `pqdc` held only when the key it
-replaces is the older and the `pqdc` is not — the restore's order; a key
-that replaces one from since then is an unreadable seed's, and the `pqdc`
-held, of the key it replaces, goes with it. A record an older build wrote
-marks neither half as having come since, so the first start of 44.5 refuses
-nothing it held. What is found is kept with `sk`, the key's hash: it stands
-while the key held for that device is that one, or while none is held —
-after a restore, which carries the finding and no key — and a different key
-is judged afresh: the link is classical until a `pqdc` over that key is
-held, which — the re-send held (`pqid.pqdc`, below) — only a `pqid` sent for
-some other reason brings; a refusal stands whatever comes. A contact's other
-devices' `pqdc`s are kept and not judged: what links them is their account's
-list and its signature (§3.4, §18.9). The reference client keeps the finding
-beside the contact (`dlink_<rid>`) and, for a contact it added on 44.5 or
-later (`dlreq_<rid>`; never one a CONNECT invite of version 3 added, §20.9),
-does not call them post‑quantum until the link is (§18.3); both are in its
-archive and its enrollment (§10), and neither in a `cadd`: the device a
-`cadd` mirrors a contact to adds it then, and marks it itself.
+**The device link (44.5).** For the device a contact was added from — the one
+whose routing id is theirs — a receiver holding the contact's ML-DSA key
+established, that device's `pqdc` and the sealing key it announced checks the
+one over the other: it verifies, and the link is post‑quantum; it fails, and
+— when the two are known to be of one state of that device, and the `pqdc`
+came with their established key — the `pqdc` is refused, recorded durably and
+announced once (§18.3); neither yet, or the key only a candidate, and the
+link is classical. Which state a `pqdc` is of is told by the ratchet sessions
+(4.9.0). A device announces a key it draws ahead of the next message it sends
+on the session it has, once that session is post‑quantum and the message
+carries no `pqct`, so on that session what follows the key is of the key's
+state. A receiver takes a `pqdc` and the key held as of one state when the
+`pqdc` is read after the key on the session the key last came on, in the
+order it was sent (not from keys the ratchet skipped over); or before it on
+that session, when the key is the first held for that device, or one held
+before the `pqdc` came. Anything else may be of two states, and is evidence
+of nothing. A device restored from an archive that carried no sealing key —
+one made before 44.3, or a `.zid` identity backup — has lost its ratchet
+sessions and is heard from on new ones, its own or one opened to it, where
+its `pqid` can arrive before its `pqseal`, which waits for that session to be
+post‑quantum; a device finding its seed unreadable keeps the sessions its old
+`pqdc` came on, and a session either side opened between can carry the old
+`pqdc` too. A key that replaces the one held ends what was bound to it: a
+`pqdc` known to be of the old key goes with it, and one not bound waits
+beside the new key and is checked over it — so a restore's new `pqdc`, ahead
+of its new key, links it. Two orders remain that bind two states, each
+needing the device's seed to stop reading at that moment: a draw between its
+`pqid` and its first `pqseal` on one session while the receiver holds no key
+of it, and a draw just before a `pqid` that rides beside `pqct` on the
+session the old key came on. A `pqdc` that came in a `pqid` naming another
+post‑quantum account key than the one established — an account that drew a
+new key, as one restored from a backup made before 2.2.4 or from a `.zid`
+does — is evidence of nothing and is not checked: the receiver cannot check
+what that key signs, and the reference client keeps the hash of the key each
+`pqdc` came with, and says, beside the number and on a banner, that their
+post‑quantum key changed, refusing nothing; such a contact deleted and added
+again from their code takes the new key, and is linked again. A record an
+older build wrote binds nothing and names no account key, so the first start
+of 4.9.0 refuses nothing it held. What is found is kept with `sk`, the key's
+hash, and said only while the key held for that device is that one, or while
+none is held — after a restore, which carries the finding and no key — and a
+different key is judged afresh, at once, or at the next start when the app
+stopped between the key's being written and its judgement: the link is
+classical until a `pqdc` over that key is held, which — the re-send held
+(`pqid.pqdc`, below) — only a `pqid` sent for some other reason brings; a
+refusal stands whatever comes. A contact's other devices' `pqdc`s are kept
+and not judged: what links them is their account's list and its signature
+(§3.4, §18.9). The reference client keeps the finding beside the contact
+(`dlink_<rid>`) and, for a contact it added on 44.5 or later (`dlreq_<rid>`;
+never one a CONNECT invite of version 3 added, §20.9), does not call them
+post‑quantum until the link is (§18.3); both are in its archive and its
+enrollment (§10), and neither in a `cadd`: the device a `cadd` mirrors a
+contact to adds it then, and marks it itself.
 
 The members that carry them, a new kind and two optional members (§14):
 
@@ -4556,18 +4573,30 @@ The members that carry them, a new kind and two optional members (§14):
   is also its ask for its `pqdc` (§9), which the root answers in a
   16 384‑bucket envelope — measured after a linked device's restore that kept
   its key, two `pqseal`s and one `pqdc`, 5 802 bytes each and 22 186 at the
-  relay, where 4.8.0 sent none. A session reset costs nothing: each side
-  keeps its record of what it gave, so the other's next stamp counts at
-  once. One window remains: a
-  stamp the other device sent before the announcement reached it, arriving
-  after the announcement left, is taken; were that announcement then lost at
-  the relay, the pair stays so. A new session forgets the stamp but not the
-  announcement, so the next stamp counts again, and nothing mends it until
-  this device draws a key again. Measured: the announcement dropped, then a
-  reset by either side and eight messages each way, and the other device
-  still held the old key, with no `pqseal` sent. Nothing uses the key yet —
-  44.5's link check finds such a device classical rather than refusing it,
-  and 44.7 will seal to the key — so this window is to be closed before 44.7.
+  relay, where 4.8.0 sent none. From 4.9.0 a new ratchet session with a
+  contact's device forgets this device's announcement there with the stamp,
+  when that device started over — it opened the session while another with
+  it had carried its traffic: a contact deleted and added back, a restore,
+  its own reset — or had stamped `pqs:1` since the announcement: this device
+  announces its key again at once rather than on its clock, so a contact
+  added back is linked again without waiting six hours, and a session reset
+  costs each side one `pqseal` there. Nothing is forgotten on the first
+  session after a CONNECT ceremony of version 3, whose reveal carried the
+  key. One window remains: a stamp the other device sent before the
+  announcement reached it, arriving after the announcement left, is taken;
+  were that announcement then lost at the relay, the pair stays so — a new
+  session forgot the stamp but not the announcement through 4.8.1, so the
+  next stamp counted again, and measured, a reset by either side and eight
+  messages each way later the other device still held the old key, with no
+  `pqseal` sent. From 4.9.0 a new session with a contact's device, opened by
+  either side, mends it: the device announces its key again, and the contact
+  ends holding it (`restore_truth_test` 23). Between a device and its own
+  other devices 4.9.0 forgets the stamp alone, as 4.8.1 did — every `pqseal`
+  a linked device sends its root is also its ask for its `pqdc`, answered in
+  a 16 384‑bucket envelope, and announcing on every new self‑sync session
+  wants measuring first — so there the window stays until the device draws a
+  key again, and is to be closed before 44.7 seals to the key. 44.5's link
+  check finds a contact's device left so classical rather than refusing it.
 * **`pqid.pqdc`** is the sending device's own `pqdc`, in the `pqid` it
   already sends (§18.2): measured, 7 114 bytes of inner message, and 7 261
   with `ack` and every decoration, of the 8 959 the 16 384 bucket holds

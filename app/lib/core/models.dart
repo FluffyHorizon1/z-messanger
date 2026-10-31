@@ -253,9 +253,10 @@ enum DeviceLinkFinding {
   /// whose eight digits this side compared (44.6, §20.9).
   ceremony,
 
-  /// A `pqdc` and a sealing key that device sent in the state it is in —
-  /// each since a ratchet session told of no change (§18.11) — did not verify
-  /// together: refused, recorded and said once, as a key that misses its
+  /// A `pqdc` and a sealing key known to be of one state of that device —
+  /// read one after the other on the session the key came on (§18.11) — did
+  /// not verify together, the `pqdc` having come with their account key as
+  /// held: refused, recorded and said once, as a key that misses its
   /// commitment is (§18.3).
   refused,
 }
@@ -314,6 +315,13 @@ enum DeviceLink {
 
   /// Its attestation was refused.
   refused,
+
+  /// 4.9.0: nothing post-quantum vouches for it, and its `pqdc` came with
+  /// another post-quantum account key than the one held for them — their
+  /// account drew a new key (a restore from a backup made before 2.2.4, or
+  /// from a `.zid`), or an app that is not theirs sent it. Not checked, and
+  /// not refused.
+  keyChanged,
 }
 
 /// How the contact screen presents the post-quantum half (ADR 0021). Distinct

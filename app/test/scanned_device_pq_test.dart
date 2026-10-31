@@ -75,14 +75,15 @@
 //      person's own; neither screen says "post-quantum", and both numbers
 //      stand compared;
 //  10. a contact's device whose stored seed no longer reads draws a new key
-//      and announces it on the session it has, before anything else (4.8.1):
-//      the `pqdc` held, which was of its old key and had come in the same
-//      stretch of that session as the key, goes with the old key instead of
+//      and announces it on the session it has, ahead of its next message
+//      there (4.8.1): the `pqdc` held, which was of its old key and known to
+//      be (read beside it on one session), goes with the old key instead of
 //      being set against the new one — nothing is refused — and the link is
-//      classical until its `pqid` once more (the re-send on, as the seam has
-//      it) brings the `pqdc` over the new key, which links it again;
+//      classical, the finding of the old key gone, until its `pqid` once
+//      more (the re-send on, as the seam has it) brings the `pqdc` over the
+//      new key, which links it again;
 //  11. a contact added before 44.5 whose device link is refused afterwards —
-//      both its key and its `pqdc` again since the update — gets the banner,
+//      its new key and then its `pqdc` on one session — gets the banner,
 //      the red line and the line in the chat, its pill left as it was, as
 //      decision 3 reads ("shown for the rest";
 //      `pillSaysRefusedForEarlierContacts` false); and the build's own
@@ -90,20 +91,35 @@
 //  12. with the other answer (`pillSaysRefusedForEarlierContacts` true) the
 //      same refusal changes that pill too, to "Link refused";
 //  13. the other order for a restored device: a `pqdc` over its new key that
-//      came since it opened its new session here, before its new key, waits
-//      beside the key held from before — not refused — and is kept when the
-//      new key lands, though this device opened a session to it in between,
-//      which links the device (the state such a `pqid` leaves, built in the
-//      vaults; the session and the announcement real);
-//  14. a session this device opens sets aside the key it holds of a device
-//      as one that device opens does: a restored device whose announcement
-//      of its new key was lost — its contact's stamp, of the old key, taken
-//      for the new, the window PROTOCOL §18.11 names — is opened a session
-//      to, and the `pqdc` over its new key that comes on it is not set
-//      against the old key, which had come since the session before: it
-//      waits, nothing is refused, and the device is linked once its key is
-//      announced (what the lost announcement leaves, built in the vaults;
-//      the session, the `pqid` and the announcement real).
+//      came on a session other than the one the key held came on, before its
+//      new key, waits beside the key held from before — not refused — and is
+//      kept when the new key lands, though this device opened a session to
+//      it in between, which links the device (the state such a `pqid`
+//      leaves, built in the vaults; the session and the announcement real);
+//  14. this device resets the session and then the contact's device finds
+//      its stored seed unreadable: its new key, announced on the session
+//      this device opened, is not set against the `pqdc` of its old key —
+//      whether that `pqdc` came before the reset, with the device away, or
+//      on the new session, its `pqid` answering the reset's hello — nothing
+//      is refused, and its next `pqdc` links it again (4.9.0);
+//  15. a contact restored from a `.zid` backup draws a new post-quantum
+//      account key and a new sealing key: its `pqdc`, which came with the
+//      new account key, is never refused nor checked, and the screen says
+//      their post-quantum key changed — a banner and the line, the pill of a
+//      contact added on this build "Device link classical" — and a reset
+//      changes nothing; deleting them and adding them again from their code
+//      takes the new key, and links the device post-quantum (4.9.0);
+//  16. the same for a contact restored from an archive made before 2.2.4,
+//      which carried no post-quantum seed: never refused, and once its
+//      `pqid` comes, the screen says their post-quantum key changed;
+//  17. a contact deleted and added back is linked again on the shipped
+//      clock, with no six-hour wait: their device announces its key on the
+//      new session at once — and so does this device, deleted and added back
+//      by them (4.9.0);
+//  18. a finding of the key their device held before is not said of the key
+//      it holds now: left by a stop between the new key's being written and
+//      its judgement, the link reads classical, not post-quantum, and the
+//      next start judges it again (4.9.0).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -120,6 +136,7 @@ import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import 'package:z_protocol/z_protocol.dart';
 import 'package:zapp/core/archive.dart';
+import 'package:zapp/core/backup.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/enrollment.dart';
 import 'package:zapp/core/key_transparency.dart';
@@ -1416,15 +1433,15 @@ void main() {
     final oldKey = bob.svc.sealingKey!;
     final before =
         SealRecord.decode(await alice.vault.kvGet('cseal_$bRid')).devices[bRid]!;
-    expect(before.ekFresh && before.pqdcFresh, isTrue,
-        reason: 'the premise: both came since their session last began, so '
-            'the pqdc, were it kept beside a new key, would be set against '
-            'it');
+    expect(before.pqdcBound, isTrue,
+        reason: 'the premise: the pqdc and the key known to be of one state '
+            'of his device, so the pqdc, were it kept beside a new key, '
+            'would be set against it');
 
     // Bob's app stops, and the seed it stored is damaged: 12 bytes, not 64.
     // His device draws a new key at its next start, keeps its sessions, and
-    // announces the new key on them before anything else (4.8.1). The `pqid`
-    // once more is on, as the seam has it, and not due for hours yet.
+    // announces the new key on them ahead of its next message (4.8.1). The
+    // `pqid` once more is on, as the seam has it, and not due for hours yet.
     bob = await restart(bob, resends: true, before: (v) async {
       await v.kvPut(sealSeedKey, b64(randomBytes(12)));
     });
@@ -1444,6 +1461,11 @@ void main() {
         reason: 'the pqdc of the old key went with it');
     expect(alice.svc.deviceLinkWith(bRid), DeviceLink.classical,
         reason: 'what was found was of the old key; nothing is yet of the new');
+    // The judgement the new key calls for runs once the key is written: what
+    // was found of the old one goes then.
+    await waitUntil(
+        () => alice.svc.contacts[bRid]!.deviceLinkVerdict == null,
+        what: 'the finding of the old key cleared');
     expect(await alice.vault.kvGet('dlink_$bRid'), isNull);
     expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0,
         reason: 'a key changed on a session held is no evidence against the '
@@ -1607,16 +1629,21 @@ void main() {
     // The other order, which a restored device's `pqid` takes when it goes
     // before its session is mixed — beside `pqct`, which a `pqseal` never
     // rides — is built here from what that leaves: Alice holding the key
-    // from before Bob's session began, unmarked, and his new `pqdc`, come on
-    // the session he opened; and Bob's device yet to announce his key to her.
+    // from before, as it came on a session of his old device's, and his new
+    // `pqdc`, come on the session his restored device opened, bound to no
+    // key; and Bob's device yet to announce his key to her.
+    final account = keyHash((await bob.svc.pqAccountPublic())!);
     alice = await restart(alice, before: (v) async {
       final rec = SealRecord.decode(await v.kvGet('cseal_$bRid'));
       final d = rec.devices[bRid]!
         ..ek = oldKey
-        ..ekFresh = false
+        ..ekSid = 'a-session-of-his-old-device'
         ..pqdc = newPqdc
-        ..pqdcFresh = true;
-      expect(d.pqdcFresh, isTrue);
+        ..pqdcSid = 'the-session-his-restore-opened'
+        ..pqdcBound = false
+        ..pqdcAfterKey = true
+        ..pqdcAccount = account;
+      expect(d.pqdcBound, isFalse);
       await v.kvPut('cseal_$bRid', rec.encode());
       await v.kvDelete('dlink_$bRid');
     });
@@ -1661,96 +1688,328 @@ void main() {
   });
 
   test(
-      '14. a session this device opens sets aside the key it holds of a '
-      'device: a pqdc over a key not yet announced here, come on that '
-      'session, waits, and links it once the key comes', () async {
-    var alice = await person('alice14');
-    var bob = await person('bob14');
+      '14. this device resets the session, then the contact device finds its '
+      'stored seed unreadable: its new key is not set against the pqdc of its '
+      'old one, whether that came before the reset or on its session',
+      () async {
+    for (final online in [false, true]) {
+      final tag = online ? 'on' : 'off';
+      final alice = await person('alice14$tag');
+      var bob = await person('bob14$tag');
+      await pairUp(alice, bob);
+      await linkedBothWays(alice, bob);
+      final bRid = bob.svc.myRid;
+      final oldKey = bob.svc.sealingKey!;
+      final oldPqdc = alice.svc.debugPqdcOf(bRid)!;
+      if (online) {
+        // Bob is there for the reset — his app started since it last sent
+        // Alice its `pqid`, which it volunteers once a run — and Alice's
+        // hello on her new session earns that `pqid`, the `pqdc` of his old
+        // key, on that session.
+        bob = await restart(bob);
+        await connected([alice, bob]);
+        final probe = Probe()..attach(alice.svc);
+        await alice.svc.resetSecureSession(bRid);
+        await talkUntil(alice, bob, () => probe.count(bRid, 'pqid') > 0,
+            what: "Bob's pqid on the session Alice opened");
+        await stop(bob);
+      } else {
+        // Bob is away when Alice resets: her hello waits for him.
+        await stop(bob);
+        await alice.svc.resetSecureSession(bRid);
+      }
+      // Bob starts again, and the seed his device stored no longer reads: a
+      // new key, announced on the session Alice opened. The `pqid` once more
+      // is on, as the seam has it, and not due for hours yet.
+      final vault = await Vault.open(rootOverride: bob.dir);
+      await vault.kvPut(sealSeedKey, b64(randomBytes(12)));
+      bob = await boot(bob.dir, bob.name, vault: vault, resends: true);
+      await connected([alice, bob]);
+      final newKey = bob.svc.sealingKey!;
+      expect(newKey, isNot(oldKey), reason: 'the premise: a new key drawn');
+      var refusedOnTheWay = false;
+      await talkUntil(bob, alice, () {
+        if (alice.svc.deviceLinkWith(bRid) == DeviceLink.refused) {
+          refusedOnTheWay = true;
+        }
+        final k = alice.svc.debugPqSealOf(bRid);
+        return k != null && constantTimeEquals(k, newKey);
+      }, what: "[$tag] Alice holding Bob's new key");
+      expect(refusedOnTheWay, isFalse, reason: '[$tag] never refused');
+      final held = alice.svc.debugPqdcOf(bRid);
+      expect(held == null || !constantTimeEquals(held, oldPqdc), isTrue,
+          reason: '[$tag] the pqdc of the old key is not kept beside the new');
+      expect(
+          alice.svc.deviceLinkWith(bRid),
+          isIn([DeviceLink.classical, DeviceLink.attested]),
+          reason: '[$tag] classical until a pqdc over the new key comes — '
+              'which his pqid answering the reset may already have brought');
+      expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused),
+          0, reason: '[$tag] nothing said against his device');
+
+      // The `pqid` once more, made due now, brings the pqdc over the new key.
+      bob.svc.pqdcResendDelay = const Duration(milliseconds: 300);
+      await talkUntil(alice, bob, () {
+        if (alice.svc.deviceLinkWith(bRid) == DeviceLink.refused) {
+          refusedOnTheWay = true;
+        }
+        return alice.svc.deviceLinkWith(bRid) == DeviceLink.attested;
+      }, what: "[$tag] Bob's device linked again, over its new key");
+      expect(refusedOnTheWay, isFalse);
+      expect(alice.svc.contacts[bRid]!.deviceLinkVerdict!.sk,
+          await sha256Bytes(newKey));
+      expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused),
+          0);
+      await closeAll();
+    }
+  });
+
+  /// What [alice] holds of the link to [bRid]'s device, for a failure's
+  /// reason.
+  Future<String> linkState(Person alice, String bRid) async {
+    final d = SealRecord.decode(await alice.vault.kvGet('cseal_$bRid'))
+        .devices[bRid];
+    return 'link=${alice.svc.deviceLinkWith(bRid)} '
+        'pqdc=${d?.pqdc != null} bound=${d?.pqdcBound} '
+        'account=${d?.pqdcAccount == null ? '-' : b64(d!.pqdcAccount!).substring(0, 6)}';
+  }
+
+  testWidgets(
+      '15. a contact restored from a .zid backup, onto a new post-quantum '
+      'account key, is never refused: the screen says their key changed, and '
+      'deleting and adding them again from their code links them', (t) async {
+    await t.binding.setSurfaceSize(const Size(800, 3000));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    late Person alice, bob;
+    late String aRid, bRid;
+    var refusedOnTheWay = false;
+    bool notRefused() {
+      if (alice.svc.deviceLinkWith(bRid) == DeviceLink.refused) {
+        refusedOnTheWay = true;
+      }
+      return true;
+    }
+
+    await t.runAsync(() async {
+      alice = await person('alice15');
+      bob = await person('bob15');
+      await pairUp(alice, bob);
+      await linkedBothWays(alice, bob);
+      aRid = alice.svc.myRid;
+      bRid = bob.svc.myRid;
+      await alice.svc.setVerified(bRid, true);
+      final oldAccount = (await bob.svc.pqAccountPublic())!;
+      // Bob's phone is lost; he restores the identity backup an app before
+      // 2.0.1 made, which carries no post-quantum seed and no sealing key.
+      final bytes = await BackupFile.export(
+        identity: bob.id,
+        displayName: 'bob15',
+        contactRecords: [
+          {
+            'bundle': bob.svc.contacts[aRid]!.bundle.toJson(),
+            'name': 'alice15',
+            'verified': true,
+          }
+        ],
+        passphrase: 'correct horse battery staple',
+      );
+      final file = File(p.join((await tempDir('zid15')).path, 'b.zid'))
+        ..writeAsBytesSync(bytes);
+      await stop(bob);
+      bob.dir.deleteSync(recursive: true);
+      bob.dir.createSync(recursive: true);
+      final vault = await Vault.open(rootOverride: bob.dir);
+      await Restore.run(
+        vault: vault,
+        file: file,
+        secret: 'correct horse battery staple',
+        kind: (await Restore.identify(file)).kind,
+        serverUrl: relayUrl(),
+      );
+      bob = await boot(bob.dir, bob.name, vault: vault);
+      await connected([alice, bob]);
+      bob.svc.pqOfferRetry = 300;
+      final newAccount = (await bob.svc.pqAccountPublic())!;
+      expect(constantTimeEquals(newAccount, oldAccount), isFalse,
+          reason: 'the premise: a new post-quantum account key');
+      try {
+        await talkUntil(bob, alice,
+            () => notRefused() &&
+                alice.svc.deviceLinkWith(bRid) == DeviceLink.keyChanged,
+            what: 'the key change said');
+      } on TimeoutException {
+        fail(await linkState(alice, bRid));
+      }
+      // A reset — what USING_Z says to do for a link that reads classical —
+      // brings his `pqid` again, and changes nothing.
+      await alice.svc.resetSecureSession(bRid);
+      for (var i = 0; i < 3; i++) {
+        await say(alice, bob, 'after the reset $i');
+        await say(bob, alice, 'back $i');
+        notRefused();
+      }
+    });
+    expect(refusedOnTheWay, isFalse, reason: 'never refused');
+    expect(alice.svc.deviceLinkWith(bRid), DeviceLink.keyChanged);
+    expect(alice.svc.deviceLinkForPill(bRid), DeviceLink.keyChanged);
+    expect(
+        await t.runAsync(() =>
+            systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused)),
+        0);
+    expect(alice.svc.verificationWith(bRid), VerificationState.verified,
+        reason: 'the number is of the key held, which nothing moved');
+    await show(t, alice, bRid, 'ci-device-link-key-changed');
+    expect(find.byKey(const ValueKey('ci-pq-key-changed-banner')),
+        findsOneWidget);
+    expect(find.text(l.ciPqKeyChangedTitle), findsOneWidget);
+    expect(find.text(l.ciDeviceLinkKeyChanged), findsOneWidget);
+    expect(find.text(l.ciPillDeviceLinkClassical), findsOneWidget);
+    expect(find.text(l.ciPillPq), findsNothing);
+    expect(find.byKey(const ValueKey('ci-device-link-refused-banner')),
+        findsNothing);
+    expect(find.textContaining('refused'), findsNothing,
+        reason: 'nothing on the screen says refused');
+    await leave(t);
+
+    // As the banner says: deleted and added again from his code, which
+    // commits to his new key, and his device is linked post-quantum.
+    await t.runAsync(() async {
+      await alice.svc.deleteContact(bRid);
+      await alice.svc.addContactFromCode(await bob.svc.myContactCode());
+      await talkUntil(alice, bob,
+          () => alice.svc.deviceLinkWith(bRid) == DeviceLink.attested,
+          what: 'linked again, over his new account key');
+    });
+    expect(alice.svc.contacts[bRid]!.pqPub,
+        await t.runAsync(() => bob.svc.pqAccountPublic()));
+    await t.runAsync(closeAll);
+  });
+
+  test(
+      '16. a contact restored from an archive made before 2.2.4 — no '
+      'post-quantum seed in it — is never refused, and once its pqid comes the '
+      'screen says their key changed', () async {
+    final alice = await person('alice16');
+    var bob = await person('bob16');
     await pairUp(alice, bob);
     await linkedBothWays(alice, bob);
-    final aRid = alice.svc.myRid, bRid = bob.svc.myRid;
-    final oldKey = bob.svc.sealingKey!;
-
-    // Bob's phone is restored onto a new key and linked again the usual way,
-    // as in criterion 13: his new pqdc, to build with.
+    final bRid = bob.svc.myRid;
+    await alice.svc.setVerified(bRid, true);
     final (file, code) = await backup(bob);
     bob = await lostAndRestored(bob, file, code, before: (v) async {
+      // What an archive from before 2.2.4 lacks: the account's post-quantum
+      // seed, and — as every one from before 4.7.0 — the sealing key.
+      await v.kvDelete('pq_seed');
       await v.kvDelete(sealSeedKey);
       await v.kvDelete(ownPqdcKey);
     });
     await connected([alice, bob]);
-    final newKey = bob.svc.sealingKey!;
-    expect(newKey, isNot(oldKey), reason: 'the premise: a new sealing key');
-    final newSk = await sha256Bytes(newKey);
     bob.svc.pqOfferRetry = 300;
-    await say(bob, alice, 'back');
-    await alice.svc.resetSecureSession(bRid);
-    await talkUntil(alice, bob, () {
-      final v = alice.svc.contacts[bRid]?.deviceLinkVerdict;
-      return v?.finding == DeviceLinkFinding.attested &&
-          constantTimeEquals(v!.sk, newSk);
-    }, what: "Bob's restored device linked, the usual way round");
-    final newPqdc = alice.svc.debugPqdcOf(bRid)!;
+    var refusedOnTheWay = false;
+    bool notRefused() {
+      if (alice.svc.deviceLinkWith(bRid) == DeviceLink.refused) {
+        refusedOnTheWay = true;
+      }
+      return true;
+    }
 
-    // Built from what a lost announcement leaves: Alice holding his old key,
-    // come since the session before, and no pqdc; his device sure she holds
-    // its key — her stamp, of the old one, taken for the new once his
-    // announcement had left.
+    final newKey = bob.svc.sealingKey!;
+    await talkUntil(bob, alice, () {
+      notRefused();
+      final k = alice.svc.debugPqSealOf(bRid);
+      return k != null && constantTimeEquals(k, newKey);
+    }, what: "Alice holding Bob's new sealing key");
+    // His restored device holds Alice's key already, so it sends no `pqid`
+    // of its own accord; Alice's reset earns one.
+    await alice.svc.resetSecureSession(bRid);
+    try {
+      await talkUntil(alice, bob,
+          () => notRefused() &&
+              alice.svc.deviceLinkWith(bRid) == DeviceLink.keyChanged,
+          what: 'the key change said');
+    } on TimeoutException {
+      fail(await linkState(alice, bRid));
+    }
+    expect(refusedOnTheWay, isFalse, reason: 'never refused');
+    expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0);
+    expect(alice.svc.verificationWith(bRid), VerificationState.verified);
+    await closeAll();
+  });
+
+  test(
+      '17. a contact deleted and added back is linked again with no six-hour '
+      'wait, on the shipped clock — both ways', () async {
+    final alice = await person('alice17');
+    final bob = await person('bob17');
+    await pairUp(alice, bob);
+    await linkedBothWays(alice, bob);
+    final aRid = alice.svc.myRid, bRid = bob.svc.myRid;
+    expect(alice.svc.pqOfferRetry, pqOfferRetryMs);
+    expect(bob.svc.pqOfferRetry, pqOfferRetryMs,
+        reason: 'the premise: the shipped clock, six hours between '
+            'announcements');
+
+    // Alice deletes Bob and adds him again from his code: her new record
+    // holds nothing of his device, and his device last announced its key to
+    // her a moment ago.
+    await alice.svc.deleteContact(bRid);
+    await alice.svc.addContactFromCode(await bob.svc.myContactCode());
+    try {
+      await talkUntil(alice, bob,
+          () => alice.svc.deviceLinkWith(bRid) == DeviceLink.attested,
+          what: 'Alice linking Bob again', rounds: 6);
+    } on TimeoutException {
+      fail('Alice of Bob: ${await linkState(alice, bRid)} '
+          'key=${alice.svc.debugPqSealOf(bRid) != null}');
+    }
+
+    // And Bob deletes Alice and adds her again.
+    await bob.svc.deleteContact(aRid);
+    await bob.svc.addContactFromCode(await alice.svc.myContactCode());
+    try {
+      await talkUntil(bob, alice,
+          () => bob.svc.deviceLinkWith(aRid) == DeviceLink.attested,
+          what: 'Bob linking Alice again', rounds: 6);
+    } on TimeoutException {
+      fail('Bob of Alice: ${await linkState(bob, aRid)} '
+          'key=${bob.svc.debugPqSealOf(aRid) != null}');
+    }
+    expect(alice.svc.deviceLinkWith(bRid), DeviceLink.attested);
+    await closeAll();
+  });
+
+  test(
+      "18. a finding of the key their device held before is not said of the "
+      'key it holds now, and the next start judges it again', () async {
+    var alice = await person('alice18');
+    final bob = await person('bob18');
+    await pairUp(alice, bob);
+    await linkedBothWays(alice, bob);
+    final bRid = bob.svc.myRid;
+    final found = alice.svc.contacts[bRid]!.deviceLinkVerdict!;
+    expect(found.finding, DeviceLinkFinding.attested);
+
+    // What a stop between the door's writing a new key and its judgement
+    // leaves: the record holding the key his device announced since — its
+    // seed no longer read — and the finding still the one of the old key.
+    final fresh = SealingKey.generate().ek;
     alice = await restart(alice, before: (v) async {
       final rec = SealRecord.decode(await v.kvGet('cseal_$bRid'));
       rec.devices[bRid]!
-        ..ek = oldKey
-        ..ekFresh = true
+        ..ek = fresh
         ..pqdc = null
-        ..pqdcFresh = false;
+        ..pqdcBound = false;
       await v.kvPut('cseal_$bRid', rec.encode());
-      await v.kvDelete('dlink_$bRid');
+      expect(await v.kvGet('dlink_$bRid'), isNotNull,
+          reason: 'the premise: the finding of the old key kept');
     });
-    bob = await restart(bob, before: (v) async {
-      final rec = SealRecord.decode(await v.kvGet('cseal_$aRid'));
-      rec.devices[aRid]!
-        ..holdsMine = true
-        ..announcedMs = DateTime.now().millisecondsSinceEpoch;
-      await v.kvPut('cseal_$aRid', rec.encode());
-    });
-    bob.svc.pqOfferRetry = 300;
-    await connected([alice, bob]);
-    expect(alice.svc.deviceLinkWith(bRid), DeviceLink.classical);
-
-    // Alice opens a session to his device, and her hello earns his pqid: its
-    // pqdc over the key she does not hold yet.
-    final probe = Probe()..attach(alice.svc);
-    await alice.svc.resetSecureSession(bRid);
-    await talkUntil(alice, bob, () {
-      final held = alice.svc.debugPqdcOf(bRid);
-      return held != null && constantTimeEquals(held, newPqdc);
-    }, what: "Bob's pqid on Alice's session");
-    expect(probe.count(bRid, 'pqseal'), 0,
-        reason: 'the premise: his key not announced on the way');
-    expect(alice.svc.debugPqSealOf(bRid), oldKey);
     expect(alice.svc.deviceLinkWith(bRid), DeviceLink.classical,
-        reason: 'the key held came before her session: the pqdc waits');
-    expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0);
-
-    // His device announces its key there again — its record of hers
-    // cleared, as a key drawn anew clears it — and the pqdc kept links it.
-    bob = await restart(bob, before: (v) async {
-      final rec = SealRecord.decode(await v.kvGet('cseal_$aRid'));
-      rec.devices[aRid]!
-        ..holdsMine = false
-        ..announcedMs = 0;
-      await v.kvPut('cseal_$aRid', rec.encode());
-    });
-    bob.svc.pqOfferRetry = 300;
-    await connected([alice, bob]);
-    await talkUntil(alice, bob,
-        () => alice.svc.deviceLinkWith(bRid) == DeviceLink.attested,
-        what: "Bob's device linked once his key landed");
-    expect(alice.svc.debugPqSealOf(bRid), newKey);
-    expect(alice.svc.debugPqdcOf(bRid), newPqdc);
-    expect(alice.svc.contacts[bRid]!.deviceLinkVerdict!.sk, newSk);
-    expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0,
-        reason: 'never refused on the way');
+        reason: 'not post-quantum: nothing has attested the key held');
+    expect(alice.svc.deviceLinkForPill(bRid), DeviceLink.classical);
+    await alice.svc.debugHeldLinksJudged;
+    expect(alice.svc.contacts[bRid]!.deviceLinkVerdict, isNull,
+        reason: 'judged again at the start: the finding of the old key gone');
+    expect(await alice.vault.kvGet('dlink_$bRid'), isNull);
     await closeAll();
   });
 }

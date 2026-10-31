@@ -155,6 +155,20 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             ),
             const SizedBox(height: 12),
           ],
+          if (link == DeviceLink.keyChanged) ...[
+            // 4.9.0 (§18.11): that device's attestation came with another
+            // post-quantum account key than the one held for them — not
+            // refused, since an honest restore of an old backup does this,
+            // and not checked, since nothing here can check it.
+            _Banner(
+              key: const ValueKey('ci-pq-key-changed-banner'),
+              tone: context.z.warn,
+              icon: Icons.key_off_outlined,
+              title: l.ciPqKeyChangedTitle,
+              body: l.ciPqKeyChangedBody(contact.name),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (svc.readerBehind(widget.rid)) ...[
             // ADR 0029: this account's list is v2-only now, and one of their
             // devices has said by what it sends that it runs an older app. A
@@ -253,9 +267,11 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                         key: ValueKey(linkLine.key),
                         style: TextStyle(
                             fontSize: 12,
-                            color: link == DeviceLink.refused
-                                ? context.z.danger
-                                : context.z.textSecondary,
+                            color: switch (link) {
+                              DeviceLink.refused => context.z.danger,
+                              DeviceLink.keyChanged => context.z.warn,
+                              _ => context.z.textSecondary,
+                            },
                             height: 1.5),
                       ),
                     ),
@@ -456,6 +472,10 @@ String _pqBlurb(AppLocalizations l, Contact c) => switch (c.pqDisplay) {
 /// link: no `pqdc` is judged under a key nothing has checked (§18.2), and the
 /// blurb above already says what is missing.
 ///
+/// 4.9.0: a `pqdc` that came with another post-quantum account key than the
+/// one held for them is said as that, with the banner above: not refused,
+/// and not checked.
+///
 /// Classical reads three ways. For a contact added by a post-quantum invite
 /// whose digits were not compared, it says the digits were what would have
 /// vouched, since no other attestation is sent to a contact added that way
@@ -472,6 +492,11 @@ String _pqBlurb(AppLocalizations l, Contact c) => switch (c.pqDisplay) {
       return (text: l.ciDeviceLinkAttested, key: 'ci-device-link-attested');
     case DeviceLink.refused:
       return (text: l.ciDeviceLinkRefused, key: 'ci-device-link-refused');
+    case DeviceLink.keyChanged:
+      return (
+        text: l.ciDeviceLinkKeyChanged,
+        key: 'ci-device-link-key-changed'
+      );
     case DeviceLink.classical:
       if (c.assurance != IdentityAssurance.hybrid) return null;
       final text = c.connectV3
@@ -524,7 +549,8 @@ class _AssurancePill extends StatelessWidget {
       PqDisplay.unverified => (l.ciPillPqUnconfirmed, context.z.warn),
       PqDisplay.postQuantum when link == DeviceLink.refused =>
         (l.ciPillDeviceLinkRefused, context.z.danger),
-      PqDisplay.postQuantum when link == DeviceLink.classical =>
+      PqDisplay.postQuantum
+          when link == DeviceLink.classical || link == DeviceLink.keyChanged =>
         (l.ciPillDeviceLinkClassical, context.z.warn),
       PqDisplay.postQuantum => (l.ciPillPq, context.z.ok),
       PqDisplay.mismatch => (l.ciPillPqRefused, context.z.danger),
