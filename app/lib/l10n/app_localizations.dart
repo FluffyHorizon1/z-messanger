@@ -956,10 +956,10 @@ abstract class AppLocalizations {
   /// **'The relay did not take your account for the new device, so nothing was sent and this device has not added it. Start again on both devices in a little while.'**
   String get linkEnrolmentRefused;
 
-  /// On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait — its person said the codes differ or confirmed too late, or it stopped, or its connection to the relay dropped while it sent the account, or the relay did not take it. Nothing was installed.
+  /// On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait — its person said the codes differ, confirmed too late or left its link screen, or it stopped, or its connection to the relay dropped while it sent the account, or the relay did not take it. Nothing was installed.
   ///
   /// In en, this message translates to:
-  /// **'Your other device did not send your account in time: its person may have said the codes differ or confirmed too late, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.'**
+  /// **'Your other device did not send your account in time: its person may have said the codes differ, confirmed too late or left its link screen, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.'**
   String get linkNoEnrolment;
 
   /// On either linking screen, when a wait ran out that no other message explains: the other device, or the relay, did not answer in time.
@@ -997,6 +997,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This device will not use that code again: another connection took over a link with it, so someone else may have seen it. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.'**
   String get linkCodeSpent;
+
+  /// On the existing device (Link a device), when the code typed is one this device was still linking with, in a link it stopped for this entry (its person left the screen and entered the code again), and that link had already answered the new device: the new device takes no second answer, so the code cannot link. Nothing was sent. The person gets a new code on the new device by going back and choosing "Link to an existing account" (onbLinkExisting) again.
+  ///
+  /// In en, this message translates to:
+  /// **'That code was used in the link this device stopped: the new device already has this device\'s answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.'**
+  String get linkCodeAnswered;
 
   /// Title of the screen that adds a device, and the action that opens it.
   ///

@@ -122,7 +122,12 @@
 //      again, or its screen is left: it says another connection took the
 //      link over, keeps the code as spent and closes the laptop's mailbox,
 //      so the laptop says so too and shows a new code, and the call that
-//      came again says the code will not be used again.
+//      came again says the code will not be used again;
+//  25. a code entered again on the phone once the link it stopped had
+//      answered the laptop says at once, in both languages, that the laptop
+//      needs a new code — the laptop takes no second answer — and the
+//      laptop, sent nothing, names its other device's leaving the link
+//      screen among its reasons, and shows a new code.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -342,15 +347,16 @@ void main() {
       'device shows your chats anyway, it is not on your account: on it, '
       'open Settings → Wipe everything, then link it again.';
   const laptopNoEnrolment = 'Your other device did not send your account in '
-      'time: its person may have said the codes differ or confirmed too '
-      'late, or it could not get your account to the relay. Start again on '
-      'both devices, and confirm on both within about forty seconds of each '
-      'other.';
+      'time: its person may have said the codes differ, confirmed too late '
+      'or left its link screen, or it could not get your account to the '
+      'relay. Start again on both devices, and confirm on both within about '
+      'forty seconds of each other.';
   const laptopNoEnrolmentEs = 'Tu otro dispositivo no envió tu cuenta a '
-      'tiempo: puede que allí dijeran que los códigos no coinciden o que '
-      'confirmaran demasiado tarde, o que no pudiera hacer llegar tu cuenta '
-      'al relay. Vuelve a empezar en los dos dispositivos y confirma en ambos '
-      'con menos de unos cuarenta segundos de diferencia.';
+      'tiempo: puede que allí dijeran que los códigos no coinciden, que '
+      'confirmaran demasiado tarde o que salieran de su pantalla de '
+      'vinculación, o que no pudiera hacer llegar tu cuenta al relay. Vuelve '
+      'a empezar en los dos dispositivos y confirma en ambos con menos de '
+      'unos cuarenta segundos de diferencia.';
   const phoneInterrupted = "This device's connection to the relay dropped "
       'while it was sending your account, before the new device said it had '
       'it, so this device has not added it: your account may or may not have '
@@ -398,6 +404,15 @@ void main() {
       'alguien más lo haya visto. En el dispositivo nuevo, vuelve atrás y '
       'elige «Vincular a una cuenta existente» otra vez para obtener un '
       'código nuevo, e introdúcelo aquí.';
+  const codeAnswered = 'That code was used in the link this device stopped: '
+      "the new device already has this device's answer to it, and will not "
+      'take another. On the new device, go back and choose "Link to an '
+      'existing account" again for a new code, then enter that one here.';
+  const codeAnsweredEs = 'Ese código se usó en la vinculación que este '
+      'dispositivo detuvo: el dispositivo nuevo ya tiene la respuesta de este '
+      'y no aceptará otra. En el dispositivo nuevo, vuelve atrás y elige '
+      '«Vincular a una cuenta existente» otra vez para obtener un código '
+      'nuevo, e introdúcelo aquí.';
   const laptopInstallFailed = 'This device could not open or install the '
       'account your other device sent, so it is not linked. Check that this '
       'device has space free, then start again on both devices.';
@@ -1151,12 +1166,19 @@ void main() {
           l.linkNotACode);
       expect(hostLinkFailureText(l, const PairingCodeSpent()),
           l.linkCodeSpent);
+      // An attempt this device stopped itself, and a code entered again once
+      // the attempt it stopped had answered the new device.
+      expect(hostLinkFailureText(l, const PairingCancelled()),
+          l.linkCancelled);
+      expect(hostLinkFailureText(l, const PairingCodeAnswered()),
+          l.linkCodeAnswered);
       // Each way to a new code names the choice the new device offers, as
       // its onboarding screen words it.
       for (final words in [
         l.linkHostMayBeOlder,
         l.linkHostTakenOver,
-        l.linkCodeSpent
+        l.linkCodeSpent,
+        l.linkCodeAnswered
       ]) {
         expect(words, contains(l.onbLinkExisting));
       }
@@ -1234,6 +1256,8 @@ void main() {
     expect(es.linkHostTakenOver, phoneTakenOverEs);
     expect(en.linkCodeSpent, codeSpent);
     expect(es.linkCodeSpent, codeSpentEs);
+    expect(en.linkCodeAnswered, codeAnswered);
+    expect(es.linkCodeAnswered, codeAnsweredEs);
     for (final (a, b) in [
       (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
       (es.linkPeerGaveUp, en.linkPeerGaveUp),
@@ -1250,6 +1274,7 @@ void main() {
       (es.linkNotACode, en.linkNotACode),
       (es.linkFailedOther, en.linkFailedOther),
       (es.linkCodeSpent, en.linkCodeSpent),
+      (es.linkCodeAnswered, en.linkCodeAnswered),
     ]) {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
@@ -2341,5 +2366,56 @@ void main() {
     } finally {
       await rec.close();
     }
+  });
+
+  test(
+      '25. a code entered again once the link it stopped had answered the '
+      'laptop says at once that the laptop needs a new code', () async {
+    final alice = await person('Alice25');
+    await connected([alice]);
+    const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    final comparing = Completer<void>();
+    // The phone has answered the laptop: its person is comparing the digits
+    // when they go back and enter the code again.
+    final first = alice.svc
+        .hostDeviceLink(code, confirmSas: (_) {
+          comparing.complete();
+          return Completer<bool>().future;
+        })
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final laptop = n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: timeout,
+          margin: margin,
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    await comparing.future;
+    final waited = Stopwatch()..start();
+    final again = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    waited.stop();
+    expect(phoneScreen(await first), en.linkCancelled,
+        reason: 'the link entered again stopped the first');
+    expect([phoneScreen(again), hostLinkFailureText(es, again!)],
+        [codeAnswered, codeAnsweredEs],
+        reason: 'the laptop holds the first answer and takes no other');
+    expect(waited.elapsed, lessThan(timeout),
+        reason: 'at once, and not when a wait for a commitment ran out');
+    final l = await laptop;
+    expect([laptopScreen(l), newDeviceLinkFailureText(es, l!)],
+        [laptopNoEnrolment, laptopNoEnrolmentEs],
+        reason: "the laptop names its other device's leaving the link screen "
+            'among its reasons');
+    expect(n.code, isNot(code), reason: 'and shows a new code');
+    expect(await alice.svc.linkedDevices(), isEmpty);
+    expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+        reason: 'nobody else had the code');
   });
 }

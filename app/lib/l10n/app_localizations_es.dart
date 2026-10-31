@@ -540,7 +540,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get linkNoEnrolment =>
-      'Tu otro dispositivo no envió tu cuenta a tiempo: puede que allí dijeran que los códigos no coinciden o que confirmaran demasiado tarde, o que no pudiera hacer llegar tu cuenta al relay. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
+      'Tu otro dispositivo no envió tu cuenta a tiempo: puede que allí dijeran que los códigos no coinciden, que confirmaran demasiado tarde o que salieran de su pantalla de vinculación, o que no pudiera hacer llegar tu cuenta al relay. Vuelve a empezar en los dos dispositivos y confirma en ambos con menos de unos cuarenta segundos de diferencia.';
 
   @override
   String get linkTimedOut =>
@@ -565,6 +565,10 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get linkCodeSpent =>
       'Este dispositivo no volverá a usar ese código: otra conexión se hizo cargo de una vinculación con él, así que puede que alguien más lo haya visto. En el dispositivo nuevo, vuelve atrás y elige «Vincular a una cuenta existente» otra vez para obtener un código nuevo, e introdúcelo aquí.';
+
+  @override
+  String get linkCodeAnswered =>
+      'Ese código se usó en la vinculación que este dispositivo detuvo: el dispositivo nuevo ya tiene la respuesta de este y no aceptará otra. En el dispositivo nuevo, vuelve atrás y elige «Vincular a una cuenta existente» otra vez para obtener un código nuevo, e introdúcelo aquí.';
 
   @override
   String get linkADevice => 'Vincular un dispositivo';

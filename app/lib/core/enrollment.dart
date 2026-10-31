@@ -142,6 +142,20 @@ class PairingCodeSpent implements Exception {
       'over, and will not use it again';
 }
 
+/// What `ChatService.hostDeviceLink` throws for a code it was still hosting
+/// a link with when it was entered again, once it has stopped that link,
+/// when the link had already answered the new device: the new device holds
+/// that answer and takes no other (§10.2 rule 5), so the code has no
+/// ceremony left, and the new device shows a new one once it gives up.
+/// Said at once, where the call used to wait out its timer for a commitment
+/// that would not come. Nothing is sent.
+class PairingCodeAnswered implements Exception {
+  const PairingCodeAnswered();
+  @override
+  String toString() => 'PairingCodeAnswered: the link this device stopped '
+      'had answered the new device with this code';
+}
+
 /// The per-contact `kv` families an enrolment carries (§10 `cstate`): the
 /// three post-quantum records (ADR 0027, 26.3), the contact's device list,
 /// the signature floor it has reached and the list's post-quantum

@@ -12,7 +12,12 @@ import 'archive.dart' show BackupArchive;
 import 'backup_store.dart';
 import 'device_sync.dart';
 import 'enrollment.dart'
-    show PairingCodeSpent, enrollmentKvFamilies, isRootBundle, rootBundleKey;
+    show
+        PairingCodeAnswered,
+        PairingCodeSpent,
+        enrollmentKvFamilies,
+        isRootBundle,
+        rootBundleKey;
 import 'handles.dart';
 import 'intro_links.dart' show introLinksEnabled;
 import 'key_transparency.dart';
@@ -8976,7 +8981,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// device's connection closed, as for any. An attempt that has sent the
   /// account is not stopped — the new device may hold it, and only the
   /// report the attempt waits for lists it — so it runs on to its end, and a
-  /// call that came for its code meanwhile ends as it does.
+  /// call that came for its code meanwhile ends as it does. One that had
+  /// answered the new device and is stopped leaves its code with no ceremony
+  /// to run, the new device taking no second answer: the call that stopped
+  /// it says so at once ([PairingCodeAnswered]).
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -9004,6 +9012,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           return earlier.over;
         }
         if (mine.cancel.isCancelled) throw const PairingCancelled();
+        // One that had answered the new device: it holds that answer and
+        // takes no other (§10.2 rule 5), so the code has no ceremony left.
+        // Said now — a spent code first — where this call used to wait out
+        // its timer for a commitment that would not come.
+        if (earlier.answered) {
+          if ((await _spentLinkCodes()).contains(mark)) {
+            throw const PairingCodeSpent();
+          }
+          mine.answeredBefore = true;
+          throw const PairingCodeAnswered();
+        }
       }
       return _hostDeviceLink(pairing, mark,
           confirmSas: confirmSas, cancel: mine.cancel);
@@ -17933,12 +17952,20 @@ class _HostedLink {
   /// account came to, rather than running one of its own.
   bool joined = false;
 
+  /// Whether this call ended because an earlier attempt on its code had
+  /// answered the new device ([PairingCodeAnswered]).
+  bool answeredBefore = false;
+
   /// What it came to: linked or not, or what stopped it.
   Future<bool> get over => done.future;
 
   /// Whether what it came to is that of an attempt that sent the account,
   /// which no cancel stops.
   bool get sentEnrolment => joined || cancel.sentEnrolment;
+
+  /// Whether its code had been answered — by its own attempt, or by an
+  /// earlier one it ended for — so that the new device takes no other answer.
+  bool get answered => answeredBefore || cancel.answered;
 }
 
 /// One envelope a pass has out: its payload's length, when it went (on the

@@ -533,7 +533,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get linkNoEnrolment =>
-      'Your other device did not send your account in time: its person may have said the codes differ or confirmed too late, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.';
+      'Your other device did not send your account in time: its person may have said the codes differ, confirmed too late or left its link screen, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.';
 
   @override
   String get linkTimedOut =>
@@ -558,6 +558,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get linkCodeSpent =>
       'This device will not use that code again: another connection took over a link with it, so someone else may have seen it. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.';
+
+  @override
+  String get linkCodeAnswered =>
+      'That code was used in the link this device stopped: the new device already has this device\'s answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.';
 
   @override
   String get linkADevice => 'Link a device';

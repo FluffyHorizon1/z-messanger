@@ -89,6 +89,7 @@ class PairingCancel {
   final _asked = Completer<void>();
   bool _sentEnrolment = false;
   bool _closedByAnotherLogin = false;
+  bool _answered = false;
 
   /// Asks the attempt to stop.
   void cancel() {
@@ -106,6 +107,12 @@ class PairingCancel {
   /// because another connection logged in as its mailbox: someone else
   /// holding the code, unless it was the caller's own next attempt on it.
   bool get closedByAnotherLogin => _closedByAnotherLogin;
+
+  /// Whether the attempt had handed its reply to the new device's
+  /// commitment over. The new device answers the first reply it gets and no
+  /// other (§10.2 rule 5), so a later attempt on the code has no ceremony to
+  /// run unless this one finished it.
+  bool get answered => _answered;
 
   /// Whether the attempt is to stop: asked to, with the enrolment not sent.
   bool get _stops => isCancelled && !_sentEnrolment;
@@ -556,6 +563,7 @@ class RelayPairing {
       // at the relay, and the next attempt on the code answers it.
       if (box.cancelled) throw const PairingCancelled();
       box.acknowledge(committed);
+      cancel?._answered = true;
       final (reply, pending) = answer;
       await _post(box,
           to: iMailbox,

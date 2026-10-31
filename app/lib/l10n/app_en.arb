@@ -685,9 +685,9 @@
   "@linkEnrolmentRefused": {
     "description": "On the existing device, when the relay refused the frame that carries the account to the new device \u2014 its store was full, or it was taking too much from this device at once. Nothing reached the new device and nothing was added."
   },
-  "linkNoEnrolment": "Your other device did not send your account in time: its person may have said the codes differ or confirmed too late, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.",
+  "linkNoEnrolment": "Your other device did not send your account in time: its person may have said the codes differ, confirmed too late or left its link screen, or it could not get your account to the relay. Start again on both devices, and confirm on both within about forty seconds of each other.",
   "@linkNoEnrolment": {
-    "description": "On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait \u2014 its person said the codes differ or confirmed too late, or it stopped, or its connection to the relay dropped while it sent the account, or the relay did not take it. Nothing was installed."
+    "description": "On the new device, after its person confirmed the codes match: the device it is linking from never sent the account within the wait \u2014 its person said the codes differ, confirmed too late or left its link screen, or it stopped, or its connection to the relay dropped while it sent the account, or the relay did not take it. Nothing was installed."
   },
   "linkTimedOut": "The link timed out. Check that both devices are online, then start again on both.",
   "@linkTimedOut": {
@@ -712,6 +712,10 @@
   "linkCodeSpent": "This device will not use that code again: another connection took over a link with it, so someone else may have seen it. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.",
   "@linkCodeSpent": {
     "description": "On the existing device (Link a device), when the code typed is one it saw taken over in an earlier attempt: someone else logged in as that link's mailbox, and still has the code. Nothing was sent. The person gets a new code on the new device by going back and choosing \"Link to an existing account\" (onbLinkExisting) again."
+  },
+  "linkCodeAnswered": "That code was used in the link this device stopped: the new device already has this device's answer to it, and will not take another. On the new device, go back and choose \"Link to an existing account\" again for a new code, then enter that one here.",
+  "@linkCodeAnswered": {
+    "description": "On the existing device (Link a device), when the code typed is one this device was still linking with, in a link it stopped for this entry (its person left the screen and entered the code again), and that link had already answered the new device: the new device takes no second answer, so the code cannot link. Nothing was sent. The person gets a new code on the new device by going back and choosing \"Link to an existing account\" (onbLinkExisting) again."
   },
   "linkADevice": "Link a device",
   "@linkADevice": {
