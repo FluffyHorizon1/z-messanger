@@ -404,6 +404,13 @@ class ConnectInvites extends ChangeNotifier {
   bool _foreground = false;
   Future<void>? _inFlight;
 
+  /// Set by [dispose]: nothing is carried forward after it — no pass starts,
+  /// a pass in flight runs no round after the one it is in, no poll is
+  /// armed, and nobody is told. Until 2026-10-31 a pass in flight when the
+  /// object was disposed armed the polls as it ended, and they ran rounds
+  /// for as long as the isolate lived, the object's listeners gone.
+  bool _disposed = false;
+
   /// Sealed like everything else in the vault. It holds invite secrets, and
   /// an invite secret is a bearer token until it is spent.
   static const String _kvKey = 'connect_invites';
@@ -505,7 +512,7 @@ class ConnectInvites extends ChangeNotifier {
         }
       }
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   /// Writes the invites to the vault, and once the vault has taken them
@@ -719,9 +726,13 @@ class ConnectInvites extends ChangeNotifier {
   /// against the other, the reveal does not open, and the invite is spent on
   /// a mismatch nobody produced. With a poll running beside a button, that
   /// overlap is not hypothetical.
+  ///
+  /// After [dispose] it starts nothing: a pass still in flight is handed
+  /// back, to be joined, and otherwise there is nothing to wait for.
   Future<void> pump({int? nowMs}) {
     final running = _inFlight;
     if (running != null) return running;
+    if (_disposed) return Future<void>.value();
     late final Future<void> mine;
     mine = _pump(nowMs: nowMs).whenComplete(() {
       if (identical(_inFlight, mine)) _inFlight = null;
@@ -754,6 +765,9 @@ class ConnectInvites extends ChangeNotifier {
     await load();
     if (_invites.isEmpty) return;
     for (final invite in List.of(_invites)) {
+      // Disposed while this pass was in flight: the round it was in has
+      // ended, and nothing more is carried forward ([_disposed]).
+      if (_disposed) return;
       // Spent, or finished and waiting on a human: nothing a round trip can
       // change. (Stepping a finished run only turns `confirm` into `done`,
       // which the card does not distinguish and the poll should not pay for.)
@@ -867,7 +881,9 @@ class ConnectInvites extends ChangeNotifier {
     } catch (_) {
       invite.lastFailure ??= ConnectFailure.fault;
     }
-    notifyListeners();
+    // Written down all the same once disposed, for the next start to read;
+    // but nobody is left to tell.
+    if (!_disposed) notifyListeners();
   }
 
   /// A round that threw: why, on the card, and the invite written down when
@@ -926,7 +942,7 @@ class ConnectInvites extends ChangeNotifier {
   }
 
   void _arm() {
-    if (!_foreground || !_anythingPending) {
+    if (_disposed || !_foreground || !_anythingPending) {
       _disarm();
       return;
     }
@@ -940,6 +956,7 @@ class ConnectInvites extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _disarm();
     super.dispose();
   }

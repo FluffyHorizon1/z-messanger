@@ -98,7 +98,13 @@
 //     Spanish. Until 2026-10-31 the card said "Could not reach the relay"
 //     and then the failure's own text, a write the vault refused among
 //     them, and the tab and the comparison showed an action's exception as
-//     it came.
+//     it came;
+// 14. a ConnectInvites disposed while a pass is in flight carries nothing
+//     forward after it: the pass ends with the round it is in, arms no poll
+//     and tells nobody, and a pump after it starts nothing. Until
+//     2026-10-31 the pass went on to the next invite's round and armed the
+//     polls as it ended, and they ran rounds for as long as the isolate
+//     lived.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1357,4 +1363,69 @@ void main() {
           '$lang, $what: its own line; exception text: none',
     ]);
   }, timeout: const Timeout(Duration(minutes: 4)));
+
+  test('14. a ConnectInvites disposed with a pass in flight carries nothing '
+      'forward after it', () async {
+    const poll = Duration(milliseconds: 1234);
+    final alice = await person('Alice');
+    final bob = await person('Bob', pollEvery: poll);
+    // Bob's own invite first, whose round changes nothing it writes down;
+    // then Alice's, her message 1 waiting, whose round draws his message 2
+    // and is written down and told.
+    await bob.invites.create();
+    final fromAlice = await alice.invites.create();
+    await alice.invites.pump();
+    await bob.invites.open(fromAlice.link);
+
+    var rounds = 0;
+    final hold = Completer<void>();
+    bob.invites.debugBeforeRound = (_) async {
+      rounds++;
+      if (rounds == 1) await hold.future;
+    };
+    // The polls a pass arms once it is over, counted from dispose() on: the
+    // pass runs in this zone, and the timer of [poll]'s period is theirs.
+    var disposed = false;
+    var armed = 0;
+    final zone = Zone.current.fork(
+        specification: ZoneSpecification(
+            createPeriodicTimer: (self, parent, z, period, f) {
+      if (disposed && period == poll) armed++;
+      return parent.createPeriodicTimer(z, period, f);
+    }));
+    zone.run(bob.invites.resume); // the first pass, held in its first round
+    final until = DateTime.now().add(const Duration(seconds: 30));
+    while (rounds == 0) {
+      if (DateTime.now().isAfter(until)) fail('the pass reached no round');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    final pass = bob.invites.pump(); // that pass, joined
+    disposed = true;
+    bob.invites.dispose();
+    hold.complete();
+    String ended;
+    try {
+      await pass;
+      ended = 'over';
+    } catch (e) {
+      ended = 'threw ${e.runtimeType}';
+    }
+    final after = rounds - 1;
+    final before = rounds;
+    String again;
+    try {
+      await bob.invites.pump();
+      again = 'began ${rounds - before} rounds';
+    } catch (e) {
+      again = 'began ${rounds - before} rounds, then threw ${e.runtimeType}';
+    }
+    // Whatever was armed, stopped, so nothing of this runs on after it.
+    bob.invites.pause();
+    bob.invites.debugBeforeRound = null;
+    expect(
+        'rounds begun after dispose(): $after; polls armed after it: $armed; '
+        'the pass: $ended; a pump after it: $again',
+        'rounds begun after dispose(): 0; polls armed after it: 0; the pass: '
+        'over; a pump after it: began 0 rounds');
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
