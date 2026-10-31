@@ -18,7 +18,8 @@ import 'package:z_protocol/z_protocol.dart'
         PairingTakenOver,
         RelayException;
 
-import '../core/enrollment.dart' show PairingCodeAnswered, PairingCodeSpent;
+import '../core/enrollment.dart'
+    show PairingCodeAnswered, PairingCodeLinked, PairingCodeSpent;
 import 'app_localizations.dart';
 
 // What each linking screen says when the ceremony stops (§10.2, 44.4), in
@@ -75,6 +76,7 @@ String hostLinkFailureText(AppLocalizations l, Object error) =>
       PairingCodeInvalid() => l.linkNotACode,
       PairingCodeSpent() => l.linkCodeSpent,
       PairingCodeAnswered() => l.linkCodeAnswered,
+      PairingCodeLinked() => l.linkCodeLinked,
       PairingCancelled() => l.linkCancelled,
       TimeoutException() => l.linkTimedOut,
       RelayException() => l.linkConnectionLost,

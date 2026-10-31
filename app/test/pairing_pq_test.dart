@@ -143,7 +143,12 @@
 //      needs a new code, the phone keeping each code by its rendezvous id;
 //  29. a code whose reply never reached the relay — the phone's connection
 //      closed as it acknowledged the laptop's commitment — is not kept, and
-//      entered again links the laptop.
+//      entered again links the laptop;
+//  30. a code that linked the laptop, entered again, says at once, in both
+//      languages, that it has already linked a device and how to link
+//      another — once restarted too — the phone keeping the code by its
+//      rendezvous id under a key of its own, and logging in as the code's
+//      mailbox for neither.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -429,6 +434,12 @@ void main() {
       'y no aceptará otra. En el dispositivo nuevo, vuelve atrás y elige '
       '«Vincular a una cuenta existente» otra vez para obtener un código '
       'nuevo, e introdúcelo aquí.';
+  const codeLinked = 'That code has already linked a device to your '
+      'account. To link another device, choose "Link to an existing account" '
+      'on it for a new code, then enter that one here.';
+  const codeLinkedEs = 'Ese código ya vinculó un dispositivo a tu cuenta. '
+      'Para vincular otro dispositivo, elige «Vincular a una cuenta '
+      'existente» en él para obtener un código nuevo, e introdúcelo aquí.';
   const laptopInstallFailed = 'This device could not open or install the '
       'account your other device sent, so it is not linked. Check that this '
       'device has space free, then start again on both devices.';
@@ -1254,6 +1265,9 @@ void main() {
           l.linkEnrolmentInterrupted);
       expect(hostLinkFailureText(l, PairingEnrolmentRefused('store_full')),
           l.linkEnrolmentRefused);
+      // A code that has already linked a device.
+      expect(hostLinkFailureText(l, const PairingCodeLinked()),
+          l.linkCodeLinked);
     }
     expect(en.linkPeerUnconfirmed, phoneUnconfirmed);
     expect(en.linkPeerGaveUp, phoneGaveUp);
@@ -1276,6 +1290,8 @@ void main() {
     expect(es.linkCodeSpent, codeSpentEs);
     expect(en.linkCodeAnswered, codeAnswered);
     expect(es.linkCodeAnswered, codeAnsweredEs);
+    expect(en.linkCodeLinked, codeLinked);
+    expect(es.linkCodeLinked, codeLinkedEs);
     for (final (a, b) in [
       (es.linkPeerUnconfirmed, en.linkPeerUnconfirmed),
       (es.linkPeerGaveUp, en.linkPeerGaveUp),
@@ -1293,6 +1309,7 @@ void main() {
       (es.linkFailedOther, en.linkFailedOther),
       (es.linkCodeSpent, en.linkCodeSpent),
       (es.linkCodeAnswered, en.linkCodeAnswered),
+      (es.linkCodeLinked, en.linkCodeLinked),
     ]) {
       expect(a, isNot(b), reason: 'the Spanish has words of its own');
     }
@@ -2722,6 +2739,84 @@ void main() {
         reason: 'the next attempt finds the commitment, answers it and links');
     expect(await laptop, isA<PairingResult>());
     expect(await alice.svc.linkedDevices(), hasLength(1));
+    await vault.db.close();
+  });
+
+  test(
+      '30. a code that linked the laptop, entered again, says at once that it '
+      'has already linked a device', () async {
+    // The phone reaches the relay through a front that notes each login.
+    final rec = await Recorder.start(relayUrl());
+    addTearDown(rec.close);
+    final alice = await person('Alice30', url: rec.url);
+    await connected([alice]);
+    const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    final dir = await tempDir('laptop30');
+    final vault = await Vault.open(rootOverride: dir);
+    final laptop = n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: timeout,
+          margin: margin,
+          install: (r) async {
+            await setRelayUrl(vault, relayUrl(), acceptedInsecure: true);
+            await installEnrollment(vault, r, sealingKey: n.sealingKey);
+          },
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final linked = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    expect(linked, isTrue, reason: 'the code linked the laptop');
+    expect(await laptop, isA<PairingResult>());
+    // The person enters the same code again.
+    final waited = Stopwatch()..start();
+    final again = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    waited.stop();
+    expect([phoneScreen(again), hostLinkFailureText(es, again!)],
+        [codeLinked, codeLinkedEs],
+        reason: 'it has already linked a device, and says how to link another');
+    expect(waited.elapsed, lessThan(timeout),
+        reason: 'at once, and not when a wait for a commitment ran out');
+    // Kept by the code's rendezvous id, never the code, under its own key.
+    final mark = await PairingCode.parse(code).rendezvousRoutingIdV3();
+    final kept = await alice.vault.kvGet('link_linked_codes');
+    expect(jsonDecode(kept!), [mark]);
+    expect(kept, isNot(contains(code)));
+    expect(await alice.vault.kvGet('link_answered_codes'), isNull,
+        reason: 'the code finished its link');
+    expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+        reason: 'nobody else had the code');
+    // And once the phone has restarted.
+    alice.svc.dispose();
+    await alice.svc.transport.stop();
+    live.remove(alice);
+    final restarted =
+        await boot(alice.dir, 'Alice30', vault: alice.vault, url: rec.url);
+    restarted.svc.linkTimeout = timeout;
+    restarted.svc.linkMargin = margin;
+    final waitedAfter = Stopwatch()..start();
+    final later = await restarted.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    waitedAfter.stop();
+    expect(phoneScreen(later), codeLinked, reason: 'once restarted too');
+    expect(waitedAfter.elapsed, lessThan(timeout), reason: 'at once');
+    expect(await restarted.svc.linkedDevices(), hasLength(1),
+        reason: 'the laptop it linked is listed, and nothing more');
+    // Neither call that came again logged in as the code's mailbox.
+    final box = await (await RelayPairing.relayIdentityV3(
+            PairingCode.parse(code), 'r'))
+        .routingId();
+    expect(rec.welcomed.where((id) => id == box), hasLength(1),
+        reason: 'the attempt that linked alone logged in as the mailbox');
     await vault.db.close();
   });
 }

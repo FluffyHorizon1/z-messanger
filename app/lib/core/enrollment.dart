@@ -148,6 +148,18 @@ class PairingCodeSpent implements Exception {
       'over, and will not use it again';
 }
 
+/// What `ChatService.hostDeviceLink` throws for a code that has already
+/// linked a device here (§10.2): a code links once, and the new device it
+/// linked has moved on. Said at once, where the call used to wait out its
+/// timer for a commitment that would not come, with how to link another
+/// device: a new code on it. Nothing is sent.
+class PairingCodeLinked implements Exception {
+  const PairingCodeLinked();
+  @override
+  String toString() => 'PairingCodeLinked: this code has already linked a '
+      'device to this account';
+}
+
 /// What `ChatService.hostDeviceLink` throws for a code whose link on this
 /// device ended without linking once the relay had taken its reply to the
 /// new device — stopped, the digits said to differ, a wait run out, a

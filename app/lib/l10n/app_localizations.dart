@@ -5623,6 +5623,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The relay was reached but refused this step — will keep trying.'**
   String get connectFailedRefused;
+
+  /// On the existing device (Link a device), when the code typed is one that has already linked a device here: a code links once, and the device it linked has moved on. Nothing was sent. To link another device, the person gets a new code on it by choosing "Link to an existing account" (onbLinkExisting).
+  ///
+  /// In en, this message translates to:
+  /// **'That code has already linked a device to your account. To link another device, choose \"Link to an existing account\" on it for a new code, then enter that one here.'**
+  String get linkCodeLinked;
 }
 
 class _AppLocalizationsDelegate

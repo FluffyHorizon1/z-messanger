@@ -3649,4 +3649,8 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get connectFailedRefused =>
       'Se contactó con el relay, pero rechazó este paso; se seguirá intentando.';
+
+  @override
+  String get linkCodeLinked =>
+      'Ese código ya vinculó un dispositivo a tu cuenta. Para vincular otro dispositivo, elige «Vincular a una cuenta existente» en él para obtener un código nuevo, e introdúcelo aquí.';
 }

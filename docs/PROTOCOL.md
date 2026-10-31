@@ -2313,7 +2313,11 @@ counted: the attempt acknowledged the commitment on the same connection just
 before the reply, so if the reply never reached the relay that
 acknowledgement may not have either, and the next attempt may find the
 commitment and answer it — the new device, having had no reply, takes that
-one. An attempt
+one. A code that has linked a device is kept the same way, in a list of its
+own, since what the user is told differs — the code did its work — and an
+attempt on it says at once that it has already linked a device, with how to
+link another; until 2026‑10‑31 that attempt too waited out its timer. An
+attempt
 that has handed the enrollment over is not stopped — the new device may come
 to hold the account, and only the report lists it — so it runs on to its
 end, and an attempt on its code that came meanwhile ends as it does. The

@@ -3614,4 +3614,8 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get connectFailedRefused =>
       'The relay was reached but refused this step — will keep trying.';
+
+  @override
+  String get linkCodeLinked =>
+      'That code has already linked a device to your account. To link another device, choose \"Link to an existing account\" on it for a new code, then enter that one here.';
 }

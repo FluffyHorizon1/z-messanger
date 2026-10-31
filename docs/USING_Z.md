@@ -516,7 +516,9 @@ new device shows its digits; once it has, a link that does not finish has
 used that code up — one you stopped, one whose codes were said to differ,
 one that timed out or lost its connection — and your phone says so if you
 enter it again, and the new device shows a new one when it gives up: start
-again on both devices with that. And
+again on both devices with that. A code that linked a device has done its
+work too, and your phone says so if you enter it again: to link another
+device, get a new code on that one. And
 if your phone ever lists a device you did not finish linking, revoke it in
 Settings → Linked devices.
 

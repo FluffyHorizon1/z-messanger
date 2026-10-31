@@ -14,6 +14,7 @@ import 'device_sync.dart';
 import 'enrollment.dart'
     show
         PairingCodeAnswered,
+        PairingCodeLinked,
         PairingCodeSpent,
         enrollmentKvFamilies,
         isRootBundle,
@@ -9668,7 +9669,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// reached the relay is not kept: the new device may still answer the next
   /// reply it gets. Until 2026-10-31 only a stopped attempt kept its code, and
   /// the code entered again after any other end waited out its timer for a
-  /// commitment that would not come.
+  /// commitment that would not come. A code that linked a device is kept the
+  /// same way, under a key of its own, and an attempt on it says at once that
+  /// it has already linked one ([PairingCodeLinked]), where it too waited out
+  /// its timer.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -9740,9 +9744,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if ((await _spentLinkCodes()).contains(mark)) {
       throw const PairingCodeSpent();
     }
-    // One whose link this device stopped once it had answered the new
-    // device: that device holds the answer and takes no other (§10.2 rule
-    // 5), so the code has no ceremony left ([PairingCodeAnswered]).
+    // One that has linked a device: a code links once, and that device has
+    // moved on ([PairingCodeLinked]).
+    if ((await _keptLinkCodes(_linkedLinkCodesKey)).contains(mark)) {
+      throw const PairingCodeLinked();
+    }
+    // One whose link ended without linking once the relay had taken its
+    // reply: the new device holds that answer and takes no other (§10.2
+    // rule 5), so the code has no ceremony left ([PairingCodeAnswered]).
     if ((await _keptLinkCodes(_answeredLinkCodesKey)).contains(mark)) {
       throw const PairingCodeAnswered();
     }
@@ -9833,6 +9842,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       if (cancel.answered) await _keepAnsweredLinkCode(mark);
       return false;
     }
+    // The code has had its ceremony: an attempt on it says so at once from
+    // here, whether or not the device's listing below goes through. A store
+    // that refuses this write changes nothing the screen says.
+    try {
+      await _keepLinkCode(_linkedLinkCodesKey, mark);
+    } catch (_) {}
     // Before the device is added: its first `pqseal` can arrive as soon as
     // the self-sync channel names it ([_answerPqdcAsk]).
     final pqdc = enrolledPqdc;
@@ -9855,6 +9870,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// last [_spentLinkCodesKept], with no time bound, in no backup and handed
   /// to no device this one links (`DATA_MAP.md`).
   static const String _answeredLinkCodesKey = 'link_answered_codes';
+
+  /// The vault key under which this device keeps the codes that linked a
+  /// device here (§10.2), kept as the spent ones are: each by its v3
+  /// rendezvous id, the last [_spentLinkCodesKept], with no time bound, in no
+  /// backup and handed to no device this one links (`DATA_MAP.md`). A key of
+  /// its own, not a share of the spent or the answered ones', because what
+  /// the screen says differs: those codes did not link, this one did; and
+  /// the two lists keep the form 4.9.0 wrote and reads.
+  static const String _linkedLinkCodesKey = 'link_linked_codes';
 
   /// The codes [hostDeviceLink] will not use again, by rendezvous id.
   Future<List<String>> _spentLinkCodes() => _keptLinkCodes(_spentLinkCodesKey);
