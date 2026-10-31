@@ -722,12 +722,6 @@ abstract class AppLocalizations {
   /// **'Pick a group name and at least one member.'**
   String get grpNeedNameAndMember;
 
-  /// Group creation failed; {error} is the underlying message.
-  ///
-  /// In en, this message translates to:
-  /// **'Could not create: {error}'**
-  String grpCreateFailed(String error);
-
   /// Title of the create-group screen.
   ///
   /// In en, this message translates to:
@@ -1832,12 +1826,6 @@ abstract class AppLocalizations {
   /// **'Voice message too short.'**
   String get chatVoiceTooShort;
 
-  /// A text or voice message could not be queued. {error} is the exception text.
-  ///
-  /// In en, this message translates to:
-  /// **'Send failed: {error}'**
-  String chatSendFailed(String error);
-
   /// Tapping a quote whose original is beyond the jump window. The message exists; the screen will not scroll to it.
   ///
   /// In en, this message translates to:
@@ -1892,12 +1880,6 @@ abstract class AppLocalizations {
   /// **'Forwarded.'**
   String get chatForwarded;
 
-  /// The forward could not be queued.
-  ///
-  /// In en, this message translates to:
-  /// **'Forward failed: {error}'**
-  String chatForwardFailed(String error);
-
   /// ADR 0036. Title of the dialog shown before a file is sent to a group when sending it will upload 128 MB or more, because every member and each of the sender's other devices is sent a copy of its own.
   ///
   /// In en, this message translates to:
@@ -1945,12 +1927,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Not sent yet: send it or discard it'**
   String get chatVoiceHeld;
-
-  /// Toggling a reaction could not be queued.
-  ///
-  /// In en, this message translates to:
-  /// **'Reaction failed: {error}'**
-  String chatReactionFailed(String error);
 
   /// Disappearing-messages timer disabled. Shown as a picker option and as the current setting.
   ///
@@ -2239,12 +2215,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Saved (decrypted copy)'**
   String get chatSavedDecrypted;
-
-  /// The attachment could not be written.
-  ///
-  /// In en, this message translates to:
-  /// **'Save failed: {error}'**
-  String chatSaveFailed(String error);
 
   /// The line under the wordmark on the first screen. It is the brand's own claim, in the brand's own words ('No account. No phone number. No server storage.' on the artwork); keep the three short sentences and the line break after the first.
   ///
@@ -5419,6 +5389,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Accepted through their public link. Compare safety numbers to verify.'**
   String get sysIntroLinkAccepted;
+
+  /// Shown in a chat or on the new-group screen when this device's own storage refused to save what the person did — a message sent, a message forwarded, a reaction, a group made (a full disk, a locked or closed database). Not a problem with the network or the other person; load-bearing clause: it points at the device's storage. No detail of the failure is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'This device\'s storage refused to save that. If this goes on, check that the device has free storage.'**
+  String get chatFailedStorage;
+
+  /// Shown in a chat when a file or a voice message is over the most one message can carry, and nothing was sent. {limit} is that size, written as the app writes sizes (for example "24.0 MB").
+  ///
+  /// In en, this message translates to:
+  /// **'That is over {limit}, the most one message can carry, so nothing was sent.'**
+  String chatFileTooLarge(String limit);
+
+  /// Shown in a chat when a message — text, a voice message or a file — could not be sent, for a reason the app does not name. No detail of the failure is shown; the person can send it again.
+  ///
+  /// In en, this message translates to:
+  /// **'The message could not be sent. Try again.'**
+  String get chatSendFailedOther;
+
+  /// Shown in a chat when forwarding a message to another conversation failed, for a reason the app does not name. No detail of the failure is shown; the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The message could not be forwarded. Try again.'**
+  String get chatForwardFailedOther;
+
+  /// Shown in a chat when adding, changing or withdrawing a reaction to a message failed, for a reason the app does not name. No detail of the failure is shown; the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The reaction could not be changed. Try again.'**
+  String get chatReactionFailedOther;
+
+  /// Shown in a chat when the camera or the photo library refused Z because the person has not allowed Z to use it. Load-bearing clause: it says where to allow it — this device's own settings, not Z's.
+  ///
+  /// In en, this message translates to:
+  /// **'Z is not allowed to use the camera or your photos. Allow it in this device\'s settings, then try again.'**
+  String get chatAttachNoAccess;
+
+  /// Shown in a chat when taking a photo, or choosing a photo or a video from the library, failed for a reason the app does not name. No detail of the failure is shown; the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The camera or the photo library could not be opened. Try again.'**
+  String get chatAttachFailed;
+
+  /// Shown in a chat when saving the decrypted copy of a file or a voice message failed. No detail of the failure is shown; the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The file could not be saved. Try again.'**
+  String get chatSaveFailedOther;
+
+  /// Shown on the new-group screen when the group could not be made, for a reason the app does not name. No detail of the failure is shown; the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The group could not be created. Try again.'**
+  String get grpCreateFailedOther;
 }
 
 class _AppLocalizationsDelegate

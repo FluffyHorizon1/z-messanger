@@ -13,6 +13,7 @@ import 'package:record/record.dart';
 
 import '../l10n/app_localizations.dart';
 import '../l10n/alert_text.dart';
+import '../l10n/chat_text.dart';
 import '../l10n/system_text.dart';
 import '../l10n/when_text.dart';
 import '../core/chat_service.dart';
@@ -196,11 +197,17 @@ class _ChatScreenState extends State<ChatScreen> {
       await _sendGroupVoice(wav, dur);
       return;
     }
+    if (wav.length > maxAttachmentBytes) {
+      messenger.showSnackBar(
+          SnackBar(content: Text(l.chatFileTooLarge(_attachmentLimit(l)))));
+      return;
+    }
     try {
       await svc.sendVoiceNote(widget.rid, wav, dur, mime: 'audio/wav');
       _jumpToEnd();
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
+      messenger.showSnackBar(SnackBar(
+          content: Text(chatFailureText(l, ChatAction.send, e))));
     }
   }
 
@@ -225,6 +232,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
     _sendingVoice = true;
     try {
+      if (wav.length > maxAttachmentBytes) {
+        keep();
+        messenger.showSnackBar(
+            SnackBar(content: Text(l.chatFileTooLarge(_attachmentLimit(l)))));
+        return;
+      }
       if (!await _groupUploadGoes(widget.rid, wav.length, voice: true)) {
         keep();
         return;
@@ -237,7 +250,8 @@ class _ChatScreenState extends State<ChatScreen> {
       await _showGroupUploadRefused(e.cost, voice: true);
     } catch (e) {
       keep();
-      messenger.showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
+      messenger.showSnackBar(SnackBar(
+          content: Text(chatFailureText(l, ChatAction.send, e))));
     } finally {
       _sendingVoice = false;
     }
@@ -385,8 +399,8 @@ class _ChatScreenState extends State<ChatScreen> {
     } on GroupFileOverBudget catch (e) {
       await _showGroupUploadRefused(e.cost);
     } catch (e) {
-      messenger
-          .showSnackBar(SnackBar(content: Text(l.chatForwardFailed('$e'))));
+      messenger.showSnackBar(SnackBar(
+          content: Text(chatFailureText(l, ChatAction.forward, e))));
     }
   }
 
@@ -396,8 +410,8 @@ class _ChatScreenState extends State<ChatScreen> {
       await context.read<ChatService>().toggleReaction(widget.rid, mid, emoji);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(l.chatReactionFailed('$e'))));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(chatFailureText(l, ChatAction.react, e))));
       }
     }
   }
@@ -425,8 +439,8 @@ class _ChatScreenState extends State<ChatScreen> {
       // still reached here (a race with the check) is simply not made.
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(l.chatSendFailed('$e'))));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(chatFailureText(l, ChatAction.send, e))));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -512,6 +526,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// deleted as soon as the bytes are read.
   Future<void> _attachFromPicker({required bool camera}) async {
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     XFile? x;
     try {
       final picker = ImagePicker();
@@ -519,7 +534,10 @@ class _ChatScreenState extends State<ChatScreen> {
           ? await picker.pickImage(source: ImageSource.camera)
           : await picker.pickMedia(); // one image or video from the library
     } catch (e) {
-      if (mounted) messenger.showSnackBar(SnackBar(content: Text('$e')));
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(
+            content: Text(chatFailureText(l, ChatAction.attach, e))));
+      }
       return;
     }
     if (x == null) return; // cancelled
@@ -535,6 +553,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     final svc = context.read<ChatService>();
     final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
+    // The service refuses it too; said here before anything is asked of it.
+    if (bytes.length > maxAttachmentBytes) {
+      messenger.showSnackBar(
+          SnackBar(content: Text(l.chatFileTooLarge(_attachmentLimit(l)))));
+      return;
+    }
     try {
       if (svc.groups.containsKey(widget.rid)) {
         if (!await _groupUploadGoes(widget.rid, bytes.length)) return;
@@ -546,7 +571,8 @@ class _ChatScreenState extends State<ChatScreen> {
     } on GroupFileOverBudget catch (e) {
       await _showGroupUploadRefused(e.cost);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('$e')));
+      messenger.showSnackBar(SnackBar(
+          content: Text(chatFailureText(l, ChatAction.send, e))));
     }
   }
 
@@ -1671,9 +1697,15 @@ Future<void> saveAttachment(
       messenger.showSnackBar(SnackBar(content: Text(l.chatSavedDecrypted)));
     }
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text(l.chatSaveFailed('$e'))));
+    messenger.showSnackBar(
+        SnackBar(content: Text(chatFailureText(l, ChatAction.save, e))));
   }
 }
+
+/// The most one message can carry ([maxAttachmentBytes]), as the app writes
+/// a size.
+String _attachmentLimit(AppLocalizations l) =>
+    l.sizeMb((maxAttachmentBytes / 1024 / 1024).toStringAsFixed(1));
 
 /// The transparency log's strip (7.7b): a state rather than an alert, so it
 /// has no dismiss — a conflict offers "send anyway" instead.

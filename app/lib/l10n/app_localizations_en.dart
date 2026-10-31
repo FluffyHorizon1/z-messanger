@@ -382,11 +382,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Pick a group name and at least one member.';
 
   @override
-  String grpCreateFailed(String error) {
-    return 'Could not create: $error';
-  }
-
-  @override
   String get grpNew => 'New group';
 
   @override
@@ -1107,11 +1102,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get chatVoiceTooShort => 'Voice message too short.';
 
   @override
-  String chatSendFailed(String error) {
-    return 'Send failed: $error';
-  }
-
-  @override
   String get chatTooFarBack => 'That message is too far back to jump to.';
 
   @override
@@ -1138,11 +1128,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chatForwarded => 'Forwarded.';
-
-  @override
-  String chatForwardFailed(String error) {
-    return 'Forward failed: $error';
-  }
 
   @override
   String get chatGroupUploadTitle => 'A large upload';
@@ -1199,11 +1184,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chatVoiceHeld => 'Not sent yet: send it or discard it';
-
-  @override
-  String chatReactionFailed(String error) {
-    return 'Reaction failed: $error';
-  }
 
   @override
   String get ttlOff => 'Off';
@@ -1405,11 +1385,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chatSavedDecrypted => 'Saved (decrypted copy)';
-
-  @override
-  String chatSaveFailed(String error) {
-    return 'Save failed: $error';
-  }
 
   @override
   String get onbTagline =>
@@ -3489,4 +3464,39 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get sysIntroLinkAccepted =>
       'Accepted through their public link. Compare safety numbers to verify.';
+
+  @override
+  String get chatFailedStorage =>
+      'This device\'s storage refused to save that. If this goes on, check that the device has free storage.';
+
+  @override
+  String chatFileTooLarge(String limit) {
+    return 'That is over $limit, the most one message can carry, so nothing was sent.';
+  }
+
+  @override
+  String get chatSendFailedOther => 'The message could not be sent. Try again.';
+
+  @override
+  String get chatForwardFailedOther =>
+      'The message could not be forwarded. Try again.';
+
+  @override
+  String get chatReactionFailedOther =>
+      'The reaction could not be changed. Try again.';
+
+  @override
+  String get chatAttachNoAccess =>
+      'Z is not allowed to use the camera or your photos. Allow it in this device\'s settings, then try again.';
+
+  @override
+  String get chatAttachFailed =>
+      'The camera or the photo library could not be opened. Try again.';
+
+  @override
+  String get chatSaveFailedOther => 'The file could not be saved. Try again.';
+
+  @override
+  String get grpCreateFailedOther =>
+      'The group could not be created. Try again.';
 }

@@ -512,15 +512,6 @@
   "@grpNeedNameAndMember": {
     "description": "Validation on the create-group screen."
   },
-  "grpCreateFailed": "Could not create: {error}",
-  "@grpCreateFailed": {
-    "description": "Group creation failed; {error} is the underlying message.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
-  },
   "grpNew": "New group",
   "@grpNew": {
     "description": "Title of the create-group screen."
@@ -1400,15 +1391,6 @@
   "@chatVoiceTooShort": {
     "description": "A recording under half a second was discarded as a misfire rather than sent."
   },
-  "chatSendFailed": "Send failed: {error}",
-  "@chatSendFailed": {
-    "description": "A text or voice message could not be queued. {error} is the exception text.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
-  },
   "chatTooFarBack": "That message is too far back to jump to.",
   "@chatTooFarBack": {
     "description": "Tapping a quote whose original is beyond the jump window. The message exists; the screen will not scroll to it."
@@ -1444,15 +1426,6 @@
   "chatForwarded": "Forwarded.",
   "@chatForwarded": {
     "description": "Confirms the forward was queued."
-  },
-  "chatForwardFailed": "Forward failed: {error}",
-  "@chatForwardFailed": {
-    "description": "The forward could not be queued.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
   },
   "chatGroupUploadTitle": "A large upload",
   "@chatGroupUploadTitle": {
@@ -1523,15 +1496,6 @@
   "chatVoiceHeld": "Not sent yet: send it or discard it",
   "@chatVoiceHeld": {
     "description": "ADR 0036. Shown in the composer beside a recorded voice message to a group that has not gone yet (its cost was cancelled, or the group's budget refused it), next to the Discard and Send buttons."
-  },
-  "chatReactionFailed": "Reaction failed: {error}",
-  "@chatReactionFailed": {
-    "description": "Toggling a reaction could not be queued.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
   },
   "ttlOff": "Off",
   "@ttlOff": {
@@ -1777,15 +1741,6 @@
   "chatSavedDecrypted": "Saved (decrypted copy)",
   "@chatSavedDecrypted": {
     "description": "Confirms the attachment was written outside the app, and repeats that the copy is not encrypted."
-  },
-  "chatSaveFailed": "Save failed: {error}",
-  "@chatSaveFailed": {
-    "description": "The attachment could not be written.",
-    "placeholders": {
-      "error": {
-        "type": "String"
-      }
-    }
   },
   "onbTagline": "Zero-trust messaging.\nNo accounts. No phone number. No server storage.",
   "@onbTagline": {
@@ -3475,5 +3430,23 @@
   "plinkFindAlso": "You can also paste someone's public link here.",
   "@plinkFindAlso": {"description": "Under the handle search field, in a build with public links on: the field takes a link too."},
   "sysIntroLinkAccepted": "Accepted through their public link. Compare safety numbers to verify.",
-  "@sysIntroLinkAccepted": {"description": "System line in a chat: the owner of a public link you sent a request through accepted, proven by the link's own key; who they are is for the safety number to confirm."}
+  "@sysIntroLinkAccepted": {"description": "System line in a chat: the owner of a public link you sent a request through accepted, proven by the link's own key; who they are is for the safety number to confirm."},
+  "chatFailedStorage": "This device's storage refused to save that. If this goes on, check that the device has free storage.",
+  "@chatFailedStorage": {"description": "Shown in a chat or on the new-group screen when this device's own storage refused to save what the person did — a message sent, a message forwarded, a reaction, a group made (a full disk, a locked or closed database). Not a problem with the network or the other person; load-bearing clause: it points at the device's storage. No detail of the failure is shown."},
+  "chatFileTooLarge": "That is over {limit}, the most one message can carry, so nothing was sent.",
+  "@chatFileTooLarge": {"description": "Shown in a chat when a file or a voice message is over the most one message can carry, and nothing was sent. {limit} is that size, written as the app writes sizes (for example \"24.0 MB\").", "placeholders": {"limit": {"type": "String"}}},
+  "chatSendFailedOther": "The message could not be sent. Try again.",
+  "@chatSendFailedOther": {"description": "Shown in a chat when a message — text, a voice message or a file — could not be sent, for a reason the app does not name. No detail of the failure is shown; the person can send it again."},
+  "chatForwardFailedOther": "The message could not be forwarded. Try again.",
+  "@chatForwardFailedOther": {"description": "Shown in a chat when forwarding a message to another conversation failed, for a reason the app does not name. No detail of the failure is shown; the person can try again."},
+  "chatReactionFailedOther": "The reaction could not be changed. Try again.",
+  "@chatReactionFailedOther": {"description": "Shown in a chat when adding, changing or withdrawing a reaction to a message failed, for a reason the app does not name. No detail of the failure is shown; the person can try again."},
+  "chatAttachNoAccess": "Z is not allowed to use the camera or your photos. Allow it in this device's settings, then try again.",
+  "@chatAttachNoAccess": {"description": "Shown in a chat when the camera or the photo library refused Z because the person has not allowed Z to use it. Load-bearing clause: it says where to allow it — this device's own settings, not Z's."},
+  "chatAttachFailed": "The camera or the photo library could not be opened. Try again.",
+  "@chatAttachFailed": {"description": "Shown in a chat when taking a photo, or choosing a photo or a video from the library, failed for a reason the app does not name. No detail of the failure is shown; the person can try again."},
+  "chatSaveFailedOther": "The file could not be saved. Try again.",
+  "@chatSaveFailedOther": {"description": "Shown in a chat when saving the decrypted copy of a file or a voice message failed. No detail of the failure is shown; the person can try again."},
+  "grpCreateFailedOther": "The group could not be created. Try again.",
+  "@grpCreateFailedOther": {"description": "Shown on the new-group screen when the group could not be made, for a reason the app does not name. No detail of the failure is shown; the person can try again."}
 }

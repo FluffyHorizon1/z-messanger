@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
+import '../l10n/chat_text.dart';
 import '../l10n/ttl_text.dart';
 import 'package:provider/provider.dart';
 
@@ -54,7 +55,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
               : l.grpCreateTooLarge)));
     } catch (e) {
       setState(() => _busy = false);
-      messenger.showSnackBar(SnackBar(content: Text(l.grpCreateFailed('$e'))));
+      messenger.showSnackBar(SnackBar(
+          content: Text(chatFailureText(l, ChatAction.createGroup, e))));
     }
   }
 

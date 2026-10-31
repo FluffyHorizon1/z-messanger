@@ -386,11 +386,6 @@ class AppLocalizationsEs extends AppLocalizations {
       'Elige un nombre de grupo y al menos un miembro.';
 
   @override
-  String grpCreateFailed(String error) {
-    return 'No se pudo crear: $error';
-  }
-
-  @override
   String get grpNew => 'Nuevo grupo';
 
   @override
@@ -1117,11 +1112,6 @@ class AppLocalizationsEs extends AppLocalizations {
   String get chatVoiceTooShort => 'Mensaje de voz demasiado corto.';
 
   @override
-  String chatSendFailed(String error) {
-    return 'Error al enviar: $error';
-  }
-
-  @override
   String get chatTooFarBack =>
       'Ese mensaje está demasiado atrás para saltar hasta él.';
 
@@ -1150,11 +1140,6 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get chatForwarded => 'Reenviado.';
-
-  @override
-  String chatForwardFailed(String error) {
-    return 'Error al reenviar: $error';
-  }
 
   @override
   String get chatGroupUploadTitle => 'Una subida grande';
@@ -1211,11 +1196,6 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get chatVoiceHeld => 'Aún sin enviar: envíalo o descártalo';
-
-  @override
-  String chatReactionFailed(String error) {
-    return 'Error en la reacción: $error';
-  }
 
   @override
   String get ttlOff => 'Desactivados';
@@ -1419,11 +1399,6 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get chatSavedDecrypted => 'Guardado (copia descifrada)';
-
-  @override
-  String chatSaveFailed(String error) {
-    return 'Error al guardar: $error';
-  }
 
   @override
   String get onbTagline =>
@@ -3521,4 +3496,41 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get sysIntroLinkAccepted =>
       'Aceptó a través de su enlace público. Comparad los números de seguridad para verificar.';
+
+  @override
+  String get chatFailedStorage =>
+      'El almacenamiento de este dispositivo no pudo guardar eso. Si sigue pasando, comprueba que el dispositivo tiene espacio libre.';
+
+  @override
+  String chatFileTooLarge(String limit) {
+    return 'Eso pasa de $limit, lo máximo que puede llevar un mensaje, así que no se envió nada.';
+  }
+
+  @override
+  String get chatSendFailedOther =>
+      'No se pudo enviar el mensaje. Vuelve a intentarlo.';
+
+  @override
+  String get chatForwardFailedOther =>
+      'No se pudo reenviar el mensaje. Vuelve a intentarlo.';
+
+  @override
+  String get chatReactionFailedOther =>
+      'No se pudo cambiar la reacción. Vuelve a intentarlo.';
+
+  @override
+  String get chatAttachNoAccess =>
+      'Z no tiene permiso para usar la cámara o tus fotos. Permítelo en los ajustes de este dispositivo y vuelve a intentarlo.';
+
+  @override
+  String get chatAttachFailed =>
+      'No se pudo abrir la cámara ni la galería. Vuelve a intentarlo.';
+
+  @override
+  String get chatSaveFailedOther =>
+      'No se pudo guardar el archivo. Vuelve a intentarlo.';
+
+  @override
+  String get grpCreateFailedOther =>
+      'No se pudo crear el grupo. Vuelve a intentarlo.';
 }

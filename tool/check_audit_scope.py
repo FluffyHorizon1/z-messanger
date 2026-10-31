@@ -108,6 +108,11 @@ UNCITED_OK = {
         "failed in the reader's language, chosen from what failed, and never "
         "show the exception's text — a localisation property (G9), not a "
         "security claim",
+    "app/test/chat_group_failures_test.dart":
+        "that a send, a forward, a reaction, a save or a new group that "
+        "fails is said in the reader's language, in a line of its own, and "
+        "never as the exception's text — a localisation property (G9), as "
+        "unlock_error_test's is, not a security claim",
     "app/test/destructive_confirm_test.dart":
         "that resetting a secure session and removing a group member ask "
         "before they act, as every other destructive action does, and that "
