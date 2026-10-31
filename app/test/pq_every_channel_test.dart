@@ -1216,10 +1216,15 @@ void main() {
       b64(laptop.debugSealingKey!),
       b64(phone.debugOwnPqdc!),
     ];
-    final row = (await carol.vault.kvGet('cseal_${phone.myRid}'))!;
-    for (final h in held) {
-      expect(row, contains(h), reason: 'the premise: kept in the vault');
-    }
+    // The premise: kept in the vault too. A device's seal news is taken in
+    // memory and then written once its contact's lock is free, which can be
+    // a moment later while the rounds' sends hold it — so this waits for the
+    // write rather than reading the row at once.
+    await waitUntil(() async {
+      final row = await carol.vault.kvGet('cseal_${phone.myRid}');
+      return row != null && held.every(row.contains);
+    }, timeout: const Duration(seconds: 30),
+        what: "carol's vault holding the keys of both of the phone's devices");
     await carol.deleteContact(phone.myRid);
     expect(carol.debugPqSealOf(phone.myRid), isNull);
     expect(carol.debugPqSealOf(laptop.myRid), isNull);
