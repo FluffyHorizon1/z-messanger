@@ -8969,10 +8969,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// given, stops this one, as the link screen does when its person leaves
   /// it. The attempt stopped ends in [PairingCancelled]: it sends nothing
   /// more, spends nothing, closes no other connection, and leaves what it
-  /// had not read for the next. An attempt that has sent the account is not
-  /// stopped — the new device may hold it, and only the report the attempt
-  /// waits for lists it — so it runs on to its end, and a call that came
-  /// for its code meanwhile ends as it does.
+  /// had not read for the next — unless another login had closed its
+  /// connection before it stopped. No attempt of this device's own logs in
+  /// while it runs, so that login was someone else's, and the attempt ends
+  /// as a takeover ([PairingTakenOver]): the code kept as spent and the new
+  /// device's connection closed, as for any. An attempt that has sent the
+  /// account is not stopped — the new device may hold it, and only the
+  /// report the attempt waits for lists it — so it runs on to its end, and a
+  /// call that came for its code meanwhile ends as it does.
   Future<bool> hostDeviceLink(
     String code, {
     required Future<bool> Function(String sas) confirmSas,
@@ -9082,6 +9086,22 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // The takeover is what the screen says either way.
       }
       rethrow;
+    } on PairingCancelled {
+      // Stopped on this device, with its connection closed by another login
+      // first. This device logs in as the code's mailbox again only once the
+      // attempt is over ([hostDeviceLink]), so that login was someone else's:
+      // a takeover, said as one, the code kept as spent and the new device's
+      // connection closed the same way, as the attempt does for one it sees
+      // while it runs (§10.2). Until 2026-10-31 it said only that the link
+      // was cancelled, and kept nothing.
+      if (!cancel.closedByAnotherLogin) rethrow;
+      try {
+        await _spendLinkCode(mark);
+      } catch (_) {
+        // The takeover is what the screen says either way.
+      }
+      await RelayPairing.closeNewDeviceMailboxV3(transport.serverUrl, pairing);
+      throw const PairingTakenOver();
     }
     if (linked == null) return false;
     // Before the device is added: its first `pqseal` can arrive as soon as

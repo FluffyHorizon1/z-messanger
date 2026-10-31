@@ -1069,6 +1069,8 @@ void main() {
         waited.stop();
         expect(stopped, isA<PairingCancelled>(),
             reason: 'the first attempt says it was cancelled');
+        expect(cancel.closedByAnotherLogin, isFalse,
+            reason: 'and no other login closed it');
         expect(waited.elapsed, lessThan(timeout),
             reason: 'at once, and not when its wait for the commitment ran '
                 'out');
@@ -1093,13 +1095,18 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
-    // What closes a cancelled attempt's connection does not make it a
-    // takeover: this device's own next attempt on the code would be such a
-    // login. Here the other login comes while the existing device's person
-    // compares the digits, and the attempt is cancelled before it answers.
+    // A cancelled attempt does not say what closed its connection: its
+    // caller's own next attempt on the code would be such a login. It says
+    // whether one had, and its caller, which knows whether that login could
+    // have been its own, decides: the app, which logs in as the mailbox
+    // again only once the attempt is over, takes it for a takeover
+    // (`pairing_pq_test.dart` 24). Until 2026-10-31 this test read "cancelled,
+    // not taken over" for a stranger's login, and nothing kept it. Here the
+    // other login comes while the existing device's person compares the
+    // digits, and the attempt is cancelled before it answers.
     test('an existing device whose attempt is cancelled once another login '
-        "has closed it says it was cancelled, and leaves the new device's "
-        'mailbox alone', () async {
+        'has closed it says it was cancelled, and that another login closed '
+        'it', () async {
       const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
       final code = PairingCode.generate();
       final desktop = await PairingInitiatorV3.create(
@@ -1138,10 +1145,71 @@ void main() {
           margin: margin,
         ).then<Object?>((r) => r, onError: (Object e) => e);
         expect(await phone, isA<PairingCancelled>(),
-            reason: 'cancelled, not taken over');
+            reason: 'cancelled, as its caller asked');
+        expect(cancel.closedByAnotherLogin, isTrue,
+            reason: 'and another login had closed its connection: its caller '
+                'is told');
         expect(laptop, isA<PairingNoEnrolment>(),
-            reason: 'the new device was not closed for a takeover: it '
+            reason: "the new device's mailbox is its caller's to close: it "
                 'waited for an enrolment that was never sent');
+      } finally {
+        await other?.close();
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // The other login can come while the existing device's person compares
+    // the digits, as on the new device, and the person's answer then changes
+    // nothing: the attempt was taken over. An existing device whose person
+    // said the digits differ used to end as though the link were cancelled
+    // — the code not kept, the new device left waiting out its timer.
+    test('an existing device whose person says the digits differ once '
+        "another login has closed its mailbox says it was taken over, and "
+        "closes the new device's too", () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      RelayClient? other;
+      final closes = <int?>[];
+      final watch = await front(url, (frame) => [frame], closedBy: closes.add);
+      try {
+        final phone = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async {
+            other = await RelayClient.connect(
+                url, await RelayPairing.relayIdentityV3(code, 'r'));
+            await waitUntil(() => closes.contains(relayCloseReplaced),
+                what: "the relay closing the phone's mailbox for the other "
+                    'login');
+            return false;
+          },
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final waited = Stopwatch();
+        final laptop = await RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async {
+            waited.start();
+            return true;
+          },
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        waited.stop();
+        expect('${await phone}', contains('another connection took over'),
+            reason: 'taken over, whatever its person answered');
+        expect('$laptop', contains('another connection took over'),
+            reason: 'and the new device, closed the same way, says so too');
+        expect(waited.elapsed, lessThan(timeout),
+            reason: 'at once, and not when its wait for the enrolment, '
+                '${timeout + margin}, ran out');
       } finally {
         await other?.close();
         await watch.close(force: true);
@@ -1242,7 +1310,8 @@ void main() {
 /// relay checks each authentication against the address the client
 /// dialled, and the relay's own close code passes on to the client — 4002
 /// above all, its word that another connection logged in as this one's
-/// routing id — and to [closedBy], when given.
+/// routing id — and then to [closedBy], when given, once the client has
+/// taken it.
 Future<HttpServer> front(
     String relayUrl, List<String> Function(String frame) down,
     {bool Function(String frame)? cut,
@@ -1256,6 +1325,9 @@ Future<HttpServer> front(
     final relay = await WebSocket.connect(relayUrl,
         headers: {'host': req.headers.value('host') ?? ''});
     var gone = false;
+    // Whether the relay closed this connection, and with what code.
+    var relayClosed = false;
+    int? relayCode;
     client.listen((d) {
       if (gone) return;
       if (cutUp != null && cutUp(d as String)) {
@@ -1277,7 +1349,12 @@ Future<HttpServer> front(
         return;
       }
       relay.add(d);
-    }, onDone: () => relay.close(), onError: (Object _) => relay.close());
+    }, onDone: () {
+      // The client's side has closed: a close the relay made is told now,
+      // the client having taken it, its code read.
+      if (relayClosed) closedBy?.call(relayCode);
+      relay.close();
+    }, onError: (Object _) => relay.close());
     relay.listen((d) {
       if (gone) return;
       if (cut != null && cut(d as String)) {
@@ -1291,7 +1368,8 @@ Future<HttpServer> front(
       }
     }, onDone: () {
       final c = relay.closeCode;
-      closedBy?.call(c);
+      relayClosed = true;
+      relayCode = c;
       client.close(c != null && c >= 3000 && c <= 4999 ? c : null);
     }, onError: (Object _) => client.close());
   });

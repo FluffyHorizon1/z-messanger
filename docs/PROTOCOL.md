@@ -2228,7 +2228,10 @@ said only that its connection was lost, the code kept — and the reference
 client's next attempt is a new ceremony under a new code; a new device that
 has already stopped — its user said the digits differ — sees nothing of a
 later takeover. A takeover of the existing device's mailbox ends that device's
-attempt in the same way, and the new device could not see it: it waited out
+attempt in the same way, whatever its user answers to the digits — until
+2026‑10‑31 an existing device whose user said they differ said only that
+the link was cancelled, kept nothing and left the new device waiting — and
+the new device could not see it: it waited out
 its wait and then named a cause it had no way to know — an older version,
 or the other user refusing or being late. So an existing device whose
 mailbox was taken over logs in once as the new device's, and leaves at once,
@@ -2267,8 +2270,17 @@ leaving the link screen stops the attempt it started. A stopped attempt
 ends at once in any wait — for a frame, for the relay, for its user's answer
 — sends nothing more, logs in as no other mailbox, keeps nothing as spent,
 and acknowledges nothing it had not read, nor the commitment when it had not
-yet sent its reply, so that the next attempt on the code reads them; what
-closed its connection meanwhile does not make it a takeover. An attempt
+yet sent its reply, so that the next attempt on the code reads them. It
+cannot say what closed its connection, if something did — this device's own
+next attempt would be such a login — and says whether another login had,
+and the reference client, which logs in as the mailbox again only once the
+attempt is over, takes such a login for someone else's: it says the link was
+taken over, keeps the code as spent and closes the new device's connection,
+as for any takeover. Until 2026‑10‑31 it said only that the link was
+cancelled, and kept nothing. A login that comes after the stopped attempt has
+closed and before the next attempt logs in closes no connection of this
+device's, and this device cannot see it: the next attempt's login closes it
+in turn, and the digits still stand between it and the account. An attempt
 that has handed the enrollment over is not stopped — the new device may come
 to hold the account, and only the report lists it — so it runs on to its
 end, and an attempt on its code that came meanwhile ends as it does. No

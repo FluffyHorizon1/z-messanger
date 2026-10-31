@@ -472,8 +472,11 @@ class PairingTakenOver extends PairingAbort {
 /// the same code. Nothing of the account was sent, nothing is linked, and
 /// nothing says the code was spent: whatever the relay holds for this side
 /// that it had not read is left there for the next attempt, and no other
-/// device is told anything — not even when the relay closed this side's
-/// connection for another login once the cancel was asked for.
+/// device is told anything. When the relay had closed this side's
+/// connection for another login by the time the attempt stopped, the
+/// `PairingCancel` says so (`closedByAnotherLogin`): a caller that runs no
+/// other attempt on the code until this one is over knows it was a
+/// takeover, and the reference client says so as for any.
 class PairingCancelled extends PairingAbort {
   const PairingCancelled() : super('this attempt was cancelled on this device');
 }

@@ -115,7 +115,14 @@
 //      a first that had already sent the account runs on, and both say the
 //      laptop is linked;
 //  23. leaving the phone's link screen stops the attempt it started, at once,
-//      and the code then links when it is entered again.
+//      and the code then links when it is entered again;
+//  24. a phone whose mailbox someone else holding the code logs in as while
+//      its person compares the digits is taken over however the attempt
+//      then ends — its person says the digits differ, the code is entered
+//      again, or its screen is left: it says another connection took the
+//      link over, keeps the code as spent and closes the laptop's mailbox,
+//      so the laptop says so too and shows a new code, and the call that
+//      came again says the code will not be used again.
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -165,7 +172,8 @@ typedef Person = ({
 /// from the relay — as one still going up — until the future completes,
 /// then passes it on if the connection is still there. [welcomed] keeps the
 /// routing id of every login the relay welcomes through it, and [left] that
-/// of every such connection once it has closed, from either end.
+/// of every such connection once the client's side of it has closed —
+/// whichever end closed it, the client has taken the close by then.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
@@ -236,9 +244,10 @@ class Recorder {
           }
         }
       }, onDone: () {
-        leave();
         // The relay's own close code passes on — 4002 above all, its word
-        // that another connection logged in as this one's routing id.
+        // that another connection logged in as this one's routing id. The
+        // connection counts as gone once the client has closed its side
+        // (above), which it does once it has taken the close.
         final c = up.closeCode;
         down.close(c != null && c >= 3000 && c <= 4999 ? c : null);
       }, onError: (Object _) => down.close());
@@ -2239,5 +2248,98 @@ void main() {
       await alice.svc.transport.stop();
       await rec.close();
     });
+  });
+
+  test(
+      '24. a phone whose mailbox someone else holding the code logs in as '
+      'while its person compares the digits is taken over however the '
+      'attempt then ends', () async {
+    // The phone connects through a front that notes when each of its
+    // connections has closed, so the test sees the other login close the
+    // phone's mailbox before the attempt ends.
+    final rec = await Recorder.start(relayUrl());
+    try {
+      final alice = await person('Alice24', url: rec.url);
+      await connected([alice]);
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 1);
+      alice.svc.linkTimeout = timeout;
+      alice.svc.linkMargin = margin;
+      for (final how in ['differ', 'again', 'left']) {
+        final what = switch (how) {
+          'differ' => 'its person then said the digits differ',
+          'again' => 'the code then entered again',
+          _ => 'its screen then left',
+        };
+        final n = await NewDeviceLink.create();
+        final code = n.code;
+        final pairing = PairingCode.parse(code);
+        final mailbox =
+            await (await RelayPairing.relayIdentityV3(pairing, 'r')).routingId();
+        RelayClient? other;
+        final leave = PairingCancel();
+        Future<Object?>? again;
+        final hosted = alice.svc
+            .hostDeviceLink(code, cancel: leave, confirmSas: (_) async {
+              // While the phone's person compares, the other login comes in,
+              // and the relay closes the phone's mailbox for it.
+              other = await RelayClient.connect(
+                  relayUrl(), await RelayPairing.relayIdentityV3(pairing, 'r'));
+              await waitUntil(() => rec.left.contains(mailbox),
+                  what: "$what: the phone's mailbox closed for the other "
+                      'login');
+              switch (how) {
+                case 'differ':
+                  return false;
+                case 'again':
+                  again = alice.svc
+                      .hostDeviceLink(code, confirmSas: (_) async => true)
+                      .then<Object?>((r) => r, onError: (Object e) => e);
+                default:
+                  leave.cancel();
+              }
+              // The person is still comparing when the attempt is stopped.
+              return Completer<bool>().future;
+            })
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        final waited = Stopwatch();
+        final laptop = await n
+            .run(
+              relayUrl: relayUrl(),
+              confirm: (_) async {
+                waited.start();
+                return true;
+              },
+              timeout: timeout,
+              margin: margin,
+            )
+            .then<Object?>((r) => r, onError: (Object e) => e);
+        waited.stop();
+        try {
+          final phone = await hosted;
+          expect(phoneScreen(phone), phoneTakenOver,
+              reason: '$what: the phone says another connection took over');
+          expect(hostLinkFailureText(es, phone!), phoneTakenOverEs);
+          expect(laptopScreen(laptop), laptopTakenOver,
+              reason: '$what: the laptop, closed the same way, says so too');
+          expect(newDeviceLinkFailureText(es, laptop!), laptopTakenOverEs);
+          expect(waited.elapsed, lessThan(timeout),
+              reason: '$what: at once, and not when its wait for the '
+                  'enrolment ran out');
+          expect(n.code, isNot(code), reason: '$what: and it shows a new code');
+          final spent = await alice.vault.kvGet('link_spent_codes');
+          expect(spent, contains(await pairing.rendezvousRoutingIdV3()),
+              reason: '$what: the phone keeps the code as spent');
+          if (again != null) {
+            expect(phoneScreen(await again), codeSpent,
+                reason: '$what: the call that came again will not use it');
+          }
+          expect(await alice.svc.linkedDevices(), isEmpty);
+        } finally {
+          await other?.close();
+        }
+      }
+    } finally {
+      await rec.close();
+    }
   });
 }

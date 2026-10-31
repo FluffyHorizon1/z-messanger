@@ -79,9 +79,16 @@ class PairingResult {
 /// to its end whatever [cancel] says ([sentEnrolment]). What the relay holds
 /// for this side that it had not read, or not answered, when it stopped is
 /// left unacknowledged, for the next attempt on the code to read.
+///
+/// A stopped attempt never says it was taken over, since the login that
+/// closed its connection may have been its caller's own next attempt; it
+/// records whether one had ([closedByAnotherLogin]), and a caller that
+/// starts no other attempt on the code until this one is over knows that
+/// login was someone else's.
 class PairingCancel {
   final _asked = Completer<void>();
   bool _sentEnrolment = false;
+  bool _closedByAnotherLogin = false;
 
   /// Asks the attempt to stop.
   void cancel() {
@@ -94,6 +101,11 @@ class PairingCancel {
   /// Whether the attempt has sent the enrolment, after which it runs to its
   /// end, cancelled or not.
   bool get sentEnrolment => _sentEnrolment;
+
+  /// Whether, when the attempt stopped, the relay had closed its connection
+  /// because another connection logged in as its mailbox: someone else
+  /// holding the code, unless it was the caller's own next attempt on it.
+  bool get closedByAnotherLogin => _closedByAnotherLogin;
 
   /// Whether the attempt is to stop: asked to, with the enrolment not sent.
   bool get _stops => isCancelled && !_sentEnrolment;
@@ -486,12 +498,18 @@ class RelayPairing {
   /// still in the ceremony is closed the same way and says so too, rather
   /// than wait out its timer and name a cause it cannot see (§10.2).
   ///
+  /// A takeover is what the attempt ends in, too, when it happened while
+  /// [confirm] was asking, whatever the person answered — the digits
+  /// differing included — as on the new device.
+  ///
   /// [cancel] stops the attempt from outside it, at its next step, until it
   /// sends the enrolment ([PairingCancel]): it ends in [PairingCancelled],
   /// whatever closed its connection meanwhile, and so logs in as no other
   /// mailbox, and leaves unacknowledged what it had not read — and the
   /// commitment, when it had not yet sent its reply — for the next attempt
-  /// on the code. One that has sent the enrolment runs to its end.
+  /// on the code. Whether another login had closed its connection by then
+  /// is kept on [cancel] ([PairingCancel.closedByAnotherLogin]), for the
+  /// caller to judge. One that has sent the enrolment runs to its end.
   static Future<DeviceCertificate?> runExistingDeviceV3({
     required String relayUrl,
     required PairingCode code,
@@ -547,9 +565,14 @@ class RelayPairing {
       final open = await _awaitFrame(box, 'open-v3', timeout);
       final session = await pending.accept(open);
 
-      if (!await _unlessCancelled(box, () => confirm(session.sas))) {
-        return null;
-      }
+      final matched = await _unlessCancelled(box, () => confirm(session.sas));
+      // While the person compared, someone else holding the code may have
+      // logged in as this mailbox, and the relay closed this connection for
+      // it: said, whatever the person answered, as the new device says it.
+      // An answer that the digits differ used to end the attempt as
+      // cancelled, the code not kept and the new device left waiting.
+      if (_takenOver(box)) throw const PairingTakenOver();
+      if (!matched) return null;
       // §10 has both people compare the digits before the enrolment goes,
       // and the new device says its person did by acknowledging the reply.
       // Until the relay reports that, nothing of the account leaves here: a
@@ -594,8 +617,12 @@ class RelayPairing {
       // Stopped on this device ([cancel]): said as that, whatever closed
       // the connection meanwhile — this device's next attempt on the code
       // may be what logged in as its mailbox — and nothing is done to the
-      // new device's mailbox.
-      if (cancel != null && cancel._stops) throw const PairingCancelled();
+      // new device's mailbox; whether another login had closed it is kept
+      // for the caller, which knows whether that could have been its own.
+      if (cancel != null && cancel._stops) {
+        cancel._closedByAnotherLogin = box != null && _takenOver(box);
+        throw const PairingCancelled();
+      }
       if (e is PairingTakenOver) {
         // Someone else holding the code logged in as this device's mailbox.
         // The new device, if it is still in the ceremony, cannot see that:
@@ -614,6 +641,16 @@ class RelayPairing {
       await v1?.close(acknowledge: done);
     }
   }
+
+  /// What an existing device whose attempt was taken over does to the new
+  /// device's v3 mailbox for [code] before it says so ([_closeTheOtherSide]),
+  /// for a caller that knows of a takeover only once the attempt is over: one
+  /// it stopped whose connection another login had closed, when the caller
+  /// itself logs in as that mailbox again only after the attempt has ended
+  /// ([PairingCancel.closedByAnotherLogin]).
+  static Future<void> closeNewDeviceMailboxV3(
+          String relayUrl, PairingCode code) async =>
+      _closeTheOtherSide(relayUrl, await relayIdentityV3(code, 'i'));
 
   /// Logs in once as [mailbox], the other side's v3 mailbox, and leaves at
   /// once, reading and acknowledging nothing: the relay closes whatever
