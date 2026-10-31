@@ -41,10 +41,11 @@
 //   5. a `pqid` carries its device's `pqdc`, which verifies under the
 //      account's ML-DSA key; a contact that held the account's key from a
 //      build before 44.3 gets no `pqid` more from this build, which holds
-//      the re-send until 44.5 (`pqdcResendsEnabled`); and with the re-send
-//      on, as 44.5 will have it, one `pqid` more — after the delay and not at
-//      the upgrade, carrying the `pqdc`, and once: a restart sends no
-//      second;
+//      the re-send (`pqdcResendsEnabled`); and with the re-send on, as the
+//      seam has it, one `pqid` more — owed per contact device (44.5), so
+//      once the contact's device has shown it reads one, after the delay
+//      and not at the upgrade, carrying the `pqdc`, and once: a restart
+//      sends no second;
 //   6. the same rule as 4 on the other two kinds of channel — a device's own
 //      other device over self-sync, and a contact's other device: with a
 //      linked laptop's mixed envelopes held back from its root and from a
@@ -488,8 +489,9 @@ void main() {
 
     // a is updated. Its next start draws a key and signs its own pqdc — and
     // b, which already holds a's account key, is owed one pqid more. This
-    // build holds that re-send until 44.5 (pqdcResendsEnabled): past the
-    // delay, nothing goes, and b has none of a's.
+    // build holds that re-send (pqdcResendsEnabled, 44.5 too, which builds
+    // no pacing for it): past the delay, nothing goes, and b has none of
+    // a's.
     await stop(a);
     a = await clientAt(da, 'a');
     quick(a, d: counting);
@@ -512,7 +514,12 @@ void main() {
     expect(b.debugPqdcOf(a.myRid), isNull);
     expect(pqdcResendsEnabled, isFalse);
 
-    // As 44.5 will have it: the re-send on, the same pqdc, once.
+    // The re-send on, as the seam has it (this build holds it): the same
+    // pqdc, once — owed per contact device (44.5), so it waits until b's
+    // device has shown it reads one. a's first pqid reached b's when a ran a
+    // build from before 44.3 and carried nothing; once updated, a announces
+    // its key on its next message, b's device says it holds it (`pqs:1`),
+    // and then the pqid once more goes.
     await stop(a);
     a = await clientAt(da, 'a', resends: true);
     quick(a, d: counting);
@@ -525,7 +532,14 @@ void main() {
     await carry(a, b, log);
     expect(log.skip(mark).where((c) => c.kind == 'pqid'), isEmpty,
         reason: 'the pqid is not sent at the upgrade');
+    expect(a.debugPqdcSentTo(b.myRid), isFalse,
+        reason: "nothing yet says b's device reads one");
+    var said = 0;
     await waitFor(() async {
+      if (!a.debugHoldsMySealKey(b.myRid)) {
+        await a.sendText(b.myRid, 'after the update ${said++}');
+        await b.sendText(a.myRid, 'answer ${said++}');
+      }
       await carry(a, b, log);
       await carry(b, a, log);
       return b.debugPqdcOf(a.myRid) != null;

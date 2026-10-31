@@ -7,7 +7,10 @@
 // sealed to (44.7), and its account vouches for it post-quantum in `pqdc`.
 // This build draws the key, gets the attestation, announces the key to every
 // device it has a session with (`pqseal`) and keeps the keys announced to it;
-// nothing uses any of them yet. What it keeps, all of it sealed in the vault:
+// nothing seals to any of them yet. One use is made of them (44.5): the
+// device a contact was added from is linked post-quantum when its `pqdc`
+// verifies under their established ML-DSA key over the key it announced
+// (`ChatService`, ADR 0033 §2). What it keeps, all of it sealed in the vault:
 //
 //   * `seal_seed` — this device's own seed, drawn once at the first start of
 //     this build — or, on a device linked by pairing v3 (44.4), by the link
@@ -19,9 +22,12 @@
 //     given one by its root over self-sync (§9, `dir:"pqdc"`); in the archive
 //     beside the seed;
 //   * `cseal_<rid>` — one [SealRecord] per contact: each of their devices'
-//     sealing key and `pqdc` as announced, whether that device has said it
-//     holds this one's (`pqs:1`) since this one gave it its key, and when
-//     this one last did. Gone with the contact
+//     sealing key and `pqdc` as announced, whether the key came since a
+//     ratchet session with that device last began and the `pqdc` since it
+//     last opened one here, whether that device has
+//     said it holds this one's (`pqs:1`) since this one gave it its key,
+//     when this one last did, and whether this one's `pqdc` has reached it.
+//     Gone with the contact
 //     (`ChatService.contactKvFamilies`);
 //   * `oseal` — the same for this account's own other devices.
 //
@@ -35,14 +41,16 @@
 // a new key is told "I hold your key" of the old one, by devices of every
 // build.
 //
-// The keys of other devices are judged by nothing here beyond FIPS 203 §7.2's
-// check, which `InnerMessage.pqSealKey` applies before any key is taken:
-// whether a `pqdc` verifies under a contact's established ML-DSA key, and what
-// the screen says about it, is 44.5. One key is more than announced (44.6,
-// §20.9): a contact's device that revealed it in a CONNECT ceremony of
-// version 3 gave it under the ceremony's hybrid channel, and once the eight
-// digits are compared it is as authentic as they are — the device link is
-// post-quantum without a `pqdc` ([DeviceSeal.byCeremony]).
+// The keys of other devices are judged here by nothing beyond FIPS 203 §7.2's
+// check, which `InnerMessage.pqSealKey` applies before any key is taken;
+// whether the `pqdc` of the device a contact was added from verifies under
+// their established ML-DSA key, and what the screen says of it, is
+// `ChatService`'s (44.5), and what it found is kept beside the contact
+// (`dlink_<rid>`, which a backup and an enrolment carry). One key is more
+// than announced (44.6, §20.9): a contact's device that revealed it in a
+// CONNECT ceremony of version 3 gave it under the ceremony's hybrid channel,
+// and once the eight digits are compared it is as authentic as they are —
+// the device link is post-quantum without a `pqdc` ([DeviceSeal.byCeremony]).
 
 import 'dart:convert';
 import 'dart:typed_data';
@@ -85,12 +93,47 @@ class DeviceSeal {
   /// different key from the device clears it, as it clears [pqdc].
   bool byCeremony;
 
+  /// 44.5 (§18.11): [ek] came since a ratchet session with that device last
+  /// began, accepted from it or opened to it — the moment this device
+  /// forgets its `pqs:1` too, written down with that session (4.8.1) — and
+  /// [pqdc] since that device last opened one here. A device draws a key it
+  /// did not have in one of two ways: restored, it has lost its sessions and
+  /// is heard from on new ones, its own or one opened to it, the first of
+  /// which may be either; finding its seed unreadable, it announces the new
+  /// key before anything else it sends on the sessions it has. So a `pqdc`
+  /// that misses the key held is evidence against the device only when both
+  /// are marked ([ChatService]'s `_judgeDeviceLink`). A key from before such
+  /// a session and a `pqdc` from since are of two states of the device — a
+  /// restore's new `pqid` can arrive before its new `pqseal` — and the
+  /// `pqdc` waits for the key it announces next; a key that replaces one
+  /// marked is the unreadable seed's, and the `pqdc` held goes with the key
+  /// it replaces. The key's mark goes when the next session with that
+  /// device begins, the `pqdc`'s when that device next opens one.
+  bool ekFresh, pqdcFresh;
+
+  /// 44.5 (§18.11): this device's own `pqdc` has reached that device in a
+  /// `pqid`, sent while that device had shown it reads one — it had
+  /// announced its own key, sent its own `pqdc`, or said it holds this
+  /// device's (`pqs:1`) — so the one more `pqid` is not owed to it. A device
+  /// not known to read it does not spend it. Forgotten when that device next
+  /// opens a ratchet session here, which a restore and a contact added back
+  /// do.
+  bool pqdcSent;
+
   DeviceSeal(
       {this.ek,
       this.pqdc,
       this.holdsMine = false,
       this.announcedMs = 0,
-      this.byCeremony = false});
+      this.byCeremony = false,
+      this.ekFresh = false,
+      this.pqdcFresh = false,
+      this.pqdcSent = false});
+
+  /// Whether that device has shown it runs 44.3 or later, which keeps a
+  /// `pqdc` it is sent: it announced its sealing key, its own `pqid` carried
+  /// its `pqdc`, or it said it holds this device's key.
+  bool get readsPqdc => ek != null || pqdc != null || holdsMine;
 
   Map<String, Object?> toJson() => {
         if (ek != null) 'ek': b64(ek!),
@@ -98,6 +141,9 @@ class DeviceSeal {
         if (holdsMine) 'pqs': 1,
         if (announcedMs > 0) 'at': announcedMs,
         if (byCeremony && ek != null) 'c3': 1,
+        if (ekFresh && ek != null) 'ef': 1,
+        if (pqdcFresh && pqdc != null) 'df': 1,
+        if (pqdcSent) 'pd': 1,
       };
 
   /// Each member held to the shape it must have — a key FIPS 203 §7.2
@@ -124,6 +170,11 @@ class DeviceSeal {
     if (at is int && at > 0) out.announcedMs = at;
     // Only beside the key it was said of.
     out.byCeremony = out.ek != null && raw['c3'] == 1;
+    // Only beside what they are said of. A record from before 44.5 has
+    // neither, so nothing it holds is taken as evidence against a device.
+    out.ekFresh = out.ek != null && raw['ef'] == 1;
+    out.pqdcFresh = out.pqdc != null && raw['df'] == 1;
+    out.pqdcSent = raw['pd'] == 1;
     return out;
   }
 }
@@ -134,12 +185,7 @@ class SealRecord {
   /// Device routing id → what is held about it.
   final Map<String, DeviceSeal> devices;
 
-  /// A contact's record only: this device's own `pqdc` has gone to them in a
-  /// `pqid` (§18.11), so the one more `pqid` a contact that already held the
-  /// account's key is owed has been sent, or was never owed.
-  bool pqdcSent;
-
-  SealRecord({Map<String, DeviceSeal>? devices, this.pqdcSent = false})
+  SealRecord({Map<String, DeviceSeal>? devices})
       : devices = devices ?? <String, DeviceSeal>{};
 
   DeviceSeal device(String deviceRid) =>
@@ -147,11 +193,19 @@ class SealRecord {
 
   String encode() => jsonEncode({
         'd': {for (final e in devices.entries) e.key: e.value.toJson()},
-        if (pqdcSent) 'dc': 1,
       });
 
   /// A record as [encode] wrote it; an empty one for null or anything that
   /// does not read as one.
+  ///
+  /// 44.3 through 4.8.1 kept one flag per contact (`"dc":1`), set by the
+  /// first `pqid` carrying this device's `pqdc` that fanned out to the
+  /// contact's devices — a device of theirs still on a build from before 44.3
+  /// then dropped the member, and once updated was never owed it again. The
+  /// record is per device now ([DeviceSeal.pqdcSent]); the old flag says
+  /// nothing of which device kept the `pqdc`, so it is not read, and each of
+  /// that contact's devices is owed one more `pqid` once it shows it reads
+  /// one.
   static SealRecord decode(String? text) {
     if (text == null) return SealRecord();
     try {
@@ -164,7 +218,6 @@ class SealRecord {
             for (final e in d.entries)
               if (e.key is String) e.key as String: DeviceSeal.fromJson(e.value)
         },
-        pqdcSent: j['dc'] == 1,
       );
     } on FormatException {
       return SealRecord();
@@ -185,12 +238,20 @@ bool pqSealMayRide(Conversation conv) =>
 
 /// Whether this build sends its `pqdc` to the contacts that already held the
 /// account's post-quantum key — the `pqid` once more, §18.11 — and it does
-/// not: built in 44.3 and held until 44.5, which reads the attestation and
-/// paces the re-send. Turned on as it stood, every device sends one
-/// 16 384-bucket envelope to every such contact device about two hours after
-/// it updates, and the relay holds each for a contact who is offline: a wave
-/// across a whole user base at once, for an attestation nothing reads before
-/// 44.5. A `pqid` that goes for any other reason still carries the device's
+/// not. Built in 44.3, held in 4.7.1, and still held in 44.5, which reads the
+/// attestation and keeps the record of it per contact device but builds no
+/// pacing for the re-send. On the schedule built — one 16 384-bucket envelope
+/// to every owed contact device, about two hours after a device updates — a
+/// release's updates leave from 1.2 to 273 times the reference relay's
+/// 256 MiB store waiting for the contacts who are offline in the worst three
+/// days; riding the re-send on messages sent anyway fills that store at
+/// `docs/CAPACITY.md`'s bad moment once three owed devices write to someone
+/// away; and a per-device budget that fits takes 39 days or more to finish
+/// (CAPACITY.md (e), "The `pqid` once more"). A contact added from 44.5 gets
+/// the `pqdc` in the `pqid` its add sends, and the link ADR 0033's decision 3
+/// requires rests on that; the held re-send would bring the link to contacts
+/// added before, and to those whose app was older than 4.7 when they were
+/// added. A `pqid` that goes for any other reason still carries the device's
 /// `pqdc`. Tests turn the re-send on through `ChatService.init`.
 const bool pqdcResendsEnabled = false;
 

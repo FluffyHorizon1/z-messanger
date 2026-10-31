@@ -55,6 +55,7 @@ import 'handles.dart' show HandleBackup;
 import 'intro_links.dart' show IntroLinkBackup;
 import 'key_transparency.dart' show KtConfig;
 import 'kt_private_lookups.dart' show KtDecoys;
+import 'models.dart' show DeviceLinkVerdict;
 import 'relay_url.dart';
 import 'sealing_keys.dart' show SealingKeyBackup;
 import 'vault.dart';
@@ -233,6 +234,16 @@ class BackupArchive {
     'pqcc_': (v, _, __) async => _isCommitment(v),
     // Phase 38: the handle this contact was made through.
     'hvia_': (v, _, __) async => Handle.tryParse(v)?.canonical == v,
+    // 44.5: that this vault added the contact on 44.5 or later (ADR 0033
+    // decision 3), and what it found of the device they were added from
+    // (§2). A restore that dropped the first would ask nothing of the link
+    // for a contact added since; one that dropped the second would show a
+    // linked device as classical until its `pqdc` came again — which, for a
+    // contact a CONNECT invite of version 3 added, it never does — and would
+    // forget a refusal said once. A build from before 44.5 skips both, as it
+    // skips any family it does not know, and its next archive has neither.
+    'dlreq_': (v, _, __) async => v == '1',
+    'dlink_': (v, _, __) async => DeviceLinkVerdict.decode(v) != null,
   };
 
   /// The account-level keys a `state` record may carry, for tests and docs.

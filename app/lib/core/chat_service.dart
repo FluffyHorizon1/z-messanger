@@ -46,6 +46,17 @@ const int pqRekeyIntervalMs = 7 * 24 * 3600 * 1000;
 /// costs nothing.
 const int pqOfferRetryMs = 6 * 3600 * 1000;
 
+/// 44.5 (ADR 0033 decision 3): whether a refused device link also changes the
+/// pill of a contact this vault added before 44.5. Decision 3 reads: the link
+/// is required for "post-quantum, verified" for contacts added from this
+/// release, and shown for the rest. So, as built, a refusal of an earlier
+/// contact's device is shown — the banner, the red line beside the number and
+/// the line in the chat — and its pill stays the one it had: false. Whether
+/// the pill should say "Link refused" for those contacts too is an open
+/// question; setting this true makes it, and changes nothing else. Tests pass
+/// each value through `ChatService.init`.
+const bool pillSaysRefusedForEarlierContacts = false;
+
 /// What a group invite link's inviter can expect once its person has gone
 /// ahead with whoever answered the link (ADR 0020,
 /// [ChatService.expectLinkJoin]).
@@ -645,11 +656,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // took any device's for holding this one's key ([debugBuildBefore481]) —
     // set here, so that the start keeps what that build kept.
     bool debugBuildBefore481 = false,
+    // Test-only: start this service as a build from before 44.5 — 4.8.1 —
+    // which judges no device link and records none of what 44.5 adds
+    // ([debugBuildBefore445]), set here so the start judges nothing.
+    bool debugBuildBefore445 = false,
     // 44.3 (§18.11): whether this device sends its `pqdc` once more to the
     // contacts that already held the account's key. Production never passes
-    // it, and null is the build's constant ([pqdcResendsEnabled], held until
-    // 44.5); a test of the re-send passes true.
+    // it, and null is the build's constant ([pqdcResendsEnabled], held in
+    // 4.7.1 and still held in 44.5); a test of the re-send passes true.
     bool? pqdcResends,
+    // 44.5 (ADR 0033 decision 3): whether a refused device link changes the
+    // pill of a contact added before 44.5 too. Production never passes it,
+    // and null is the build's constant ([pillSaysRefusedForEarlierContacts]);
+    // a test of each answer passes it.
+    bool? pillSaysRefusedForEarlier,
     // ADR 0028: when held receipts may leave. Production never passes it; a
     // test that is not about the delay passes a shorter one, from the start,
     // so that receipts a previous run left are timed by it too.
@@ -670,7 +690,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     svc._debugMoveUngated = debugMoveUngated;
     svc.debugBuildBeforeSealingKeys = debugBuildBeforeSealingKeys;
     svc.debugBuildBefore481 = debugBuildBefore481;
+    svc.debugBuildBefore445 = debugBuildBefore445;
     svc._pqdcResends = pqdcResends ?? pqdcResendsEnabled;
+    svc._pillSaysRefusedForEarlier =
+        pillSaysRefusedForEarlier ?? pillSaysRefusedForEarlierContacts;
     svc._receipts.timing = receiptTiming;
     svc.kt = KeyTransparency(
       vault: vault,
@@ -754,6 +777,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     await svc._repairOwnListPqSignature();
     svc._schedulePqListDelivery(); // §18.9, on its own clock
     svc._schedulePqdcResends(); // 44.3, §18.11: on the same kind of clock
+    // 44.5 (ADR 0033 §2): the links an older build held the evidence for
+    // and never judged, in the background.
+    svc.debugHeldLinksJudged =
+        svc._judgeHeldDeviceLinks().then((_) {}, onError: (_) {});
+    unawaited(svc.debugHeldLinksJudged);
     // ADR 0022: a linked device whose account's list does not carry its
     // proof of possession hands it to its root — the first start of this
     // build on a device linked before it. Through the outbox, which the
@@ -924,13 +952,18 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       );
       _sealKeys[r['rid'] as String] = bundle.xPub;
     }
-    // ADR 0027, 26.3 and 44.6: four per-contact facts that live in `kv`
+    // ADR 0027, 26.3, 44.6 and 44.5: six per-contact facts that live in `kv`
     // rather than in a column — whether their codes sign their commitment,
     // the commitment a connect ceremony's digits covered, an unsigned
-    // commitment held as a candidate, and whether a CONNECT invite of
-    // version 3 added them. One query each, for every contact.
-    final kv = await vault.kvScanMany(['pqcs_', 'vpqc_', 'pqcc_', 'cvia_']);
+    // commitment held as a candidate, whether a CONNECT invite of version 3
+    // added them, whether this vault added them on 44.5 or later, and what
+    // was found of the device they were added from. One query each, for
+    // every contact.
+    final kv = await vault.kvScanMany(
+        ['pqcs_', 'vpqc_', 'pqcc_', 'cvia_', 'dlreq_', 'dlink_']);
     for (final c in contacts.values) {
+      c.linkRequired = kv['dlreq_${c.rid}'] == '1';
+      c.deviceLinkVerdict = DeviceLinkVerdict.decode(kv['dlink_${c.rid}']);
       c.pqcSigned = kv['pqcs_${c.rid}'] == '1';
       final covered = kv['vpqc_${c.rid}'];
       c.verifiedPqc = covered == null ? null : unb64(covered);
@@ -1452,27 +1485,27 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // and the insert dies on the primary key.
     final claimed = await _withLock<bool>(rid, () async {
       if (contacts.containsKey(rid)) return false;
-      await vault.db.insert(
-          'contacts',
-          {
-            'rid': rid,
-            'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
-            'enc_name': await vault.seal(name),
-            'ttl_seconds': 0,
-            'verified': 0,
-            'created_ms': contact.createdMs,
-            'requested': requested ? 1 : 0,
-            if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
-            if (contact.pqPub != null)
-              'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
-            if (contact.accountEdPub != null)
-              'acct_ed': b64(contact.accountEdPub!),
-            if (contact.deviceCert != null)
-              'dev_cert': jsonEncode(contact.deviceCert!.toJson()),
-            if (contact.addedByDevice != null)
-              'added_by': contact.addedByDevice,
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      final row = {
+        'rid': rid,
+        'enc_bundle': await vault.seal(jsonEncode(bundle.toJson())),
+        'enc_name': await vault.seal(name),
+        'ttl_seconds': 0,
+        'verified': 0,
+        'created_ms': contact.createdMs,
+        'requested': requested ? 1 : 0,
+        if (contact.pqCommit != null) 'pq_commit': b64(contact.pqCommit!),
+        if (contact.pqPub != null)
+          'enc_pq_pub': await vault.seal(b64(contact.pqPub!)),
+        if (contact.accountEdPub != null) 'acct_ed': b64(contact.accountEdPub!),
+        if (contact.deviceCert != null)
+          'dev_cert': jsonEncode(contact.deviceCert!.toJson()),
+        if (contact.addedByDevice != null) 'added_by': contact.addedByDevice,
+      };
+      await vault.db.transaction((txn) async {
+        await txn.insert('contacts', row,
+            conflictAlgorithm: ConflictAlgorithm.replace);
+        await _markAddedOnThisBuild(contact, txn);
+      });
       // 44.6: what a version-3 ceremony gave, written before the contact is
       // in memory and so before anything is sent to them — the first message
       // then says `pqs:1`, and their device never announces its key here.
@@ -1653,6 +1686,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       if (signed) await _markPqcSigned(c);
       await _setPqcHint(c, null);
       unawaited(_refreshDeviceAssurance(c.rid).then((_) {}, onError: (_) {}));
+      // 44.5: and the `pqdc` of the device they were added from.
+      unawaited(_rejudgeDeviceLink(c));
     } else if (!signed) {
       // ADR 0027: the key their app sent and a commitment nobody signed
       // disagree, and only one of the two came from them. The code is what is
@@ -1733,6 +1768,31 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       return; // shutting down; a stale hint can only fail to match
     }
     c.pqcHint = hint;
+  }
+
+  /// 44.5 (ADR 0033 decision 3): [c] is added here, by this build, so the
+  /// device they were added from must be linked post-quantum before the
+  /// screen says "post-quantum" of them ([Contact.linkRequired]). Written
+  /// through [txn], the step that writes the contact's row, on every path
+  /// that makes one here — a scan or paste, an invite, an accepted request,
+  /// a handle or link that answered, a contact another device of this
+  /// account added, a group's member — and on none that brings a row from
+  /// elsewhere: a restore and an enrolment carry the record the vault they
+  /// came from held, so a contact added before stays one. Nothing as a build
+  /// from before 44.5.
+  ///
+  /// Nor for a contact a CONNECT invite of version 3 adds ([Contact.connectV3]),
+  /// which stays as 44.6 left it: its ceremony is the post-quantum way to add
+  /// someone (ADR 0033 §4), its compared digits are what link the device
+  /// ([deviceLinkedByCeremony]), and no `pqdc` is ever sent to a contact added
+  /// that way — neither side sends a `pqid` — so a link required here would
+  /// never come where the digits were skipped. Such a contact keeps the pill
+  /// 44.6 gave it, and the line beside the number says what only the digits
+  /// could have vouched for.
+  Future<void> _markAddedOnThisBuild(Contact c, DatabaseExecutor txn) async {
+    if (debugBuildBefore445 || c.connectV3) return;
+    await vault.kvPut('dlreq_${c.rid}', '1', txn: txn);
+    c.linkRequired = true;
   }
 
   /// The steps shared by every path that adds a NEW contact (a scan/paste, or
@@ -2222,18 +2282,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         Contact(rid: rid, bundle: req.bundle, name: name, createdMs: _now());
     final claimed = await _withLock<bool>(rid, () async {
       if (contacts.containsKey(rid)) return false;
-      await vault.db.insert(
-          'contacts',
-          {
-            'rid': rid,
-            'enc_bundle': await vault.seal(jsonEncode(contact.bundle.toJson())),
-            'enc_name': await vault.seal(contact.name),
-            'ttl_seconds': 0,
-            'verified': 0,
-            'created_ms': contact.createdMs,
-            'requested': 0, // they accepted us; nobody is waiting
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      final row = {
+        'rid': rid,
+        'enc_bundle': await vault.seal(jsonEncode(contact.bundle.toJson())),
+        'enc_name': await vault.seal(contact.name),
+        'ttl_seconds': 0,
+        'verified': 0,
+        'created_ms': contact.createdMs,
+        'requested': 0, // they accepted us; nobody is waiting
+      };
+      await vault.db.transaction((txn) async {
+        await txn.insert('contacts', row,
+            conflictAlgorithm: ConflictAlgorithm.replace);
+        await _markAddedOnThisBuild(contact, txn);
+      });
       await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
       _blocked.remove(rid); // in memory too, which ADR 0024's checks read
       // Which handle they came through, before they are anybody's contact:
@@ -2311,18 +2373,20 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     );
     final claimed = await _withLock<bool>(rid, () async {
       if (contacts.containsKey(rid)) return false;
-      await vault.db.insert(
-          'contacts',
-          {
-            'rid': rid,
-            'enc_bundle': await vault.seal(jsonEncode(contact.bundle.toJson())),
-            'enc_name': await vault.seal(contact.name),
-            'ttl_seconds': 0,
-            'verified': 0,
-            'created_ms': contact.createdMs,
-            'requested': 0, // we accepted; we are not the one waiting
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      final row = {
+        'rid': rid,
+        'enc_bundle': await vault.seal(jsonEncode(contact.bundle.toJson())),
+        'enc_name': await vault.seal(contact.name),
+        'ttl_seconds': 0,
+        'verified': 0,
+        'created_ms': contact.createdMs,
+        'requested': 0, // we accepted; we are not the one waiting
+      };
+      await vault.db.transaction((txn) async {
+        await txn.insert('contacts', row,
+            conflictAlgorithm: ConflictAlgorithm.replace);
+        await _markAddedOnThisBuild(contact, txn);
+      });
       await vault.db.delete('blocked', where: 'rid = ?', whereArgs: [rid]);
       _blocked.remove(rid);
       contacts[rid] = contact;
@@ -2728,8 +2792,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     };
     final inserted = await _withLock<bool>(rid, () async {
       if (contacts.containsKey(rid)) return false; // a scan won the race
-      await vault.db
-          .insert('contacts', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+      // 44.5: this device adds them now, on this build, as a scan here would
+      // (ADR 0033 decision 3). The record is this device's own, never read
+      // off the `cadd`: what another device asserts here cannot make a
+      // contact's screen ask less of the link.
+      await vault.db.transaction((txn) async {
+        await txn.insert('contacts', row,
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+        await _markAddedOnThisBuild(contact, txn);
+      });
       contacts[rid] = contact;
       return true;
     });
@@ -2882,6 +2953,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // §18.9: a device-list signature held back until the key was
       // established can be checked now.
       unawaited(_refreshDeviceAssurance(rid).then((_) {}, onError: (_) {}));
+      // 44.5: and the `pqdc` of the device they were added from.
+      unawaited(_rejudgeDeviceLink(c));
     }
     await _refreshVerification(rid, notify: false);
     notifyListeners();
@@ -3000,6 +3073,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     'rcpt_', // phase 41: receipts owed to them, held (ADR 0028)
     'cseal_', // 44.3: their devices' sealing keys and `pqdc`s (§18.11)
     'cvia_', // 44.6: the CONNECT invite version that added them (§20.9)
+    // 44.5: added by this vault on 44.5 or later (ADR 0033 decision 3), and
+    // what was found of the device they were added from (§2).
+    'dlreq_', 'dlink_',
   ];
 
   /// Forget a contact: every row, every blob, every `kv` family, and every
@@ -3549,6 +3625,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   int debugPqSends = 0;
 
+  /// Test seam: the `pqdc` this device's `pqid` carries, in place of its own
+  /// (§18.11) — one that does not verify for this device is what a contact
+  /// must refuse (44.5, ADR 0033 §2), as [debugLinkAttestation] is for an
+  /// enrolment.
+  @visibleForTesting
+  Uint8List? debugPqidAttestation;
+
   /// Registers a reason to send our post-quantum identity to [contact]. An
   /// answer goes now and cancels anything waiting; volunteering and nudging
   /// wait, and are dropped at the last moment if a send has gone in the
@@ -3607,7 +3690,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     });
   }
 
-  Future<void> _sendPqIdentity(Contact contact) async {
+  /// [devices], when given, are the only devices of [contact]'s the `pqid`
+  /// goes to (44.5: the one more `pqid`, to the devices owed it); otherwise
+  /// it goes to all of them, as every other send does.
+  Future<void> _sendPqIdentity(Contact contact, {Set<String>? devices}) async {
     // Counted from before the first await to after the last, so
     // [pqSendPending] covers the whole send and not just the wait for it.
     _pqInFlight++;
@@ -3628,13 +3714,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // 44.3 (§18.11): this device's own `pqdc`, when it holds one, rides in
       // the `pqid` as its optional member — 3 309 bytes inside the 16 384
       // bucket the `pqid` already is, so no new envelope and no new size.
-      final pqdc = debugBuildBeforeSealingKeys ? null : _ownPqdc;
+      // Which of their devices it reached is recorded as each copy is queued
+      // (44.5, [_notePqdcSent]).
+      final pqdc = debugBuildBeforeSealingKeys
+          ? null
+          : (debugPqidAttestation ?? _ownPqdc);
       await _sendInner(
           contact,
           InnerMessage.pqIdentity(newMessageId(), _now(), mlPub,
-              ack: ack, pqdc: pqdc));
+              ack: ack, pqdc: pqdc),
+          devices: devices);
       if (ack) await _markPqTold(contact);
-      if (pqdc != null) await _notePqdcSent(contact);
     } catch (_) {
       // The next reason re-offers it; see _onInbound.
     } finally {
@@ -3986,6 +4076,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     // rather than discarded. It can be checked now.
     unawaited(
         _refreshDeviceAssurance(contact.rid).then((_) {}, onError: (_) {}));
+    // 44.5: and the `pqdc` of the device they were added from, held until
+    // this key was established ([_judgeDeviceLink]).
+    await _rejudgeDeviceLink(contact);
     return true;
   }
 
@@ -4071,7 +4164,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// 3 whose digits this side compared: the sealing key held for it came in
   /// that ceremony's reveal ([DeviceSeal.byCeremony]), as authentic as the
   /// digits, so no `pqdc` is needed for it. False for every other contact,
-  /// whose link is 44.5's to judge.
+  /// whose link its `pqdc` settles ([deviceLinkWith], 44.5).
   bool deviceLinkedByCeremony(String rid) {
     final d = _contactSeals[rid]?.devices[rid];
     return d != null && d.byCeremony && d.ek != null;
@@ -4083,6 +4176,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// digits ([deviceLinkedByCeremony]). Nothing when the key held for that
   /// device is another: a device that has announced a different key since
   /// is not the one the digits covered.
+  ///
+  /// 44.5: kept beside the contact as well (`dlink_<rid>`, with the key's
+  /// hash), which a backup and an enrolment carry and `cseal_` is in
+  /// neither: a contact so added keeps its link through a restore, and a
+  /// device linked later holds it too — it never sees the ceremony, and no
+  /// `pqdc` comes to a contact added this way. Not over a refusal.
   Future<void> noteComparedCeremony(String rid, Uint8List sealKey) async {
     final d = _contactSeals[rid]?.devices[rid];
     final ek = d?.ek;
@@ -4090,6 +4189,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if (!constantTimeEquals(ek, sealKey)) return;
     d.byCeremony = true;
     await _saveSeals(rid);
+    final c = contacts[rid];
+    if (c != null && !debugBuildBefore445) {
+      final verdict = DeviceLinkVerdict(
+          DeviceLinkFinding.ceremony, await sha256Bytes(sealKey));
+      await _withLock(rid, () async {
+        if (!identical(contacts[rid], c) ||
+            c.deviceLinkVerdict?.finding == DeviceLinkFinding.refused) {
+          return;
+        }
+        await vault.kvPut('dlink_$rid', verdict.encode());
+        c.deviceLinkVerdict = verdict;
+      });
+    }
     notifyListeners();
   }
 
@@ -4103,6 +4215,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   @visibleForTesting
   bool debugHoldsMySealKey(String deviceRid) =>
       _heldSeal(deviceRid)?.holdsMine ?? false;
+
+  /// 44.5: whether this device's `pqdc` is recorded as having reached
+  /// [deviceRid], a contact's device ([DeviceSeal.pqdcSent]). Test seam.
+  @visibleForTesting
+  bool debugPqdcSentTo(String deviceRid) =>
+      _heldSeal(deviceRid)?.pqdcSent ?? false;
 
   DeviceSeal? _heldSeal(String deviceRid) {
     final own = _ownSeals.devices[deviceRid];
@@ -4160,7 +4278,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
                 if (await vault.kvGet('oseal') case final own?) 'oseal': own,
               };
         // Whatever attestation the vault held was for another key, and so
-        // was whatever it held of having announced one.
+        // was whatever it held of having announced one — and (44.5) of
+        // having sent its `pqdc`, which was over the key that went.
         await vault.db.transaction((txn) async {
           await vault.kvPut(sealSeedKey, b64(fresh.seed), txn: txn);
           for (final p in const ['s:', 'p:']) {
@@ -4172,6 +4291,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             for (final d in rec.devices.values) {
               d.holdsMine = false;
               d.announcedMs = 0;
+              if (!debugBuildBefore445) d.pqdcSent = false;
             }
             await vault.kvPut(e.key, rec.encode(), txn: txn);
           }
@@ -4384,8 +4504,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   }
 
   /// [_saveSeals] for a contact's record by a caller that holds that
-  /// contact's lock already — the doors their devices come in by — in
-  /// [txn] when given, the step that writes the session.
+  /// contact's lock already — the doors their devices come in by, and the
+  /// sends that open a session to them — in [txn] when given, the step that
+  /// writes the session.
   Future<void> _writeSealsLocked(String rid, {DatabaseExecutor? txn}) async {
     final rec = _contactSeals[rid];
     if (rec == null || !contacts.containsKey(rid) || _disposed) return;
@@ -4434,22 +4555,51 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// word for the new, so it announced the new one to none of them, and they
   /// kept the old one for good; a stamp before the announcement is of no key
   /// this device has given, and the announcement stays owed.
+  ///
+  /// 44.5 ([epochs]; §18.11): the `pqdc` held stays with a new key in one
+  /// case only — the key it replaces came before a ratchet session with
+  /// that device last began, and the `pqdc` since that device last opened
+  /// one ([DeviceSeal.ekFresh], [DeviceSeal.pqdcFresh], [_newSessionWith]). A
+  /// device restored onto a new key is heard from on new sessions, and its
+  /// `pqid` on one can arrive before its `pqseal`: that `pqdc` waits to be
+  /// judged against the key it announces. A key that replaces one from
+  /// since then is a seed that no longer read — such a device announces its
+  /// new key before anything else it sends on the session it has — and the
+  /// `pqdc` held was of the key it replaces, or of none. Each of the two is
+  /// marked as having come since then. As a build from before 44.5, nothing
+  /// is marked and the `pqdc` goes.
   static bool _keepSeal(
       DeviceSeal d, Uint8List? ek, Uint8List? pqdc, bool stamped,
-      {bool anyStamp = false}) {
+      {bool anyStamp = false, bool epochs = true}) {
     var changed = false;
-    if (ek != null && !(d.ek != null && constantTimeEquals(d.ek!, ek))) {
-      if (d.ek != null) {
-        d.pqdc = null;
-        d.byCeremony = false;
+    if (ek != null) {
+      if (!(d.ek != null && constantTimeEquals(d.ek!, ek))) {
+        if (d.ek != null) {
+          if (!(epochs && !d.ekFresh && d.pqdcFresh)) {
+            d.pqdc = null;
+            d.pqdcFresh = false;
+          }
+          d.byCeremony = false;
+        }
+        d.ek = ek;
+        changed = true;
+      }
+      if (epochs && !d.ekFresh) {
+        d.ekFresh = true;
+        changed = true;
       }
       d.ek = ek;
       changed = true;
     }
-    if (pqdc != null &&
-        !(d.pqdc != null && constantTimeEquals(d.pqdc!, pqdc))) {
-      d.pqdc = pqdc;
-      changed = true;
+    if (pqdc != null) {
+      if (!(d.pqdc != null && constantTimeEquals(d.pqdc!, pqdc))) {
+        d.pqdc = pqdc;
+        changed = true;
+      }
+      if (epochs && !d.pqdcFresh) {
+        d.pqdcFresh = true;
+        changed = true;
+      }
     }
     if (stamped && !d.holdsMine && (anyStamp || d.announcedMs > 0)) {
       d.holdsMine = true;
@@ -4482,6 +4632,38 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     return true;
   }
 
+  /// 44.3 and 44.5 (§18.11): a new ratchet session with [deviceRid], one of
+  /// [owner]'s devices, has begun — [theirs], accepted from it, or opened to
+  /// it — the moment 44.3 forgets its `pqs:1` ([_forgetHeldMine]). For a
+  /// contact's device, 44.5 takes what it announced and attested before as
+  /// of a state it may no longer be in. On a session it opened — a restore,
+  /// a contact added back, its own reset — that is its key and its `pqdc`
+  /// both ([DeviceSeal.ekFresh], [DeviceSeal.pqdcFresh]), and this device's
+  /// `pqdc` is owed to it again ([DeviceSeal.pqdcSent]). On one opened to
+  /// it, its key alone: that may be the first session a restore of theirs
+  /// is heard on, before any of its own, while a `pqdc` it sent since its own
+  /// last session is of the state it is in. In memory, in the order the
+  /// ratchet decrypts; each door and each send writes it down with that
+  /// session or before it, as 4.8.1 writes the forgetting. Whether anything
+  /// changed. Nothing of 44.5's as a build from before it.
+  bool _newSessionWith(String? owner, String deviceRid, {bool theirs = true}) {
+    final forgot = _forgetHeldMine(owner, deviceRid);
+    if (owner == null || debugBuildBefore445) return forgot;
+    final d = _contactSeals[owner]?.devices[deviceRid];
+    if (d == null) return forgot;
+    var changed = forgot;
+    if (d.ekFresh) {
+      d.ekFresh = false;
+      changed = true;
+    }
+    if (theirs && (d.pqdcFresh || d.pqdcSent)) {
+      d.pqdcFresh = false;
+      d.pqdcSent = false;
+      changed = true;
+    }
+    return changed;
+  }
+
   /// 44.3 (§18.11): what [inner], from [deviceRid] — one of [owner]'s
   /// devices — says about sealing keys, taken in memory: the key its
   /// `pqseal` announces ([_announcedSealKey]), from then on stamped back as
@@ -4493,13 +4675,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// in the order the ratchet decrypted the messages — on the contact's
   /// door under the conversation's lock, on their other devices' in the
   /// dispatch's turn — so a stamp said on the old session cannot land after
-  /// the new one has forgotten it. Kept, not judged: whether a `pqdc`
-  /// verifies under the contact's established key is 44.5's question.
-  /// Whether anything changed, for the caller to write ([_saveSeals]).
+  /// the new one has forgotten it. Kept here, not judged: whether the `pqdc`
+  /// of the device a contact was added from verifies under their established
+  /// key is [_judgeDeviceLink]'s (44.5). Whether anything changed, for the
+  /// caller to write ([_saveSeals]).
   bool _sealNews(String owner, String deviceRid, InnerMessage inner,
       {bool newSession = false}) {
     if (debugBuildBeforeSealingKeys) return false;
-    final forgot = newSession && _forgetHeldMine(owner, deviceRid);
+    final forgot = newSession && _newSessionWith(owner, deviceRid);
     final ek = _announcedSealKey(inner);
     final pqdc = inner.pqidAttestation;
     final stamped = inner.saysHoldsSealKey;
@@ -4507,16 +4690,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final rec = _sealRecordFor(owner);
     if (rec == null) return forgot;
     return _keepSeal(rec.device(deviceRid), ek, pqdc, stamped,
-            anyStamp: debugBuildBefore481) ||
+            anyStamp: debugBuildBefore481, epochs: !debugBuildBefore445) ||
         forgot;
   }
 
-  /// [_sealNews] for [contact]'s device [deviceRid], written down.
+  /// [_sealNews] for [contact]'s device [deviceRid], written down. 44.5: a
+  /// device that has just shown it reads a `pqdc`, or opened a new session,
+  /// can be owed the one more `pqid` now ([_schedulePqdcResends]).
   Future<void> _takeSealNews(
       Contact contact, String deviceRid, InnerMessage inner,
       {bool newSession = false}) async {
     if (_sealNews(contact.rid, deviceRid, inner, newSession: newSession)) {
       await _saveSeals(contact.rid);
+      _schedulePqdcResends();
     }
   }
 
@@ -4534,8 +4720,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final ek = seal == null ? null : _announcedSealKey(seal);
     final says = stamped || (seal?.saysHoldsSealKey ?? false);
     if (ek == null && !says) return forgot;
+    // No `pqdc` is kept for one of mine, and none is judged: no epochs.
     return _keepSeal(_ownSeals.device(deviceRid), ek, null, says,
-            anyStamp: debugBuildBefore481) ||
+            anyStamp: debugBuildBefore481, epochs: false) ||
         forgot;
   }
 
@@ -4648,9 +4835,29 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   bool _pqdcResends = pqdcResendsEnabled;
 
   /// [c] holds the account's post-quantum key — the exchange that would
-  /// carry this device's `pqdc` is over — and has not had the `pqdc`.
-  bool _owesPqdcResend(Contact c) =>
-      c.pqAcked && !(_contactSeals[c.rid]?.pqdcSent ?? false);
+  /// carry this device's `pqdc` is over — and a device of theirs has not had
+  /// the `pqdc` ([_pqdcOwedTo]).
+  bool _owesPqdcResend(Contact c) => c.pqAcked && _pqdcOwedTo(c).isNotEmpty;
+
+  /// 44.5 (§18.11): the devices of [c] this device's `pqdc` is owed to — the
+  /// one they were added from and each other one held for them — owned per
+  /// device ([DeviceSeal.pqdcSent]): each that has shown it reads one
+  /// ([DeviceSeal.readsPqdc]) and has not had it since it last opened a
+  /// ratchet session here. A device that has not shown it is owed nothing,
+  /// and is
+  /// sent nothing, until it does: through 4.8.1 the record was one per
+  /// contact, and a device of theirs on a build from before 44.3 when a
+  /// `pqid` fanned out spent it for all of them, dropping the member, and
+  /// once updated was never owed it again.
+  Set<String> _pqdcOwedTo(Contact c) {
+    final rec = _contactSeals[c.rid];
+    if (rec == null) return const {};
+    final extras = _contactExtras[c.rid]?.targetRoutingIds ?? const <String>[];
+    return {
+      for (final r in {c.rid, ...extras})
+        if (rec.devices[r] case final d? when d.readsPqdc && !d.pqdcSent) r
+    };
+  }
 
   void _schedulePqdcResends() {
     if (!_pqdcResends ||
@@ -4671,26 +4878,205 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     });
   }
 
-  /// The one more `pqid`, to each contact still owed it — once: the send
-  /// records that it went ([_notePqdcSent]), and one that could not go is
-  /// tried at the next tick.
+  /// The one more `pqid`, to each device still owed it and to no other —
+  /// once: each copy queued records that it went ([_notePqdcSent]), and one
+  /// that could not go is tried at the next tick.
   Future<void> _deliverPqdcResends() async {
     for (final c in contacts.values.toList()) {
       if (_disposed) return;
       if (!identical(contacts[c.rid], c) || !_owesPqdcResend(c)) continue;
-      await _sendPqIdentity(c);
+      await _sendPqIdentity(c, devices: _pqdcOwedTo(c));
     }
     _schedulePqdcResends();
   }
 
-  /// [contact] has had this device's `pqdc`, in a `pqid`.
-  Future<void> _notePqdcSent(Contact contact) async {
-    final rec = _sealRecordFor(contact.rid);
-    if (rec == null || rec.pqdcSent) return;
-    rec.pqdcSent = true;
+  /// This device's `pqdc` has been queued, in a `pqid`, for [deviceRids] —
+  /// [contact]'s devices: each that had shown it reads one has had it
+  /// ([DeviceSeal.pqdcSent]), and a device that had not is still owed it.
+  Future<void> _notePqdcSent(Contact contact, Iterable<String> deviceRids) async {
+    if (debugBuildBefore445) return;
+    final rec = _contactSeals[contact.rid];
+    if (rec == null) return;
+    var changed = false;
+    for (final r in deviceRids) {
+      final d = rec.devices[r];
+      if (d == null || !d.readsPqdc || d.pqdcSent) continue;
+      d.pqdcSent = true;
+      changed = true;
+    }
+    if (!changed) return;
     try {
       await _saveSeals(contact.rid);
     } catch (_) {}
+  }
+
+  // ------------------------------------------------------------------
+  // 44.5: the scanned device's link (ADR 0033 §2, PROTOCOL §18.11)
+  // ------------------------------------------------------------------
+
+  /// Test-only, from `init`'s `debugBuildBefore445`: behave as a build from
+  /// before 44.5 — 4.8.1. It keeps a contact device's `pqdc` beside its key
+  /// and judges neither; it records nothing of when a contact was added, of
+  /// what was found of the device they were added from, of which session
+  /// what a device announced came on, or of which devices its own `pqdc`
+  /// reached. What it sends is what this build sends: 44.5 puts nothing new
+  /// on the wire. The upgrade and the mixed-version cases are what it is
+  /// for, and the honest way to run them is to have one side behave that
+  /// way, as [debugBuildBeforeSealingKeys] does for a build before 44.3 and,
+  /// beside this one, [debugBuildBefore481] for 4.8.0.
+  @visibleForTesting
+  bool debugBuildBefore445 = false;
+
+  /// Test seam: the background pass of [_judgeHeldDeviceLinks] that `init`
+  /// starts, done — a judgement that finds nothing leaves no trace to wait
+  /// on, and an upgrade test asks that nothing was found.
+  @visibleForTesting
+  Future<void> debugHeldLinksJudged = Future<void>.value();
+
+  /// 44.5 (ADR 0033 §2): what [rid]'s screen says of the link to the device
+  /// they were added from — their device whose routing id is theirs.
+  DeviceLink deviceLinkWith(String rid) {
+    final c = contacts[rid];
+    if (c == null || debugBuildBeforeSealingKeys || debugBuildBefore445) {
+      return DeviceLink.classical;
+    }
+    final found = c.deviceLinkVerdict?.finding;
+    if (found == DeviceLinkFinding.refused) return DeviceLink.refused;
+    if (deviceLinkedByCeremony(rid)) return DeviceLink.ceremony;
+    return switch (found) {
+      DeviceLinkFinding.attested => DeviceLink.attested,
+      DeviceLinkFinding.ceremony => DeviceLink.ceremony,
+      _ => DeviceLink.classical,
+    };
+  }
+
+  /// 44.5 (ADR 0033 decision 3): whether [rid]'s screen says "post-quantum"
+  /// only once that link is post-quantum — a contact this vault added on
+  /// 44.5 or later ([Contact.linkRequired]). For one added before, the link
+  /// is said and asks nothing.
+  bool deviceLinkRequired(String rid) => contacts[rid]?.linkRequired ?? false;
+
+  /// From `init` ([pillSaysRefusedForEarlierContacts] unless a test says).
+  bool _pillSaysRefusedForEarlier = pillSaysRefusedForEarlierContacts;
+
+  /// 44.5 (ADR 0033 decision 3): the device link [rid]'s pill answers to —
+  /// theirs, for a contact added on 44.5 or later ([deviceLinkRequired]),
+  /// which the pill does not call post-quantum until it is; for one added
+  /// before, only a refusal, and only when
+  /// [pillSaysRefusedForEarlierContacts] says so. Null: the pill is the one
+  /// it had.
+  DeviceLink? deviceLinkForPill(String rid) {
+    final link = deviceLinkWith(rid);
+    if (deviceLinkRequired(rid)) return link;
+    return link == DeviceLink.refused && _pillSaysRefusedForEarlier
+        ? link
+        : null;
+  }
+
+  /// 44.5 (ADR 0033 §2, PROTOCOL §18.11): the link to the device [c] was
+  /// added from, judged once their ML-DSA key is ESTABLISHED — a commitment
+  /// met, or the number confirmed; under a candidate a `pqdc` proves nothing
+  /// (§18.2) — and both that device's `pqdc` and the sealing key it
+  /// announced are held:
+  ///
+  ///  * the `pqdc` verifies over their account key, the device's two keys as
+  ///    their code named them and that sealing key: the link is post-quantum;
+  ///  * it does not, and the key came since a ratchet session with that
+  ///    device last began, accepted from it or opened to it, and the `pqdc`
+  ///    since that device last opened one ([DeviceSeal.ekFresh],
+  ///    [DeviceSeal.pqdcFresh], [_newSessionWith]): refused, recorded and
+  ///    said once in the chat, in the step that records it, as a key that
+  ///    misses its commitment is (§18.3). Both are then of one state of that
+  ///    device. A device draws a key it did not have in one of two ways:
+  ///    restored, it has lost its sessions, and is heard from on new ones —
+  ///    its own, or one this device opens — where the `pqid` it sends can
+  ///    come before its `pqseal`: a pair of which one half came before that
+  ///    session is evidence of nothing, and the `pqdc` waits for the key it
+  ///    announces next; or, finding its seed unreadable, it announces the new
+  ///    key before anything else it sends, and the `pqdc` held, of the key
+  ///    replaced, goes with it ([_keepSeal]);
+  ///  * anything less: nothing yet, and the screen says the link is
+  ///    classical. A record from before 44.5 marks nothing as having come
+  ///    since, so nothing an older build held is ever refused.
+  ///
+  /// What is found is kept with the hash of the key it was found of
+  /// (`dlink_<rid>`): it stands while the key held for that device is that
+  /// one, or none is held — after a restore, which carries it and no key —
+  /// and a different key is judged afresh. A refusal stands whatever comes.
+  /// Under the contact's lock, so nothing is written for a contact a
+  /// deletion has removed. Whether anything changed.
+  Future<bool> _judgeDeviceLink(Contact c) async {
+    if (debugBuildBeforeSealingKeys || debugBuildBefore445) return false;
+    final rid = c.rid;
+    return _withLock<bool>(rid, () async {
+      if (_disposed || !identical(contacts[rid], c)) return false;
+      final held = c.deviceLinkVerdict;
+      if (held?.finding == DeviceLinkFinding.refused) return false;
+      final d = _contactSeals[rid]?.devices[rid];
+      final ek = d?.ek;
+      final sk = ek == null ? null : await sha256Bytes(ek);
+      var changed = false;
+      if (held != null && sk != null) {
+        if (constantTimeEquals(held.sk, sk)) return false;
+        // A different key from the device: what was found, was found of the
+        // key it replaced.
+        await vault.kvDelete('dlink_$rid');
+        c.deviceLinkVerdict = null;
+        changed = true;
+      }
+      final ml = c.pqPub, pqdc = d?.pqdc;
+      if (ml == null || d == null || ek == null || sk == null || pqdc == null) {
+        return changed;
+      }
+      final attested = deviceAttestationValid(
+          accountMlPub: ml,
+          accountEdPub: c.accountEd,
+          deviceEdPub: c.bundle.edPub,
+          deviceXPub: c.bundle.xPub,
+          sealEk: ek,
+          pqdc: pqdc);
+      if (!attested && !(d.ekFresh && d.pqdcFresh)) return changed;
+      final verdict = DeviceLinkVerdict(
+          attested ? DeviceLinkFinding.attested : DeviceLinkFinding.refused,
+          sk);
+      await vault.db.transaction((txn) async {
+        await vault.kvPut('dlink_${c.rid}', verdict.encode(), txn: txn);
+        if (!attested) {
+          await _insertSystemMessage(rid,
+              systemBody(SystemKind.deviceLinkRefused, {'name': c.name}),
+              txn: txn);
+        }
+      });
+      c.deviceLinkVerdict = verdict;
+      return true;
+    });
+  }
+
+  /// [_judgeDeviceLink], told to the screens when anything changed. Never
+  /// throws: a judgement that could not be written is made again at the next
+  /// change of what it rests on.
+  Future<void> _rejudgeDeviceLink(Contact c) async {
+    try {
+      if (await _judgeDeviceLink(c)) notifyListeners();
+    } catch (_) {}
+  }
+
+  /// 44.5: the link of every contact whose key, and whose device's `pqdc`
+  /// and sealing key, a build from before 44.5 held unjudged — at the first
+  /// start of this build — and of any whose judgement could not be written.
+  /// After the start and in the background, one contact at a time: each is
+  /// an ML-DSA verification (≈5 ms, `PERFORMANCE.md`), and four hundred of
+  /// them must not stand between a person and their chats.
+  Future<void> _judgeHeldDeviceLinks() async {
+    if (debugBuildBeforeSealingKeys || debugBuildBefore445) return;
+    for (final c in contacts.values.toList()) {
+      if (_disposed) return;
+      if (c.pqPub == null || c.deviceLinkVerdict != null) continue;
+      final d = _contactSeals[c.rid]?.devices[c.rid];
+      if (d?.ek == null || d?.pqdc == null) continue;
+      await _rejudgeDeviceLink(c);
+      await Future<void>.delayed(Duration.zero);
+    }
   }
 
   /// Discard all ratchet sessions with this contact and open a fresh one.
@@ -4729,8 +5115,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// ([contact]'s), and the two were conflated: a group message's status
   /// update looked for its row under the member's rid, matched nothing, and
   /// left a grey clock for ever.
+  ///
+  /// [devices], when given, are the only devices of [contact]'s it goes to:
+  /// the one they were added from only if it is among them, and the fan to
+  /// the rest narrowed to them (44.5: the one more `pqid`, to the devices
+  /// owed it). Nothing else passes it.
   Future<String> _sendInner(Contact contact, InnerMessage inner,
-      {Future<void> Function(Transaction txn)? also, String? threadRid}) async {
+      {Future<void> Function(Transaction txn)? also,
+      String? threadRid,
+      Set<String>? devices}) async {
     // ADR 0006: a conflict between the log and this contact's devices holds
     // what the user says to them until the next check agrees or the user
     // chooses to send anyway. The screen disables the composer first; this
@@ -4740,10 +5133,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     // 44.3: whether this device's sealing key went with it, and whether the
     // send opened a ratchet session ([_forgetHeldMine]), written down once
-    // the lock is let go ([_noteSealsSent] takes it to record that).
+    // the lock is let go ([_noteSealsSent] takes it to record that). 44.5:
+    // and whether this device's `pqdc` went with it ([_notePqdcSent]).
     var sealed = false;
     var opened = false;
+    var queued = false;
     await _withLock(contact.rid, () async {
+      // 44.5: a send to some of their devices that leaves this one out.
+      if (devices != null && !devices.contains(contact.rid)) return;
       // The contact can have been DELETED while this send waited for the
       // lock — [deleteContact] takes the same one. Writing now would put
       // their routing id back in `outbox`, their ciphertext back in the
@@ -4809,8 +5206,21 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // envelopes against.
         final gate = debugBeforeSendCommit;
         if (gate != null) await gate(contact.rid);
+        // 44.3 (§18.11): a session this send opened forgets, as one opened
+        // from their side does, that their device holds this one's sealing
+        // key ([_forgetHeldMine]) — in memory here, under the lock — and
+        // (44.5) starts afresh what it says ([_newSessionWith]), written in
+        // the step that writes the session: a restore on their side that
+        // this session is the first to reach must not have its new `pqdc` set
+        // against the key held from before.
+        final openedNow = conv.sessions.length > sessionsBefore &&
+            !debugBuildBeforeSealingKeys;
+        if (openedNow) {
+          opened = _newSessionWith(contact.rid, contact.rid, theirs: false);
+        }
         await vault.db.transaction((txn) async {
           await _saveConv(contact.rid, txn: txn);
+          if (openedNow) await _writeSealsLocked(contact.rid, txn: txn);
           if (offerPayload != null) {
             await txn.insert('outbox', {
               'id': newMessageId(),
@@ -4844,13 +5254,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           });
           if (also != null) await also(txn);
         });
+        queued = true;
         sealed = sealPayload != null;
-        // 44.3 (§18.11): a session this send opened forgets, as one opened
-        // from their side does, that their device holds this one's sealing
-        // key ([_forgetHeldMine]) — in memory here, under the lock.
-        opened = conv.sessions.length > sessionsBefore &&
-            !debugBuildBeforeSealingKeys &&
-            _forgetHeldMine(contact.rid, contact.rid);
       } catch (e) {
         final restored = await _convFromSnapshot(snapshot);
         // Carry the out-of-order keys over from the object being replaced.
@@ -4874,6 +5279,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // Kept in memory for this run; written with the next change.
       }
     }
+    if (queued && _carriesOwnPqdc(inner)) {
+      await _notePqdcSent(contact, [contact.rid]);
+    }
     // ADR 0028: receipts owed to this person that may go now ride with what
     // the user is sending them — queued behind it, one flush — instead of
     // leaving later at a moment of their own.
@@ -4882,10 +5290,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       await _releaseReceipts(contact.rid, riding: true);
     }
     unawaited(flushOutbox());
-    unawaited(
-        _fanToContactExtras(contact.rid, inner)); // M4: to their extra devices
+    unawaited(_fanToContactExtras(contact.rid, inner,
+        devices: devices)); // M4: to their extra devices
     return inner.mid;
   }
+
+  /// A `pqid` carrying this device's `pqdc` (§18.11), whose copies record
+  /// which devices it reached ([_notePqdcSent]).
+  static bool _carriesOwnPqdc(InnerMessage inner) =>
+      inner.kind == 'pqid' && inner.data['pqdc'] is String;
 
   /// Send [inner] to a 1:1 [contact], but if a transparency conflict holds
   /// sends to them (ADR 0006), queue it durably instead of losing it.
@@ -5779,10 +6192,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // re-add — forgets that it holds this device's sealing key, here, in
         // the order the ratchet decrypts, whatever this message turns out to
         // hold ([_forgetHeldMine]) — and (4.8.1) written down in the step
-        // that writes the session, below.
+        // that writes the session, below. 44.5: and what it announced and
+        // attested before is not set against what it says now
+        // ([_newSessionWith]).
         if (dec.createdNewSession &&
             !debugBuildBeforeSealingKeys &&
-            _forgetHeldMine(contact.rid, contact.rid)) {
+            _newSessionWith(contact.rid, contact.rid)) {
           sealsChanged = true;
         }
 
@@ -5918,6 +6333,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       } catch (_) {
         // Kept in memory for this run; written with the next change.
       }
+      // 44.5 (ADR 0033 §2): what this device of theirs — the one they were
+      // added from — says of its sealing key and its `pqdc` may settle its
+      // link ([_judgeDeviceLink]), and may make it owed the one more `pqid`.
+      await _rejudgeDeviceLink(contact);
+      _schedulePqdcResends();
     }
 
     if (status == kWithheld) {
@@ -13289,8 +13709,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final adopted = <Contact>[];
     for (final (rid, bundle, cname) in unknown) {
       if (contacts.containsKey(rid)) continue;
-      final c =
-          Contact(rid: rid, bundle: bundle, name: cname, createdMs: _now());
+      // 44.5: added here by this build, as any add here is
+      // ([_markAddedOnThisBuild], which [_persistGroupContacts] writes).
+      final c = Contact(
+          rid: rid,
+          bundle: bundle,
+          name: cname,
+          createdMs: _now(),
+          linkRequired: !debugBuildBefore445);
       contacts[rid] = c;
       _sealKeys[rid] = bundle.xPub;
       messagesByChat.putIfAbsent(rid, () => []);
@@ -13304,7 +13730,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<void> _persistGroupContacts(List<Contact> adopted,
       {DatabaseExecutor? txn}) async {
     for (final c in adopted) {
-      await (txn ?? vault.db).insert(
+      final to = txn ?? vault.db;
+      await to.insert(
           'contacts',
           {
             'rid': c.rid,
@@ -13315,6 +13742,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
             'created_ms': c.createdMs,
           },
           conflictAlgorithm: ConflictAlgorithm.ignore);
+      if (c.linkRequired) await _markAddedOnThisBuild(c, to);
     }
   }
 
@@ -15676,7 +16104,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// the relay's ack — up to 20 s per device on a stalled link — while
   /// every send and receive for that contact queued behind it. The lock now
   /// covers the ratchet step and the writes; the network is the outbox's.
-  Future<void> _fanToContactExtras(String rid, InnerMessage inner) async {
+  ///
+  /// [devices], when given, narrows the fan to those of theirs
+  /// ([_sendInner]).
+  Future<void> _fanToContactExtras(String rid, InnerMessage inner,
+      {Set<String>? devices}) async {
     // Cheap check first, exactly as before: a contact with no extra devices
     // — the common case — must not pay a lock acquisition per send just to
     // discover it has nothing to do.
@@ -15685,8 +16117,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     var queued = false;
     // 44.3: the devices this device's sealing key went to, and whether a
     // session this fan opened forgot a stamp ([_forgetHeldMine]), written
-    // down once the lock is let go.
+    // down once the lock is let go. 44.5: and the devices a copy went to.
     var sealedTo = <String>[];
+    var queuedTo = <String>[];
     var opened = false;
     await _withLock(rid, () async {
       // Re-read under the lock, and only for a contact this vault still
@@ -15703,7 +16136,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         // the hold is what makes a split view cost the attacker something.
         final held = kt.heldRids(rid);
         final all = s.targetRoutingIds.toSet();
-        final to = all.difference(held);
+        var to = all.difference(held);
+        if (devices != null) {
+          to = to.intersection(devices);
+          if (to.isEmpty) return;
+        }
         final sessionsBefore = {
           for (final r in to) r: s.targetConversation(r)?.sessions.length ?? 0
         };
@@ -15744,21 +16181,24 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           fan.addAll(await s.encrypt(_bytesForDevice(inner, rid, group.first),
               except: all.difference(group)));
         }
+        // 44.3 (§18.11): a session this fan opened to one of their devices
+        // forgets that it holds this one's sealing key, as on the contact's
+        // door ([_sendInner]) — and (44.5) starts afresh what it says
+        // ([_newSessionWith]), written before the ratchet is.
+        if (!debugBuildBeforeSealingKeys) {
+          var began = false;
+          for (final r in to) {
+            if ((s.targetConversation(r)?.sessions.length ?? 0) >
+                sessionsBefore[r]!) {
+              began = true;
+              if (_newSessionWith(rid, r, theirs: false)) opened = true;
+            }
+          }
+          if (began) await _writeSealsLocked(rid);
+        }
         // Persist the advanced ratchet BEFORE the envelopes exist anywhere,
         // so a redelivery is still decryptable.
         await _saveExtra(rid);
-        // 44.3 (§18.11): a session this fan opened to one of their devices
-        // forgets that it holds this one's sealing key, as on the contact's
-        // door ([_sendInner]).
-        if (!debugBuildBeforeSealingKeys) {
-          for (final r in to) {
-            if ((s.targetConversation(r)?.sessions.length ?? 0) >
-                    sessionsBefore[r]! &&
-                _forgetHeldMine(rid, r)) {
-              opened = true;
-            }
-          }
-        }
         final now = _now();
         final rows = <Map<String, Object?>>[];
         for (final f in fan) {
@@ -15789,6 +16229,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
           for (final r in seals)
             if (rows.any((row) => row['rid'] == r)) r
         ];
+        queuedTo = [for (final row in rows) row['rid'] as String];
       } catch (_) {}
     });
     if (sealedTo.isNotEmpty) {
@@ -15799,6 +16240,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       } catch (_) {
         // Kept in memory for this run; written with the next change.
       }
+    }
+    final contact = contacts[rid];
+    if (contact != null && queuedTo.isNotEmpty && _carriesOwnPqdc(inner)) {
+      await _notePqdcSent(contact, queuedTo);
     }
     if (queued) unawaited(flushOutbox());
   }
@@ -15876,9 +16321,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // this one's key ([_forgetHeldMine]) — and (4.8.1) that is written
       // down before the session is: if the session's write fails, the
       // envelope opens it again on the relay's redelivery; were the
-      // forgetting written after a session that was, nothing would.
+      // forgetting written after a session that was, nothing would. 44.5:
+      // the same for what it announced and attested before
+      // ([_newSessionWith]).
       if (dec.createdNewSession && !debugBuildBeforeSealingKeys) {
-        _forgetHeldMine(rid, fromDeviceRid);
+        _newSessionWith(rid, fromDeviceRid);
         try {
           await _writeSealsLocked(rid);
         } catch (_) {
@@ -15965,7 +16412,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       transport.ackReceived(id: m.id, from: m.from);
       if (newSession &&
           !debugBuildBeforeSealingKeys &&
-          _forgetHeldMine(rid, fromDeviceRid)) {
+          _newSessionWith(rid, fromDeviceRid)) {
         try {
           await _saveSeals(rid);
         } catch (_) {}

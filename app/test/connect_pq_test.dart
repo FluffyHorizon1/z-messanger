@@ -31,7 +31,11 @@
 //      their sessions are post-quantum both ways; the side that compared the
 //      digits holds the device link post-quantum and its contact screen says
 //      so beside the post-quantum number, and the side that went on without
-//      comparing holds the same keys, unverified, and says nothing of a link;
+//      comparing holds the same keys, unverified, with nothing vouching for
+//      the link: beside the number it says the link is classical and that
+//      only those digits would have vouched for it (44.5); and neither
+//      contact is one 44.5 requires the link of, so each keeps the pill 44.6
+//      gave it;
 //   3. the four frames at the relay are §20.9's sizes: message 1 and message
 //      2 about 1.6 KB, messages 3 and 4 about 6.3 KB, each posted once;
 //   4. a reveal whose ML-DSA key was stripped — message 3 rewritten on its
@@ -629,6 +633,7 @@ void main() {
     expect(find.text(l.ciBlurbHybrid), findsNothing,
         reason: 'the key did not arrive over the session from a scan');
     expect(find.text(l.ciPillPq), findsOneWidget);
+    expect(bob.svc.deviceLinkWith(aRid), DeviceLink.ceremony);
     // The tick, as the switch shows it ("Verified" is also the notice's
     // heading above it).
     expect(
@@ -639,7 +644,11 @@ void main() {
         isTrue);
     await leave(t);
 
-    // Alice's, of Bob: the same keys, unverified, and no link said.
+    // Alice's, of Bob: the same keys, unverified, and no link said — the
+    // line beside the number says it is classical, and that the digits she
+    // skipped were what would have vouched (44.5). Her pill is the one 44.6
+    // gave her: a contact a version-3 invite added is not one whose link
+    // 44.5 requires (ADR 0033 §4, decision 3).
     await t.pumpWidget(wrap(alice.svc, ContactInfoScreen(rid: bRid)));
     await settleUntil(
         t, () => find.text(l.ciBlurbHybridConnect).evaluate().isNotEmpty,
@@ -647,6 +656,17 @@ void main() {
     expect(find.byKey(const ValueKey('ci-device-link-connect')), findsNothing,
         reason: 'nothing vouches for the link where nobody compared');
     expect(find.text(l.ciPillPq), findsOneWidget);
+    expect(find.text(l.ciDeviceLinkClassicalInvite), findsOneWidget);
+    expect(find.text(l.ciPillDeviceLinkClassical), findsNothing);
+    // The line beside a pill that says "Post-quantum" does not say that the
+    // screen holds that word back.
+    expect(find.textContaining('does not call them post-quantum'), findsNothing,
+        reason: 'the line and the pill say one thing');
+    for (final (x, rid, who) in [(alice, bRid, 'Alice'), (bob, aRid, 'Bob')]) {
+      expect(x.svc.contacts[rid]!.linkRequired, isFalse,
+          reason: '$who: a version-3 add stays as 44.6 left it');
+      expect(await t.runAsync(() => x.vault.kvGet('dlreq_$rid')), isNull);
+    }
     expect(
         t
             .widget<SwitchListTile>(

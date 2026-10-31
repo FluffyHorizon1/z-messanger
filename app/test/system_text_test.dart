@@ -24,6 +24,7 @@ void main() {
     // which is the point, because the renderer's fallback is raw JSON.
     const kinds = [
       SystemKind.pqMismatch,
+      SystemKind.deviceLinkRefused,
       SystemKind.sessionReset,
       SystemKind.ttlOffYou,
       SystemKind.ttlSetYou,

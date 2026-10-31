@@ -142,8 +142,12 @@ void main() {
     expect(svc.verificationWith(rid), VerificationState.upgradedReverify);
 
     await show(tester);
-    // The identity is now genuinely hybrid…
-    expect(find.text('Post-quantum'), findsOneWidget);
+    // The identity is now genuinely hybrid… and since Alice was added on this
+    // build and nothing here can vouch for her device, the pill says that
+    // rather than "Post-quantum" (44.5, ADR 0033 decision 3).
+    expect(svc.contacts[rid]!.assurance, IdentityAssurance.hybrid);
+    expect(find.text('Device link classical'), findsOneWidget);
+    expect(find.text('Post-quantum'), findsNothing);
     // …and the change is named as an upgrade rather than left to be guessed
     // at. This sentence is the deliverable of 13.3.
     expect(find.text('The number changed — here is why'), findsOneWidget);
@@ -179,7 +183,9 @@ void main() {
     // let a suppressed signature hide behind a hybrid identity.
     await real(tester, upgradeToHybrid);
     await show(tester);
-    expect(find.text('Post-quantum'), findsOneWidget);
+    expect(svc.contacts[rid]!.assurance, IdentityAssurance.hybrid);
+    expect(find.text('Device link classical'), findsOneWidget,
+        reason: 'added on this build, its device not linked (decision 3)');
     expect(find.textContaining('signed classically only'), findsOneWidget,
         reason: 'the list is a separate claim from the identity');
     expect(find.textContaining('may not have arrived yet'), findsOneWidget,

@@ -1026,6 +1026,39 @@ class AppLocalizationsEs extends AppLocalizations {
       'El dispositivo desde el que lo añadiste está vinculado de forma poscuántica: sus claves llegaron cifradas en el intercambio de la invitación, y los ocho dígitos que comparaste avalan ese intercambio.';
 
   @override
+  String get ciDeviceLinkAttested =>
+      'El dispositivo desde el que lo añadiste está vinculado de forma poscuántica: su cuenta avaló sus claves con su firma poscuántica, y la firma se verificó.';
+
+  @override
+  String get ciDeviceLinkClassical =>
+      'El dispositivo desde el que lo añadiste está vinculado de forma clásica: solo una firma Ed25519 dice que pertenece a su cuenta. Siempre ha sido así para un contacto añadido de esta manera; esta línea solo lo dice.';
+
+  @override
+  String get ciDeviceLinkClassicalRequired =>
+      'El dispositivo desde el que lo añadiste está vinculado de forma clásica: su cuenta aún no lo ha avalado aquí con su firma poscuántica. Hasta que lo haga, esta pantalla no lo llama poscuántico, aunque ya hayas comparado el número. Una app anterior a la 4.7 nunca la envía.';
+
+  @override
+  String get ciDeviceLinkClassicalInvite =>
+      'El dispositivo desde el que lo añadiste está vinculado de forma clásica: sus claves llegaron en el intercambio de la invitación, y solo comparar los ocho dígitos de esa invitación las habría avalado. Para un dispositivo añadido así no llega después nada poscuántico, y comparar el número no lo avala: el número cubre vuestras dos cuentas, no este dispositivo.';
+
+  @override
+  String get ciDeviceLinkRefused =>
+      'La firma poscuántica que su cuenta envió para el dispositivo desde el que lo añadiste no se verificó, así que se rechazó: el dispositivo no está vinculado de forma poscuántica.';
+
+  @override
+  String ciDeviceLinkLabel(String line) {
+    return 'Vínculo del dispositivo: $line';
+  }
+
+  @override
+  String get ciDeviceLinkRefusedTitle => 'Vínculo del dispositivo rechazado';
+
+  @override
+  String ciDeviceLinkRefusedBody(String name) {
+    return 'Llegó una firma poscuántica que dice que el dispositivo desde el que añadiste a $name pertenece a su cuenta, y no coincide con las claves de ese dispositivo, así que se rechazó. O algo falla en su lado, o el dispositivo no es suyo. Comparar el número no lo distingue: cubre vuestras dos cuentas, no este dispositivo. Habla con esa persona por otra vía antes de confiar en este chat.';
+  }
+
+  @override
   String get ciBlurbWaiting =>
       'Su clave poscuántica ya ha llegado, pero ellos aún no tienen la tuya, así que el número de abajo sigue siendo el de Ed25519: el mismo que muestra su dispositivo. Pasará a ser el número poscuántico en ambos dispositivos a la vez, en cuanto cada uno tenga la clave del otro.';
 
@@ -1057,6 +1090,12 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get ciPillPqRefused => 'Clave rechazada';
+
+  @override
+  String get ciPillDeviceLinkClassical => 'Vínculo clásico';
+
+  @override
+  String get ciPillDeviceLinkRefused => 'Vínculo rechazado';
 
   @override
   String get ciPillPqWaiting => 'Esperándoles';
@@ -1744,6 +1783,11 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String sysPqMismatch(String name) {
     return 'La clave poscuántica de $name no coincide con el código que escaneaste. Su identidad no se ha actualizado: compara los números de seguridad antes de confiar en este chat.';
+  }
+
+  @override
+  String sysDeviceLinkRefused(String name) {
+    return 'La cuenta de $name envió una firma poscuántica para el dispositivo desde el que lo añadiste, y no coincide con las claves de ese dispositivo, así que se rechazó. El dispositivo no está vinculado de forma poscuántica.';
   }
 
   @override

@@ -67,6 +67,13 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
       return Scaffold(body: Center(child: Text(l.ciContactRemoved)));
     }
     _load(svc);
+    // 44.5 (ADR 0033 §2, decision 3): the link to the device they were added
+    // from, said beside the number; and, for a contact added on this version
+    // or later, required before the pill says "post-quantum".
+    final link = svc.deviceLinkWith(widget.rid);
+    final linkRequired = svc.deviceLinkRequired(widget.rid);
+    final linkLine = _deviceLinkLine(l, contact, link, linkRequired);
+    final pillLink = svc.deviceLinkForPill(widget.rid);
 
     return Scaffold(
       appBar: AppBar(title: Text(contact.name)),
@@ -135,6 +142,19 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
             ),
             const SizedBox(height: 12),
           ],
+          if (link == DeviceLink.refused) ...[
+            // 44.5 (ADR 0033 §2): the attestation of the device they were
+            // added from was refused — for every contact, added before this
+            // version or since, as a key that misses its commitment is.
+            _Banner(
+              key: const ValueKey('ci-device-link-refused-banner'),
+              tone: context.z.danger,
+              icon: Icons.phonelink_erase_outlined,
+              title: l.ciDeviceLinkRefusedTitle,
+              body: l.ciDeviceLinkRefusedBody(contact.name),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (svc.readerBehind(widget.rid)) ...[
             // ADR 0029: this account's list is v2-only now, and one of their
             // devices has said by what it sends that it runs an older app. A
@@ -179,7 +199,9 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                       Text(l.ciSafetyNumber,
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      _AssurancePill(display: contact.pqDisplay),
+                      _AssurancePill(
+                          display: contact.pqDisplay,
+                          requiredLink: pillLink),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -214,19 +236,28 @@ class _ContactInfoScreenState extends State<ContactInfoScreen> {
                         color: context.z.textSecondary,
                         height: 1.5),
                   ),
-                  // 44.6 (ADR 0033 §4): beside the number, the device they
-                  // were added from is linked post-quantum — said only once
-                  // the digits of the post-quantum invite that added them
-                  // were compared, which is what vouches for its keys.
-                  if (svc.deviceLinkedByCeremony(widget.rid)) ...[
+                  // Beside the number, the link to the device they were added
+                  // from (44.5, ADR 0033 §2): post-quantum when their account
+                  // attested it, or (44.6, §4) when the digits of the
+                  // post-quantum invite that added them were compared, which
+                  // vouches for its keys; refused; or, once their key is
+                  // confirmed, classical. With what it is to a screen reader.
+                  if (linkLine != null) ...[
                     const SizedBox(height: 8),
-                    Text(
-                      l.ciDeviceLinkConnect,
-                      key: const ValueKey('ci-device-link-connect'),
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: context.z.textSecondary,
-                          height: 1.5),
+                    Semantics(
+                      container: true,
+                      excludeSemantics: true,
+                      label: l.ciDeviceLinkLabel(linkLine.text),
+                      child: Text(
+                        linkLine.text,
+                        key: ValueKey(linkLine.key),
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: link == DeviceLink.refused
+                                ? context.z.danger
+                                : context.z.textSecondary,
+                            height: 1.5),
+                      ),
                     ),
                   ],
                   if (contact.assurance == IdentityAssurance.hybrid) ...[
@@ -419,6 +450,39 @@ String _pqBlurb(AppLocalizations l, Contact c) => switch (c.pqDisplay) {
       PqDisplay.mismatch => l.ciBlurbRefused,
     };
 
+/// 44.5 (ADR 0033 §2): what is said, beside the number, of the link to the
+/// device [c] was added from, and the key the line carries — or nothing,
+/// while their post-quantum key is not confirmed and nothing is known of the
+/// link: no `pqdc` is judged under a key nothing has checked (§18.2), and the
+/// blurb above already says what is missing.
+///
+/// Classical reads three ways. For a contact added by a post-quantum invite
+/// whose digits were not compared, it says the digits were what would have
+/// vouched, since no other attestation is sent to a contact added that way
+/// — a contact such an invite adds is not required to be linked, and keeps
+/// the pill 44.6 gave it. Otherwise, for a contact added before this
+/// version (decision 3: shown) it is a fact that was always so; and for one
+/// added since (required) it says the screen waits for the link.
+({String text, String key})? _deviceLinkLine(
+    AppLocalizations l, Contact c, DeviceLink link, bool required) {
+  switch (link) {
+    case DeviceLink.ceremony:
+      return (text: l.ciDeviceLinkConnect, key: 'ci-device-link-connect');
+    case DeviceLink.attested:
+      return (text: l.ciDeviceLinkAttested, key: 'ci-device-link-attested');
+    case DeviceLink.refused:
+      return (text: l.ciDeviceLinkRefused, key: 'ci-device-link-refused');
+    case DeviceLink.classical:
+      if (c.assurance != IdentityAssurance.hybrid) return null;
+      final text = c.connectV3
+          ? l.ciDeviceLinkClassicalInvite
+          : required
+              ? l.ciDeviceLinkClassicalRequired
+              : l.ciDeviceLinkClassical;
+      return (text: text, key: 'ci-device-link-classical');
+  }
+}
+
 String _switchLabel(AppLocalizations l, VerificationState s) => switch (s) {
       VerificationState.verified => l.ciSwitchVerified,
       VerificationState.upgradedReverify => l.ciSwitchComparedAgain,
@@ -434,18 +498,34 @@ String _switchLabel(AppLocalizations l, VerificationState s) => switch (s) {
 /// The "unconfirmed" pill is deliberately NOT the green one: the number below
 /// it is post-quantum, but nothing has checked that the key it was derived
 /// from is theirs. Comparing it is what makes it green.
+///
+/// 44.5 (ADR 0033 decision 3): nor is it green for a contact added on this
+/// version or later until the device they were added from is linked
+/// post-quantum too ([requiredLink], `ChatService.deviceLinkForPill`): their
+/// key can be theirs and confirmed while the device the chat runs on is
+/// someone else's, and the number — which covers the two accounts — reads
+/// the same either way, so "post-quantum" with the number compared would say
+/// more than anything has checked. A contact added before keeps the pill it
+/// had (null), and so, as built, does one whose link is then refused
+/// (`pillSaysRefusedForEarlierContacts`): the banner and the line say it.
 class _AssurancePill extends StatelessWidget {
   final PqDisplay display;
-  const _AssurancePill({required this.display});
+  final DeviceLink? requiredLink;
+  const _AssurancePill({required this.display, this.requiredLink});
 
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
+    final link = requiredLink;
     final (label, tone) = switch (display) {
       PqDisplay.classical => (l.ciPillClassical, context.z.textSecondary),
       PqDisplay.pending => (l.ciPillPqPending, context.z.warn),
       PqDisplay.waitingForThem => (l.ciPillPqWaiting, context.z.textSecondary),
       PqDisplay.unverified => (l.ciPillPqUnconfirmed, context.z.warn),
+      PqDisplay.postQuantum when link == DeviceLink.refused =>
+        (l.ciPillDeviceLinkRefused, context.z.danger),
+      PqDisplay.postQuantum when link == DeviceLink.classical =>
+        (l.ciPillDeviceLinkClassical, context.z.warn),
       PqDisplay.postQuantum => (l.ciPillPq, context.z.ok),
       PqDisplay.mismatch => (l.ciPillPqRefused, context.z.danger),
     };
@@ -537,7 +617,8 @@ class _Banner extends StatelessWidget {
   final String title;
   final String body;
   const _Banner(
-      {required this.tone,
+      {super.key,
+      required this.tone,
       required this.icon,
       required this.title,
       required this.body});

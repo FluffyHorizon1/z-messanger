@@ -1682,6 +1682,54 @@ abstract class AppLocalizations {
   /// **'The device you added them from is linked post-quantum: its keys came sealed in the invite\'s exchange, and the eight digits you compared vouch for that exchange.'**
   String get ciDeviceLinkConnect;
 
+  /// Shown under the safety number when the device the contact was added from (the one whose code was scanned or pasted, or whose request was accepted) carried its account's post-quantum attestation and it verified under the contact's confirmed ML-DSA key (ADR 0033 section 2). Load-bearing: 'linked post-quantum', the property, and 'checked out' — the signature was verified, not just received. 'The device' is the contact's device, not the reader's.
+  ///
+  /// In en, this message translates to:
+  /// **'The device you added them from is linked post-quantum: their account vouched for its keys with its post-quantum signature, and that signature checked out.'**
+  String get ciDeviceLinkAttested;
+
+  /// Shown under the safety number, for a contact added before this version, when nothing post-quantum vouches for the device they were added from (ADR 0033 section 2 and decision 3: shown, not required). It must read as a fact, not a warning: the second sentence says nothing changed for this contact, which is true — only the saying of it is new. Ed25519 is an algorithm name.
+  ///
+  /// In en, this message translates to:
+  /// **'The device you added them from is linked classically: only an Ed25519 signature says it belongs to their account. That has always been so for a contact added this way; this line only says it.'**
+  String get ciDeviceLinkClassical;
+
+  /// Shown under the safety number, for a contact added on this version or later, when nothing post-quantum vouches for the device they were added from yet (ADR 0033 decision 3: required). Three things must survive: 'yet' (it usually arrives on its own within the first messages), that the screen withholds 'post-quantum' until it does, and that comparing the number does not supply it — the number covers the two accounts, not the device. '4.7' is the first version of the app that sends the signature.
+  ///
+  /// In en, this message translates to:
+  /// **'The device you added them from is linked classically: their account has not vouched for it with its post-quantum signature here yet. Until it does, this screen does not call them post-quantum, even once you have compared the number. An app older than 4.7 never sends one.'**
+  String get ciDeviceLinkClassicalRequired;
+
+  /// Shown under the safety number, for a contact added by a post-quantum invite (CONNECT version 3) whose eight digits were not compared, in place of ciDeviceLinkClassical and ciDeviceLinkClassicalRequired (ADR 0033 section 4): the digits are what vouch for the keys an invite's exchange carries, no other post-quantum signature is sent to a contact added this way, and comparing the safety number does not supply it — the number covers the two accounts, not the device. Such a contact keeps the pill the invite gave it (decision 3 does not require its link), so this line must not say that the screen holds back "post-quantum".
+  ///
+  /// In en, this message translates to:
+  /// **'The device you added them from is linked classically: its keys came in the invite\'s exchange, and only comparing that invite\'s eight digits would have vouched for them. Nothing post-quantum is sent later for a device added this way, and comparing the number does not vouch for it: the number covers your two accounts, not this device.'**
+  String get ciDeviceLinkClassicalInvite;
+
+  /// Shown under the safety number when the attestation for the device the contact was added from failed to verify and was refused (ADR 0033 section 2). The banner above explains what to do; this line states the outcome. 'refused' is active, as in ciPqRefused.
+  ///
+  /// In en, this message translates to:
+  /// **'The post-quantum signature their account sent for the device you added them from did not check out, so it was refused: the device is not linked post-quantum.'**
+  String get ciDeviceLinkRefused;
+
+  /// What a screen reader says for the device-link line under the safety number (ADR 0033 section 2): a short heading, then {line}, which is that line's own text (one of the ciDeviceLink... strings). The link is between the contact's account and the device they were added from.
+  ///
+  /// In en, this message translates to:
+  /// **'Device link: {line}'**
+  String ciDeviceLinkLabel(String line);
+
+  /// Banner heading on a contact's screen when the post-quantum attestation for the device they were added from did not verify and was refused (ADR 0033 section 2). Serious, in the danger colour, as ciPqRefused is.
+  ///
+  /// In en, this message translates to:
+  /// **'Device link refused'**
+  String get ciDeviceLinkRefusedTitle;
+
+  /// Body of ciDeviceLinkRefusedTitle. Load-bearing: the signature was REFUSED (nothing was accepted on its strength); the two live explanations, stated without deciding which; and that comparing the safety number does NOT settle it, because the number covers the account keys and the attack it may be (a device standing in for the contact's own) leaves the number genuine. A translation that tells the reader to compare the number instead misleads them.
+  ///
+  /// In en, this message translates to:
+  /// **'A post-quantum signature arrived saying the device you added {name} from belongs to their account, and it does not match that device\'s keys, so it was refused. Either something is broken at their end, or the device is not theirs. Comparing the number cannot tell which: it covers your two accounts, not this device. Speak to them another way before you rely on this chat.'**
+  String ciDeviceLinkRefusedBody(String name);
+
   /// One side holds the other's post-quantum key and is waiting for the reverse (ADR 0021). The load-bearing part is 'the same number their device is showing': the reason for waiting is that the two screens must never disagree, which is the whole point of a safety number. 'at once' matters too — the user should not go looking for a button. Nothing is wrong here; do not translate it as a warning.
   ///
   /// In en, this message translates to:
@@ -1741,6 +1789,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Key refused'**
   String get ciPillPqRefused;
+
+  /// Pill beside the safety-number heading, in the warning colour, in place of ciPillPq for a contact added on this version whose post-quantum key is confirmed but whose device link is not post-quantum yet (ADR 0033 decision 3): the screen does not say 'Post-quantum' until the device is linked post-quantum too. Short, to fit the pill; ciDeviceLinkClassicalRequired below explains.
+  ///
+  /// In en, this message translates to:
+  /// **'Device link classical'**
+  String get ciPillDeviceLinkClassical;
+
+  /// Pill beside the safety-number heading, in the danger colour, in place of ciPillPq for a contact added on this version whose device link was refused (ADR 0033 section 2 and decision 3). Deliberately NOT the same words as the ciDeviceLinkRefusedTitle banner above it, as ciPillPqRefused is not ciPqRefused's: the banner explains, the pill labels.
+  ///
+  /// In en, this message translates to:
+  /// **'Link refused'**
+  String get ciPillDeviceLinkRefused;
 
   /// Pill (ADR 0021) for: we hold their post-quantum key, they do not hold ours, so both screens still show the classical number. 'them' is the contact. Nothing is wrong and nothing is asked of the user — keep it neutral, not a warning.
   ///
@@ -2809,6 +2869,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{name}\'s post-quantum key does not match the code you scanned. Their identity has not been upgraded — compare safety numbers before trusting this chat.'**
   String sysPqMismatch(String name);
+
+  /// System message in the chat, said once, when the post-quantum attestation for the device the contact was added from failed to verify (ADR 0033 section 2). The contact screen carries the same warning (ciDeviceLinkRefusedBody). {name} takes an English possessive here.
+  ///
+  /// In en, this message translates to:
+  /// **'{name}\'s account sent a post-quantum signature for the device you added them from, and it does not match that device\'s keys, so it was refused. The device is not linked post-quantum.'**
+  String sysDeviceLinkRefused(String name);
 
   /// System message after the user reset the encryption session.
   ///

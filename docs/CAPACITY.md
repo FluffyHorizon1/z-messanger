@@ -186,6 +186,89 @@ objectives and the exact alarm expressions are in `docs/SLO.md` and
   instance buys — more cores, redundancy across machines, a rolling redeploy
   that drops nothing — is exactly what only real infrastructure shows.
 
+## (e) The `pqid` once more (44.5)
+
+ADR 0033 §1 sends each contact that already held an account's post-quantum
+key one more `pqid`, so that it comes to hold the sending device's `pqdc`
+(`PROTOCOL.md` §18.11) and the device link can be judged (§2). It was built
+in 44.3 and held in 4.7.1 (`pqdcResendsEnabled`). 44.5 keeps the record of
+it per contact device and **holds it still**, on the numbers below — written
+down before any pacing was, from the inputs named, with nothing measured that
+is not said to be.
+
+**Inputs.**
+
+- A `pqid` carrying `pqdc` is a 16 384-bucket envelope: 21 930 characters on
+  the wire (measured, the 4.8.0 rehearsal), charged 22 186 B by the relay
+  (payload + 256), ≈ 27 151 B in a Redis store (177 + 1.23 × 21 930, the
+  table above) and ≈ 22 229 B in RAM mode (299 + 21 930).
+- The store: `render.ha.yaml`'s 256 MiB (268.4 MB), `noeviction`; 16 MiB a
+  mailbox (`MAX_QUEUE_BYTES_PER_USER`); 72 hours a queue lives (§12.4).
+- The baseline: (a)'s worked example — at a bad moment 2 000 of 10 000 people
+  offline with 50 queued texts each, 188–196 MB — leaves 72–80 MB.
+- 10 000 people with D devices each and C contacts of E devices each, a fifth
+  of them offline in the worst three days, as in (a). D, C and E are
+  assumptions in four populations — small D = E = 1.2, C = 10; typical 1.5
+  and 30; heavy 2 and 100; extreme 3 and 150 — because nothing measures
+  them: the relay keeps no contact graph, by design.
+
+**The plan as built** — each device that updates sends one `pqid` to every
+contact device owed it, two hours after it comes to hold its `pqdc`,
+jittered by up to 40 %. That is one envelope per device pair, N × D × C × E:
+
+| population | envelopes | the relay carries | in one offline mailbox | waiting in the store, everyone updating within 72 h | the same, a release taken up over a week (3/7 of it in the worst 72 h) |
+|---|---:|---:|---:|---:|---:|
+| small | 144 000 | 3.2 GB | 12, 0.27 MB (2 % of 16 MiB) | 782 MB, 2.9 × the store | 335 MB, 1.2 × |
+| typical | 675 000 | 15.0 GB | 45, 1.0 MB (6 %) | 3.7 GB, 13.7 × | 1.6 GB, 5.9 × |
+| heavy | 4 000 000 | 88.7 GB | 200, 4.4 MB (26 %) | 21.7 GB, 81 × | 9.3 GB, 35 × |
+| extreme | 13 500 000 | 299.5 GB | 450, 10.0 MB (60 %) | 73.3 GB, 273 × | 31.4 GB, 117 × |
+
+No mailbox reaches its 16 MiB, so no per-recipient cap stops it: the store's
+72–80 MB of headroom is gone a tenth to a quarter of the way into the
+smallest case, and from then on every send to someone offline — texts
+included — is refused `store_full` until mailboxes drain ((c)).
+
+**Two pacings, and what each would cost.**
+
+- *Ride only with a message this device sends that device anyway*, as
+  `pqseal` does. Nobody is sent anything they are not being written to, but a
+  person offline while their contacts write collects one `pqid` from each
+  owed device that writes, on top of the texts. At (a)'s bad moment, k such
+  devices a mailbox add 2 000 × k × 27 151 B: k = 1, +54 MB (242–250 MB of
+  268); k = 3, +163 MB (351–359 MB, over the store); k = 10, +543 MB. In the
+  days after a release nearly every device that writes is owed, so k is how
+  many contact devices write to that person while they are away: over for
+  anyone with three.
+- *A per-device budget with long jitter*, blind to whether the recipient is
+  online. For what waits to stay under 25–60 MB, the whole relay may carry
+  4 600–11 000 of them in 72 hours (64–153 an hour): 0.2–0.9 per device every
+  three days, and the re-send takes 39–94 days to reach everyone in the small
+  population, 183–440 in the typical, and years in the heavy one.
+
+**What would fit, unmeasured.** Riding only on a session whose device has
+just been heard from — so that the copy is almost always taken at once —
+leaves in the store only the share r of those copies that still end up
+waiting. In the typical population r = 0.1 % leaves 8–18 MB waiting in the
+worst 72 hours, r = 1 % 79–183 MB, r = 5 % 0.4–0.9 GB (each range from a
+release taken up over a week to one taken within 72 hours); in the heavy
+one r = 0.1 % already leaves 47–109 MB. It fits only if r is about 0.1 % or
+less, and r is not measured: nothing reports it, and a
+build that counted how long its copies waited would. **So 44.5 builds no
+pacing and leaves the re-send held**, for a design that measures r first.
+What it builds is whom the re-send is owed to — each contact device that
+has shown it reads a `pqdc` and has not had one, once — so that whatever
+paces it later sends as few as there are and none twice.
+
+What is not held: a contact added from 44.5 gets the `pqdc` in the `pqid`
+its add already sends, no envelope beyond the exchange's own, and the link
+ADR 0033's decision 3 requires rests on that. The held re-send would bring
+the link to contacts added before, whose screens keep the label they had
+(decision 3: shown, not required), to contacts whose app was older than 4.7
+when they were added, whose screens wait for it, and back to a contact's
+device that draws a new key — restored from an archive made before 44.3, or
+its seed unreadable — whose `pqdc` over that key otherwise comes only in a
+`pqid` sent for some other reason.
+
 ## Reproduce
 
 ```bash

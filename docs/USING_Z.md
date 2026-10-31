@@ -102,7 +102,12 @@ So:
 * **We have not compared yet** — you are added, and Z says plainly that the
   contact is unverified. You can compare safety numbers later from the chat.
   This is no worse than pasting codes, which is what it replaces; it is just
-  honest about it.
+  honest about it. With an invite made by the next version of Z, comparing
+  the number later is not the whole of it: the digits were what would have
+  vouched for the device you added them from, so their contact screen says
+  that device is linked classically and that only those digits would have
+  vouched for it (below, "the device you added them from"). The label beside
+  the number stays what the invite gave it.
 * **They do not match** — Z stops, and adds nobody. Do not try the same invite
   again: make a new one and send it another way.
 
@@ -362,6 +367,48 @@ of three things on the contact's screen:
 
 Z will not guess in your favour. A change it cannot account for is reported as
 unexplained even when the innocent reading is the likelier one.
+
+**One more line under the number: the device you added them from.** The
+number covers your two accounts. It does not cover the device you added them
+from — the phone whose code you scanned or pasted, or whose request you
+accepted — and someone able to forge today's signatures (a future quantum
+computer) could put a device of their own in a code while you both read the
+genuine number. So once Z holds their post-quantum key as theirs — it matched
+their code, or you compared the number — a line under the number says how
+that device is linked to their account (a screen reader reads it after the
+words "Device link"):
+
+* **"…is linked post-quantum: their account vouched for its keys with its
+  post-quantum signature, and that signature checked out"** — or, for a
+  contact a post-quantum invite added, that its keys came in the invite and
+  the eight digits you compared vouch for them.
+* **"…is linked classically"** — nothing post-quantum vouches for that
+  device yet. For a contact you added before this version, that was always
+  so: the line only says it, and the label beside the number stays
+  **"Post-quantum"**. For a contact added since, the label reads **"Device
+  link classical"** in its place — even once you have compared the number —
+  until the signature arrives, which it usually does with their first
+  messages. An app older than 4.7 never sends one, and if theirs was older
+  than 4.7 when you added them, updating does not send it either: the
+  re-send that would is not switched on yet. A phone of theirs restored from
+  a backup made before 4.7 comes back with new keys, and the line says
+  classical again until a signature for those comes; with that re-send off,
+  it comes when something else asks for it — **Reset secure session**, on
+  their contact screen, does. A contact added by a post-quantum invite is
+  linked by its eight digits instead, and keeps the label the invite gave
+  it; if you did not compare them, nothing else ever links that device, and
+  the line says so.
+* **"Device link refused"** — a signature came for that device and did not
+  match its keys, so Z refused it. A line in the chat says so once, and the
+  contact's screen keeps a warning. For a contact added since this version
+  the label reads **"Link refused"**; for one you added before, it stays
+  what it was, and the warning and the line say it.
+  Either something is broken at their end, or the device is not theirs, and
+  comparing the number cannot tell which — it covers your accounts, not that
+  device. Speak to them another way before you rely on the chat.
+
+Updating changes nothing else for a contact you already had: a tick, the
+number and the label stay as they were, and the line is added.
 
 **Two labels you may see beside the number.** Which number Z shows depends on
 what each of you has of the other, and Z will not move your number until it

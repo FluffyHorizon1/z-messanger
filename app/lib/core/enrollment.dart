@@ -165,13 +165,25 @@ class PairingCodeAnswered implements Exception {
 /// The per-contact `kv` families an enrolment carries (§10 `cstate`): the
 /// three post-quantum records (ADR 0027, 26.3), the contact's device list,
 /// the signature floor it has reached and the list's post-quantum
-/// signature. Not the versions beside them, which the new device reads off
-/// the list and the signature themselves ([_kvOf]); not what is a device's
-/// own to observe — what the contact's devices claimed, the log's standing,
-/// alarms, when the chat was last opened; and not `cdev_at_`, which is when
-/// a list arrived HERE and is written as now.
+/// signature; and (44.5) whether the host added the contact on 44.5 or
+/// later, and what it found of the device they were added from. Not the
+/// versions beside them, which the new device reads off the list and the
+/// signature themselves ([_kvOf]); not what is a device's own to observe —
+/// what the contact's devices claimed, the log's standing, alarms, when the
+/// chat was last opened; and not `cdev_at_`, which is when a list arrived
+/// HERE and is written as now.
+///
+/// 44.5 (ADR 0033 decision 3): the new device takes the first from here, and
+/// marks none itself: every contact in an enrolment was added on the host,
+/// before the link, so one the host added before 44.5 stays one whose link
+/// is said and asks nothing, and one it added since asks for the link here
+/// too. The second is the host's judgement, taken as its tick is: on the
+/// channel both screens confirmed, from the device the new one takes its
+/// whole account from. Neither travels in a `cadd`, which any linked device
+/// can send: a contact mirrored here is added by this device itself.
 const List<String> enrollmentKvFamilies = [
   'pqcs_', 'vpqc_', 'pqcc_', 'cdev_', 'cdev_sigfloor_', 'cdev_pq_',
+  'dlreq_', 'dlink_',
 ];
 
 /// The vault key under which a linked device keeps its account's root
@@ -397,7 +409,7 @@ Future<Map<String, String>> _kvOf(
         : null;
   }
 
-  for (final f in const ['pqcs_', 'vpqc_', 'pqcc_']) {
+  for (final f in const ['pqcs_', 'vpqc_', 'pqcc_', 'dlreq_', 'dlink_']) {
     final v = await ok(f);
     if (v != null) kv[f] = v;
   }

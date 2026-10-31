@@ -71,7 +71,7 @@
 //  11. the root's own `pqdc` verifies under the account's ML-DSA key; the
 //      linked device obtains its own from its root over self-sync
 //      (`dir:"pqdc"`), and its `pqid` carries it to a contact (the re-send
-//      on, as 44.5 will have it); and while the
+//      on, as the seam has it); and while the
 //      root's list does not name the device — the moment between
 //      `removeMyDevice` writing the list and the session's rebuild — its ask
 //      gets nothing;
@@ -1122,7 +1122,8 @@ void main() {
   test("11. the root signs its own pqdc, a linked device gets its own over "
       'dir:"pqdc", and one its list does not name gets none', () async {
     // The laptop's pqid carrying its pqdc to Carol is the re-send this build
-    // holds until 44.5; it is turned on here, as 44.5 will have it.
+    // holds (`pqdcResendsEnabled`); it is turned on here, through the seam,
+    // and goes to Carol's device once that has shown it reads one (44.5).
     pqdcResends = true;
     final lP = Probe(), pP = Probe();
     var (phone, laptop, carol) =

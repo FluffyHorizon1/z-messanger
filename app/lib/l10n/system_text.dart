@@ -35,6 +35,8 @@ String systemText(AppLocalizations l, String body) {
   int n(String key) => (m[key] as num?)?.toInt() ?? 0;
   return switch (m['k'] as String) {
     SystemKind.pqMismatch => l.sysPqMismatch(s('name', l.sysSomeone)),
+    SystemKind.deviceLinkRefused =>
+      l.sysDeviceLinkRefused(s('name', l.sysSomeone)),
     SystemKind.sessionReset => l.sysSessionReset,
     SystemKind.ttlOffYou => l.sysTtlOffYou,
     SystemKind.ttlSetYou => l.sysTtlSetYou(ttlText(l, n('sec'))),

@@ -1017,6 +1017,39 @@ class AppLocalizationsEn extends AppLocalizations {
       'The device you added them from is linked post-quantum: its keys came sealed in the invite\'s exchange, and the eight digits you compared vouch for that exchange.';
 
   @override
+  String get ciDeviceLinkAttested =>
+      'The device you added them from is linked post-quantum: their account vouched for its keys with its post-quantum signature, and that signature checked out.';
+
+  @override
+  String get ciDeviceLinkClassical =>
+      'The device you added them from is linked classically: only an Ed25519 signature says it belongs to their account. That has always been so for a contact added this way; this line only says it.';
+
+  @override
+  String get ciDeviceLinkClassicalRequired =>
+      'The device you added them from is linked classically: their account has not vouched for it with its post-quantum signature here yet. Until it does, this screen does not call them post-quantum, even once you have compared the number. An app older than 4.7 never sends one.';
+
+  @override
+  String get ciDeviceLinkClassicalInvite =>
+      'The device you added them from is linked classically: its keys came in the invite\'s exchange, and only comparing that invite\'s eight digits would have vouched for them. Nothing post-quantum is sent later for a device added this way, and comparing the number does not vouch for it: the number covers your two accounts, not this device.';
+
+  @override
+  String get ciDeviceLinkRefused =>
+      'The post-quantum signature their account sent for the device you added them from did not check out, so it was refused: the device is not linked post-quantum.';
+
+  @override
+  String ciDeviceLinkLabel(String line) {
+    return 'Device link: $line';
+  }
+
+  @override
+  String get ciDeviceLinkRefusedTitle => 'Device link refused';
+
+  @override
+  String ciDeviceLinkRefusedBody(String name) {
+    return 'A post-quantum signature arrived saying the device you added $name from belongs to their account, and it does not match that device\'s keys, so it was refused. Either something is broken at their end, or the device is not theirs. Comparing the number cannot tell which: it covers your two accounts, not this device. Speak to them another way before you rely on this chat.';
+  }
+
+  @override
   String get ciBlurbWaiting =>
       'Their post-quantum key has arrived, but they do not have yours yet, so the number below is still the Ed25519 one — the same number their device is showing. It becomes the post-quantum number on both devices at once, as soon as each of you holds the other\'s key.';
 
@@ -1048,6 +1081,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get ciPillPqRefused => 'Key refused';
+
+  @override
+  String get ciPillDeviceLinkClassical => 'Device link classical';
+
+  @override
+  String get ciPillDeviceLinkRefused => 'Link refused';
 
   @override
   String get ciPillPqWaiting => 'Waiting for them';
@@ -1724,6 +1763,11 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String sysPqMismatch(String name) {
     return '$name\'s post-quantum key does not match the code you scanned. Their identity has not been upgraded — compare safety numbers before trusting this chat.';
+  }
+
+  @override
+  String sysDeviceLinkRefused(String name) {
+    return '$name\'s account sent a post-quantum signature for the device you added them from, and it does not match that device\'s keys, so it was refused. The device is not linked post-quantum.';
   }
 
   @override

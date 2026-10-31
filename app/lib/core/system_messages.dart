@@ -13,6 +13,9 @@ import 'dart:convert';
 /// this held the English sentence; they are shown as they are.
 abstract final class SystemKind {
   static const pqMismatch = 'pq_mismatch'; // name
+  // name — 44.5 (ADR 0033 §2): the post-quantum attestation of the device
+  // they were added from did not verify, and was refused. Said once.
+  static const deviceLinkRefused = 'dlink_refused';
   static const sessionReset = 'session_reset';
   static const ttlOffYou = 'ttl_off_you';
   static const ttlSetYou = 'ttl_set_you'; // sec

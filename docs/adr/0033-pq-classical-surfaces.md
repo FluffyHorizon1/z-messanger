@@ -34,7 +34,22 @@ every device it has a session with — never beside `pqct`, and to none that
 says it holds it already, as a device a CONNECT ceremony of version 3 gave it
 to says from its first message (44.6) — keeps the keys announced to it,
 stamps `pqs:1` back, and carries its `pqdc` in its `pqid`.
-Nothing uses any of it before 44.5 and 44.7. 44.4 is built: the app links a
+44.5 is built: for the device a contact was added from, the app checks its
+`pqdc` under their established ML-DSA key over the sealing key it announced
+— the device link post-quantum when it verifies; refused, recorded and said
+once when it does not; classical when none has come — and says which beside
+the number; a contact added from 44.5 is not called post-quantum until that
+link is (decision 3) — except one a CONNECT invite of version 3 added, which
+stays as 44.6 left it, its compared digits being its link — and one added
+before keeps what it had and gains the line, a vault from 4.8.1 included; a
+`pqdc` that does not verify is evidence against the device only when the key
+came since a ratchet session with that device last began and the `pqdc`
+since that device last opened one, so a restore or an unreadable seed there
+refuses nothing; what was found, and that a contact was added from 44.5, are
+in the backup and the enrolment. The `pqid` once more is owed per contact
+device and still held: on the load numbers (`CAPACITY.md` (e)) the plan as
+written would strain the relay, so no pacing is built. Nothing seals to a
+sealing key before 44.7. 44.4 is built: the app links a
 device by pairing v3 on both sides and by nothing older — an existing device
 recognises an older new device by its first frame, says which version it
 heard and answers nothing, and a new device that hears nothing says the
@@ -115,8 +130,11 @@ pqdc    = ML-DSA-65.Sign(account_ml_sk,
   3 309 bytes inside the 16 384-bucket envelope `pqid` already is (≈7.1 KB of
   the ≈9 KB of inner message that bucket holds) — **no new envelope, no new
   size**. Contacts that already hold its key get `pqid` once more, spread over
-  hours as `dlpq` is (§18.9) — from 44.5; held in 4.7.1
-  (`pqdcResendsEnabled`).
+  hours as `dlpq` is (§18.9) — planned from 44.5; held in 4.7.1
+  (`pqdcResendsEnabled`), and still held in 44.5, which owns the record per
+  contact device: as written, the re-send would leave several times the
+  reference store waiting for offline contacts in the worst 72 hours
+  (`CAPACITY.md` (e)), so its pacing waits on a design measured to fit.
 * Per device, never in a list or a code: it says one device belongs, not what
   the set is, so ADR 0004's subset and bucket objections — why ADR 0031
   retired the per-certificate form — do not apply. A list that omits the
@@ -355,8 +373,9 @@ records when this phase's client half lands.
 * **Docs.** PROTOCOL §1, §6.2, §8.1–8.2, §9, §10.2, §12.1, §13, §15,
   §18.2–18.3, §18.11, §20.9, §21.3; THREAT_MODEL's edges paragraph;
   AUDIT_SCOPE, a claim for each part as it lands (C39, the relay's
-  introduction keys, with 44.10); `CAPACITY.md`; WHAT_Z_CANNOT_DO;
-  WHITEPAPER; DATA_MAP's wire shapes; the ADR index.
+  introduction keys, with 44.10; C40, the device link, with 44.5);
+  `CAPACITY.md`; WHAT_Z_CANNOT_DO; WHITEPAPER; DATA_MAP's wire shapes; the
+  ADR index.
 
 ## Decisions (Finnian's, 2026‑10‑17)
 
@@ -391,9 +410,9 @@ failing test on the base where it can be expressed, and a mutation check.
 |---|---|---|---|
 | 44.1 | Protocol cores and vectors: sealing key, `zs2.` seal/open, `pqdc` sign/verify, pairing v3, CONNECT v3 | — | **built**; nothing emits |
 | 44.2 | The relay treats `zs2.` as sealed | — | **built**; deploy before 44.7 |
-| 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, uses none; the `pqid` once more to contacts that already held the key built and held until 44.5 (4.7.1) |
+| 44.3 | Every device gets a sealing key and attestation: `pqseal`/`pqs`, `pqid.pqdc`, `dir:"pqdc"`, archive | 44.1 | **built**; sends keys, which 44.5 uses for the device link alone; the `pqid` once more to contacts that already held the key built and held (4.7.1), and still held in 44.5 |
 | 44.4 | Pairing v3 | 44.1, 44.3 | **built**; the app links by v3 on both sides, by nothing older and with no fallback, says which device to update when the other is older, carries the new device's `pqdc` (refused, not the link, when it does not verify), sends nothing of the account until both people have confirmed the digits, lists the new device only once it reports the enrolment installed, and acknowledges every frame, so a finished ceremony leaves nothing on the relay |
-| 44.5 | The scanned device's link | 44.3 | planned; bites once peers run 44.3; turns on 44.3's `pqid` once more, paced and owed per contact device (4.7.1 records it per contact, which a device from before 44.3 spends), so contacts from before 44.3 hold each device's `pqdc` |
+| 44.5 | The scanned device's link | 44.3 | **built**: the link to the device a contact was added from judged under their established key — post-quantum, refused and said once, or classical, said beside the number; required for "post-quantum" for contacts added from this release, a CONNECT v3 add excepted, and shown for the rest (decision 3), the record of which, and of what was found, in the backup and the enrolment; a `pqdc` and a key set against each other only when the key came since a ratchet session with that device last began (4.8.1's moment for forgetting its `pqs:1`) and the `pqdc` since that device last opened one; a vault from 4.8.1 opens with every contact as it was; the `pqid` once more owed per contact device (4.7.1 recorded it per contact, which a device from before 44.3 spent) and **still held**: the load numbers (`CAPACITY.md` (e)) say the plan as written would strain the relay, and no pacing is built (`scanned_device_pq_test.dart`) |
 | 44.6 | CONNECT v3: readers first; minting a release later (decision 2), by making invites with version 3's run and the device's sealing key — not by moving `connectInviteVersion`, which the version‑2 run refuses | 44.1, 44.3 | **built** (readers): the app opens version 3 and runs it as the acceptor, holding the reveal's keys — no `pqid`, no `pqseal`, the device link post‑quantum on a confirmed comparison (`connect_pq_test.dart`); it mints version 2, and version 3 only behind a test seam; the release after mints |
 | 44.7 | `zs2.` switched on | 44.2 deployed, 44.3, constant-time ML-KEM upstream (decision 4) | planned; goes last |
 | 44.8 | `kintro`: as addendum A changes it, §21.3's relay-held key signed by `intro`; the record does not change | 44.9–44.12 | planned; the handles hardening it was to land with shipped in 4.3.0 without it |

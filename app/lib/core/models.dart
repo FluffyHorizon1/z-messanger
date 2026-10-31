@@ -142,6 +142,20 @@ class Contact {
   /// candidate does.
   bool pqFromConnect;
 
+  /// 44.5 (ADR 0033 decision 3): this vault added the contact while running
+  /// 44.5 or later — a scan, a paste, an accepted request, an invite, a
+  /// handle, a group, or a contact another of this account's devices added —
+  /// so the device they were added from must be linked post-quantum before
+  /// the screen says "post-quantum" of them. False for every contact added
+  /// before, which keeps what it had and is only told of the link. Kept in
+  /// `kv` as `dlreq_<rid>`; in a backup and in an enrolment, never in `cadd`.
+  bool linkRequired;
+
+  /// 44.5 (ADR 0033 §2, PROTOCOL §18.11): what this device found of the
+  /// device they were added from, or null for nothing yet. Kept in `kv` as
+  /// `dlink_<rid>`; in a backup and in an enrolment, never in `cadd`.
+  DeviceLinkVerdict? deviceLinkVerdict;
+
   Contact({
     required this.rid,
     required this.bundle,
@@ -165,6 +179,8 @@ class Contact {
     this.pqcHint,
     this.connectV3 = false,
     this.pqFromConnect = false,
+    this.linkRequired = false,
+    this.deviceLinkVerdict,
   });
 
   /// What is actually known about this identity's authenticity.
@@ -223,6 +239,81 @@ class Contact {
     if (pqCommit != null) return PqDisplay.pending;
     return PqDisplay.classical;
   }
+}
+
+/// 44.5 (ADR 0033 §2): what a device found of the link to the device a
+/// contact was added from.
+enum DeviceLinkFinding {
+  /// Their account's `pqdc` for that device verified under their ML-DSA key,
+  /// established, over its account key, its two keys and the sealing key it
+  /// announced (§18.11).
+  attested,
+
+  /// The sealing key came in the reveal of a CONNECT ceremony of version 3
+  /// whose eight digits this side compared (44.6, §20.9).
+  ceremony,
+
+  /// A `pqdc` and a sealing key that device sent in the state it is in —
+  /// each since a ratchet session told of no change (§18.11) — did not verify
+  /// together: refused, recorded and said once, as a key that misses its
+  /// commitment is (§18.3).
+  refused,
+}
+
+/// [DeviceLinkFinding] for the sealing key whose SHA-256 is [sk] (§18.11's
+/// `sk`): an attestation or a ceremony vouches for that key, and a different
+/// key from the device is judged afresh. A refusal stands whatever comes.
+class DeviceLinkVerdict {
+  final DeviceLinkFinding finding;
+  final Uint8List sk;
+  const DeviceLinkVerdict(this.finding, this.sk);
+
+  static const Map<DeviceLinkFinding, String> _codes = {
+    DeviceLinkFinding.attested: 'pq',
+    DeviceLinkFinding.ceremony: 'c3',
+    DeviceLinkFinding.refused: 'no',
+  };
+
+  /// `{"s":"pq"|"c3"|"no","sk":b64(32 bytes)}`, the `dlink_<rid>` row.
+  String encode() => jsonEncode({'s': _codes[finding], 'sk': b64(sk)});
+
+  /// A row [encode] wrote, or null for anything else — an archive and an
+  /// enrolment are records from elsewhere, read at start-up.
+  static DeviceLinkVerdict? decode(String? text) {
+    if (text == null) return null;
+    try {
+      final j = jsonDecode(text);
+      if (j is! Map) return null;
+      final s = j['s'], sk = j['sk'];
+      if (s is! String || sk is! String) return null;
+      final finding = [
+        for (final e in _codes.entries)
+          if (e.value == s) e.key
+      ];
+      final hash = unb64(sk);
+      if (finding.length != 1 || hash.length != 32) return null;
+      return DeviceLinkVerdict(finding.single, hash);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// 44.5: what the contact screen says of the device a contact was added
+/// from, beside the number.
+enum DeviceLink {
+  /// Nothing post-quantum vouches for it: no attestation has arrived, it has
+  /// not been checked yet, or their ML-DSA key is not established.
+  classical,
+
+  /// Linked post-quantum by its account's `pqdc` (§18.11).
+  attested,
+
+  /// Linked post-quantum by a compared CONNECT ceremony of version 3.
+  ceremony,
+
+  /// Its attestation was refused.
+  refused,
 }
 
 /// How the contact screen presents the post-quantum half (ADR 0021). Distinct
