@@ -2171,9 +2171,35 @@ class AppLocalizationsEs extends AppLocalizations {
   String get connectCheck => 'Comprobar ahora';
 
   @override
-  String connectLastFailure(String reason) {
-    return 'No se pudo contactar con el relay; se seguirá intentando. ($reason)';
-  }
+  String get connectFailedRelay =>
+      'No se pudo contactar con el relay; se seguirá intentando.';
+
+  @override
+  String get connectFailedVault =>
+      'Este dispositivo no pudo guardar el progreso de esta invitación; se seguirá intentando. Si sigue pasando, comprueba que el dispositivo tiene espacio libre.';
+
+  @override
+  String get connectFailedOther =>
+      'Algo falló en este dispositivo; se seguirá intentando.';
+
+  @override
+  String get connectNotAnInvite =>
+      'Eso no es una invitación de Z. Pega el enlace o el código completo que te enviaron.';
+
+  @override
+  String get connectAlreadyOpen =>
+      'Esa invitación ya está abierta: está en la lista de abajo.';
+
+  @override
+  String get connectNoSealingKey =>
+      'Este dispositivo no pudo cargar una de sus claves, así que no puede abrir esta invitación. Reinicia Z y vuelve a intentarlo.';
+
+  @override
+  String get connectSaveFailed =>
+      'Este dispositivo aún no pudo guardar la invitación. Se conserva y se guardará en cuanto se pueda; si sigue pasando, comprueba que el dispositivo tiene espacio libre.';
+
+  @override
+  String get connectActionFailed => 'No funcionó. Vuelve a intentarlo.';
 
   @override
   String get connectNoInvites => 'No hay invitaciones pendientes.';

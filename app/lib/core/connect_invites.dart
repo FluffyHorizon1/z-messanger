@@ -136,6 +136,58 @@ final class _HybridRun implements InviteRun {
   }
 }
 
+/// Why the last round could not carry an invite forward, as a kind: the
+/// card says each in the reader's words (`connect_text.dart`), and none of
+/// them carries an exception's text.
+enum ConnectFailure {
+  /// The relay could not be reached, refused a step, or did not answer in
+  /// time: a socket, WebSocket, TLS or HTTP error, the relay client's own,
+  /// or a timeout.
+  relay,
+
+  /// This device's vault refused a write of the invites
+  /// ([ConnectWriteRefused]).
+  vault,
+
+  /// Anything else: a fault in this build rather than in the network.
+  fault,
+}
+
+/// A write of the invites that this device's vault refused — a full disk, a
+/// locked or closed database. What refused it stays with it, for logs; the
+/// screens word it in the reader's language.
+class ConnectWriteRefused implements Exception {
+  const ConnectWriteRefused(this.cause);
+
+  /// What the vault threw.
+  final Object cause;
+
+  @override
+  String toString() => 'the vault refused a write of the invites: $cause';
+}
+
+/// What [ConnectInvites.open] was handed is not an invite this build reads,
+/// of any version. A [FormatException] still, its English the message, for
+/// logs; the screens word it in the reader's language.
+class ConnectNotAnInvite extends FormatException {
+  const ConnectNotAnInvite() : super('that is not a Z invite');
+}
+
+/// The invite handed to [ConnectInvites.open] is one this device already
+/// has open. A [FormatException] still, as [ConnectNotAnInvite] is.
+class ConnectInviteAlreadyOpen extends FormatException {
+  const ConnectInviteAlreadyOpen() : super('that invite is already open');
+}
+
+/// An invite of version 3 needs this device's sealing key, and this run of
+/// the app holds none: the vault could not give one at start. A
+/// [FormatException] still, as [ConnectNotAnInvite] is.
+class ConnectNoSealingKey extends FormatException {
+  const ConnectNoSealingKey()
+      : super('this device has no sealing key yet, so it cannot run a '
+            'post-quantum invite');
+}
+
 /// One invite in flight, and everything needed to pick it up later (17.3).
 ///
 /// An invite is not a live screen. It is a thing you made at lunchtime, sent
@@ -178,12 +230,15 @@ class PendingInvite {
   /// is never one to write down.
   bool answered = false;
 
-  /// Why the last [ConnectInvites.pump] could not carry this invite forward —
-  /// an unreachable relay, a refused send — or null when it could. In memory
-  /// only, and shown on the card: until 2026-09-17 every failure was
-  /// swallowed, so a relay that refused every step read "Waiting for them"
-  /// for as long as the person cared to look.
-  String? lastFailure;
+  /// Why the last [ConnectInvites.pump] could not carry this invite forward
+  /// — the relay, a write the vault refused, or anything else — or null
+  /// when it could. In memory only, and said on the card in the reader's
+  /// words: until 2026-09-17 every failure was swallowed, so a relay that
+  /// refused every step read "Waiting for them" for as long as the person
+  /// cared to look; and until 2026-10-31 this held the failure's own text,
+  /// which the card showed, in English, after "Could not reach the relay",
+  /// whatever had failed — a write the vault refused among them.
+  ConnectFailure? lastFailure;
 
   /// The record this answer added, by its creation time — written down
   /// before anything else the answer does, so an answer cut short after the
@@ -455,11 +510,15 @@ class ConnectInvites extends ChangeNotifier {
 
   /// Writes the invites to the vault, and once the vault has taken them
   /// notes what it now holds of each run ([PendingInvite._inVault]). A write
-  /// that throws notes nothing.
+  /// the vault refuses notes nothing, and throws [ConnectWriteRefused].
   Future<void> _save() async {
     final writing = [for (final i in _invites) (i, i.toJson())];
-    await _svc.vault.kvPut(
-        _kvKey, jsonEncode([..._unread, for (final (_, j) in writing) j]));
+    final value = jsonEncode([..._unread, for (final (_, j) in writing) j]);
+    try {
+      await _svc.vault.kvPut(_kvKey, value);
+    } catch (e) {
+      throw ConnectWriteRefused(e);
+    }
     for (final (i, j) in writing) {
       i._inVault = jsonEncode(j['run']);
     }
@@ -522,16 +581,12 @@ class ConnectInvites extends ChangeNotifier {
   /// code and name, this device's sealing key, which its reveal always
   /// carries, and the account's ML-DSA key, which it carries exactly when
   /// that code commits to one. The run holds both keys to those rules
-  /// before it starts. A [FormatException] for the screen when this run of
-  /// the app holds no sealing key (the vault could not give one at start).
+  /// before it starts. [ConnectNoSealingKey] when this run of the app holds
+  /// no sealing key (the vault could not give one at start).
   Future<(ConnectIdentity, Uint8List, Uint8List?)> _ownV3Keys() async {
     final me = await _me();
     final sealKey = _svc.sealingKey;
-    if (sealKey == null) {
-      throw const FormatException(
-          'this device has no sealing key yet, so it cannot run a '
-          'post-quantum invite');
-    }
+    if (sealKey == null) throw const ConnectNoSealingKey();
     final commits = me.pqCommit.any((b) => b != 0);
     return (me, sealKey, commits ? await _svc.pqAccountPublic() : null);
   }
@@ -555,16 +610,22 @@ class ConnectInvites extends ChangeNotifier {
   /// mailboxes, the ML-KEM exchange inside its four messages, and this
   /// side's reveal carrying this device's sealing key and the account's
   /// ML-DSA key.
+  ///
+  /// Refused with [ConnectNotAnInvite] or [ConnectInviteAlreadyOpen], and a
+  /// version-3 invite with [ConnectNoSealingKey] on a run of the app that
+  /// holds no sealing key. [ConnectWriteRefused] when the vault refuses the
+  /// write: the invite is kept in memory all the same, and goes with the
+  /// next write of the invites.
   Future<PendingInvite> open(String linkOrCode,
       {int? nowMs, bool consented = true}) async {
     await load();
     final code = parseInvite(linkOrCode);
     if (code == null || (debugBeforeBinding && code.bound)) {
-      throw const FormatException('that is not a Z invite');
+      throw const ConnectNotAnInvite();
     }
     for (final existing in _invites) {
       if (constantTimeEquals(existing.run.code.secret, code.secret)) {
-        throw const FormatException('that invite is already open');
+        throw const ConnectInviteAlreadyOpen();
       }
     }
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
@@ -748,22 +809,29 @@ class ConnectInvites extends ChangeNotifier {
             nowMs: nowMs,
             refusePeer: _blockedHere,
             persist: persist);
-      } on RelayException catch (e) {
+      } on ConnectWriteRefused {
+        // A write the round asked for ([persist]) and the vault refused,
+        // which ended the round: this device's, and said as this device's.
+        // Until 2026-10-31 it reached the card as the vault's exception,
+        // after "Could not reach the relay".
+        await _threw(invite, ConnectFailure.vault);
+        continue;
+      } on RelayException {
         // The relay refused something, or nothing answered: not a fact about
-        // the invite. Say why, and try again next time.
-        await _threw(invite, e.message);
+        // the invite. Say so, and try again next time.
+        await _threw(invite, ConnectFailure.relay);
         continue;
-      } on IOException catch (e) {
-        await _threw(invite, '$e');
+      } on IOException {
+        await _threw(invite, ConnectFailure.relay);
         continue;
-      } on TimeoutException catch (e) {
-        await _threw(invite, e.message ?? 'timed out');
+      } on TimeoutException {
+        await _threw(invite, ConnectFailure.relay);
         continue;
-      } catch (e) {
+      } catch (_) {
         // Anything else is a fault in this build rather than in the network,
         // and the honest thing to do with one on a timer is to put it on the
         // card rather than to crash or to hide it behind "waiting".
-        await _threw(invite, '$e');
+        await _threw(invite, ConnectFailure.fault);
         continue;
       }
       var changed = false;
@@ -781,21 +849,23 @@ class ConnectInvites extends ChangeNotifier {
   }
 
   /// What a round did, written to the vault and shown. A write the vault
-  /// refuses is said on the card, when the card has no failure of the round
-  /// to say already, and left for a later write to make — the invite's next
-  /// round finds the run unlike what the vault holds
-  /// ([PendingInvite._inVault]) and writes it again; a run its round
-  /// finished has no next round, and goes with the next write of any invite,
-  /// since [_save] writes them all — and the pass goes on to the next
-  /// invite's round. Until 2026-10-30 it ended the pass there, before the
-  /// rounds of the invites after it and before [_pump] armed the polls, so
-  /// the first pass after [resume] that met one left the invites still for
-  /// as long as the app stayed in front.
+  /// refuses is said on the card, as this device's ([ConnectFailure.vault]),
+  /// when the card has no failure of the round to say already, and left for
+  /// a later write to make — the invite's next round finds the run unlike
+  /// what the vault holds ([PendingInvite._inVault]) and writes it again; a
+  /// run its round finished has no next round, and goes with the next write
+  /// of any invite, since [_save] writes them all — and the pass goes on to
+  /// the next invite's round. Until 2026-10-30 it ended the pass there,
+  /// before the rounds of the invites after it and before [_pump] armed the
+  /// polls, so the first pass after [resume] that met one left the invites
+  /// still for as long as the app stayed in front.
   Future<void> _written(PendingInvite invite) async {
     try {
       await _save();
-    } catch (e) {
-      invite.lastFailure ??= '$e';
+    } on ConnectWriteRefused {
+      invite.lastFailure ??= ConnectFailure.vault;
+    } catch (_) {
+      invite.lastFailure ??= ConnectFailure.fault;
     }
     notifyListeners();
   }
@@ -803,7 +873,7 @@ class ConnectInvites extends ChangeNotifier {
   /// A round that threw: why, on the card, and the invite written down when
   /// that is new or the vault does not hold the run as it now is — the round
   /// moved it before it threw, or a write of it was refused.
-  Future<void> _threw(PendingInvite invite, String why) async {
+  Future<void> _threw(PendingInvite invite, ConnectFailure why) async {
     final told = _fail(invite, why);
     if (told || jsonEncode(invite.run.toJson()) != invite._inVault) {
       await _written(invite);
@@ -812,7 +882,7 @@ class ConnectInvites extends ChangeNotifier {
 
   /// Records why an invite could not be carried forward. True if the card
   /// has something new to say.
-  bool _fail(PendingInvite invite, String why) {
+  bool _fail(PendingInvite invite, ConnectFailure why) {
     if (invite.lastFailure == why) return false;
     invite.lastFailure = why;
     return true;

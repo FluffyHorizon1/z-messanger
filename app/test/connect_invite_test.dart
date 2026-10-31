@@ -89,7 +89,16 @@
 //     refused write after a round that threw left the pass there, before
 //     the next invite's round and before the polls were armed: the first
 //     pass after resume that met one stopped the polls for as long as the
-//     app stayed in front.
+//     app stayed in front;
+// 13. no CONNECT screen shows an exception's text, in either language: a
+//     write the vault refuses — the open's, and a round's on the card — a
+//     relay that cannot be reached, a code that is not an invite, an
+//     invite already open and an answer to the digits that fails in a way
+//     nobody named each say so in a line of their own, in English and in
+//     Spanish. Until 2026-10-31 the card said "Could not reach the relay"
+//     and then the failure's own text, a write the vault refused among
+//     them, and the tab and the comparison showed an action's exception as
+//     it came.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -318,12 +327,13 @@ void main() {
 
   /// The tab, wired to a person, with no relay to reach. Everything below
   /// that is about what is on screen mounts through this.
-  Widget tab(Person p, Widget child) => MultiProvider(
+  Widget tab(Person p, Widget child, {Locale? locale}) => MultiProvider(
         providers: [
           ChangeNotifierProvider<ChatService>.value(value: p.svc),
           ChangeNotifierProvider<ConnectInvites>.value(value: p.invites),
         ],
         child: MaterialApp(
+          locale: locale,
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
           theme: ZTheme.dark(),
@@ -1024,8 +1034,7 @@ void main() {
       await refuseWrites(refusing);
       await refusing.invites.pump();
       await allowWrites(refusing);
-      expect(refusing.invites.invites.single.lastFailure,
-          contains('database is locked'),
+      expect(refusing.invites.invites.single.lastFailure, ConnectFailure.vault,
           reason: 'the write before the post was refused, and ended the round');
       expect(linkSends.where((f) => f['id'] == at), isEmpty,
           reason: 'before the post');
@@ -1157,9 +1166,9 @@ void main() {
       ended.add('rounds: $rounds; the pass '
           '${thrown == null ? 'over' : 'threw'}; cards: ${[
         for (final i in bob.invites.invites)
-          i.lastFailure?.contains('database is locked') == true
+          i.lastFailure == ConnectFailure.vault
               ? 'refused'
-              : '${i.lastFailure}'
+              : '${i.lastFailure?.name}'
       ]}');
     }
 
@@ -1217,6 +1226,135 @@ void main() {
     expect(ended, [
       "rounds: [Alice's, Carol's]; the pass over; cards: [refused, refused]",
       'both at the digits; uncaught errors from the polls: 0',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
+  testWidgets(
+      '13. no CONNECT screen shows an exception\'s text, in either language',
+      (t) async {
+    await t.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    final root = Directory.current.path;
+    // An exception's own words: its type, or what dart:io, SQLite and the
+    // service put in one — what these screens showed until 2026-10-31.
+    final leak = RegExp('Exception|Bad state|errno|sqlite_error|OS Error|'
+        'that is not a Z invite|that invite is already open|'
+        'stopped after the add');
+    final seen = <String>[];
+    const failures = [
+      ('a write the vault refused, opening', 'connectSaveFailed'),
+      ('a write the vault refused, in a round', 'connectFailedVault'),
+      ('not an invite', 'connectNotAnInvite'),
+      ('an invite already open', 'connectAlreadyOpen'),
+      ('a relay that cannot be reached', 'connectFailedRelay'),
+      ('an answer that failed otherwise', 'connectActionFailed'),
+    ];
+
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final l = lookupAppLocalizations(locale);
+      // The line each failure is said in, from the ARB the screens read.
+      final arb = jsonDecode(File('$root/lib/l10n/app_$lang.arb')
+          .readAsStringSync()) as Map<String, Object?>;
+      // What the person reads: every Text and SelectableText on the screen.
+      List<String> texts() => [
+            for (final w in t.widgetList<Text>(find.byType(Text)))
+              w.data ?? w.textSpan?.toPlainText() ?? '',
+            for (final w
+                in t.widgetList<SelectableText>(find.byType(SelectableText)))
+              w.data ?? w.textSpan?.toPlainText() ?? '',
+          ];
+      void said(int n) {
+        final (what, key) = failures[n];
+        final own = arb[key] as String?;
+        final shown = own != null && find.text(own).evaluate().isNotEmpty;
+        final leaked = texts().where(leak.hasMatch).toList();
+        seen.add('$lang, $what: ${shown ? 'its own line' : 'not its line'}; '
+            'exception text: ${leaked.isEmpty ? 'none' : leaked.first}');
+      }
+
+      // A press, and the screen let run until its button takes presses
+      // again: the action behind it over.
+      bool idle(String label) => (t.widget(find
+              .ancestor(
+                  of: find.text(label),
+                  matching:
+                      find.byWidgetPredicate((w) => w is ButtonStyleButton))
+              .first) as ButtonStyleButton)
+          .enabled;
+      Future<void> press(String label) async {
+        await t.tap(find.text(label));
+        await t.pump();
+        await settleUntil(t, () => idle(label));
+      }
+
+      late Person alice, bob, dee;
+      late String link;
+      await t.runAsync(() async {
+        alice = await person('Alice$lang');
+        bob = await person('Bob$lang');
+        dee = await person('Dee$lang', url: 'ws://127.0.0.1:1');
+        final invite = await alice.invites.create();
+        await alice.invites.pump(); // message 1 waits for Bob
+        link = invite.link;
+      });
+
+      // Bob's vault refuses every write of the invites: his open's, and
+      // then his round's, which draws his message 2.
+      await t.pumpWidget(tab(bob, const ConnectTab(), locale: locale));
+      await t.pump();
+      await t.runAsync(() => refuseWrites(bob));
+      await t.enterText(find.byType(TextField), link);
+      await press(l.connectOpen);
+      said(0);
+      await t.runAsync(() => bob.invites.pump());
+      await t.pump();
+      said(1);
+      await t.runAsync(() => allowWrites(bob));
+      // A code that is not an invite, and the invite he has open already.
+      await t.enterText(find.byType(TextField), 'not an invite');
+      await press(l.connectOpen);
+      said(2);
+      await t.enterText(find.byType(TextField), link);
+      await press(l.connectOpen);
+      said(3);
+
+      // Dee's relay is a port nothing listens on.
+      await t.pumpWidget(tab(dee, const ConnectTab(), locale: locale));
+      await t.pump();
+      await press(l.connectCreate);
+      await t.runAsync(() => dee.invites.pump());
+      await t.pump();
+      said(4);
+
+      // At the digits, Alice's answer fails after the add, as nothing
+      // names (the seam that stops it there).
+      late PendingInvite ready;
+      await t.runAsync(() async {
+        await danceTo(alice, bob);
+        ready = alice.invites.invites.single;
+      });
+      await t.pumpWidget(tab(alice,
+          SingleChildScrollView(child: ConnectConfirmPanel(invite: ready)),
+          locale: locale));
+      await t.pump();
+      // The press's own work runs on this test's clock, which no socket
+      // should be opened under: Alice's link is down while it runs, as in
+      // group_invite_link_test.
+      await t.runAsync(() => alice.svc.transport.stop());
+      alice.invites.debugStopAfterAdd = true;
+      await press(l.connectMatch);
+      said(5);
+      alice.invites.debugStopAfterAdd = false;
+      await t.pump(const Duration(seconds: 5)); // the snackbar's time
+      await t.pumpWidget(const SizedBox());
+      await drain(t, [alice.invites, bob.invites, dee.invites]);
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es'])
+        for (final (what, _) in failures)
+          '$lang, $what: its own line; exception text: none',
     ]);
   }, timeout: const Timeout(Duration(minutes: 4)));
 }

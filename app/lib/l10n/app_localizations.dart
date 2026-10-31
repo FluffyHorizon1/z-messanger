@@ -3440,11 +3440,53 @@ abstract class AppLocalizations {
   /// **'Check now'**
   String get connectCheck;
 
-  /// Shown under a pending invite when the last attempt to carry it forward failed (the relay could not be reached, or refused a step). The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. {reason} is the failure the relay or the network reported, in English.
+  /// Shown under a pending invite when the last attempt to carry it forward failed at the relay: it could not be reached, refused a step, or did not answer in time. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying, so the person does not discard a working invite. No detail of the failure is shown.
   ///
   /// In en, this message translates to:
-  /// **'Could not reach the relay — will keep trying. ({reason})'**
-  String connectLastFailure(String reason);
+  /// **'Could not reach the relay — will keep trying.'**
+  String get connectFailedRelay;
+
+  /// Shown under a pending invite when this device's own storage refused to save the invite's progress (a full disk, a locked or closed database) — not a problem with the relay. The invite is kept in memory and saved again at the next attempt; load-bearing clause: it says the app will keep trying, and it points at the device's storage, not the network.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not save this invite\'s progress — will keep trying. If this goes on, check that the device has free storage.'**
+  String get connectFailedVault;
+
+  /// Shown under a pending invite when the last attempt to carry it forward failed in a way the app does not name: a fault on this device, not the relay. The invite is kept and retried on its own; load-bearing clause: it says the app will keep trying. No detail of the failure is shown.
+  ///
+  /// In en, this message translates to:
+  /// **'Something went wrong on this device — will keep trying.'**
+  String get connectFailedOther;
+
+  /// Shown on the CONNECT tab when what was pasted into the invite field is not a Z invite this version can read — not a link or a code of any version it knows. It tells the person to paste the whole link or code they were sent.
+  ///
+  /// In en, this message translates to:
+  /// **'That is not a Z invite. Paste the whole link or code you were sent.'**
+  String get connectNotAnInvite;
+
+  /// Shown on the CONNECT tab when the invite pasted is one this device already has open: it is in the list of pending invites below the field, and nothing new is added.
+  ///
+  /// In en, this message translates to:
+  /// **'That invite is already open: it is in the list below.'**
+  String get connectAlreadyOpen;
+
+  /// Shown on the CONNECT tab when a post-quantum invite cannot be opened because this run of the app could not load one of the device's keys (its sealing key) from its storage when it started. Restarting the app reads the key again.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not load one of its keys, so it cannot open this invite. Restart Z, then try again.'**
+  String get connectNoSealingKey;
+
+  /// Shown on the CONNECT tab, or under the comparison, when this device's own storage refused to save an invite just made, opened or answered (a full disk, a locked or closed database). The invite is kept in memory and saved with the next write that works; load-bearing clause: it is kept, so the person need not make or open it again.
+  ///
+  /// In en, this message translates to:
+  /// **'This device could not save the invite yet. It is kept, and saved at the next chance; if this goes on, check that the device has free storage.'**
+  String get connectSaveFailed;
+
+  /// Shown on the CONNECT tab, or under the comparison, when an action on an invite failed in a way the app does not name. No detail is shown; the person can try the action again.
+  ///
+  /// In en, this message translates to:
+  /// **'That did not work. Try again.'**
+  String get connectActionFailed;
 
   /// Shown when there are no pending invites.
   ///
