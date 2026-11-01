@@ -3212,6 +3212,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     _contactSeals.remove(rid);
     for (final r in [rid, ...extraRids]) {
       _pqSealsThisRun.remove(r);
+      _pqSealTimes.remove(r);
     }
     contacts.remove(rid);
     _convs.remove(rid);
@@ -4128,8 +4129,35 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   SealRecord _ownSeals = SealRecord();
 
   /// Announcements made this run, per device: bounded as the `pqid`'s
-  /// re-sends are ([_maxPqNudges]).
+  /// re-sends are ([_maxPqNudges]) — and (4.9.1) counted afresh by a new
+  /// ratchet session with a contact's device that forgets the announcement
+  /// there ([_newSessionWith]), so that session can always announce again:
+  /// at most [_maxPqNudges] on one session.
   final Map<String, int> _pqSealsThisRun = {};
+
+  /// 4.9.1 (§18.11): when this run's announcements to each device went —
+  /// those of the last [pqSealHour], all a device's sessions together, held
+  /// to [_maxPqSealsPerHour] ([_pqSealsLastHour]).
+  final Map<String, List<int>> _pqSealTimes = {};
+
+  /// 4.9.1: at most this many announcements to one device in any hour,
+  /// whatever its sessions — four times what one session allows — so a
+  /// device that opens sessions as fast as it likes is sent no more.
+  static const int _maxPqSealsPerHour = 12;
+
+  /// The window [_maxPqSealsPerHour] is counted over: an hour; tests
+  /// shorten it.
+  @visibleForTesting
+  Duration pqSealHour = const Duration(hours: 1);
+
+  /// How many announcements went to [deviceRid] in the last [pqSealHour].
+  int _pqSealsLastHour(String deviceRid) {
+    final times = _pqSealTimes[deviceRid];
+    if (times == null) return 0;
+    final since = _now() - pqSealHour.inMilliseconds;
+    times.removeWhere((t) => t <= since);
+    return times.length;
+  }
 
   /// A root's answers this run to each of its devices' asks (§9,
   /// `dir:"pqdc"`), bounded the same way: each is a signature and a
@@ -4412,10 +4440,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// time since this device drew its key, or (4.9.0, for a contact's device)
   /// since that session forgot the announcement too ([_newSessionWith]), or
   /// §17.4's clock ([pqOfferRetry]) has run since the last — at most
-  /// [_maxPqNudges] times a run, as the
-  /// `pqid`'s re-sends are bounded. A linked device's announcement to its root is
-  /// also its ask for its `pqdc` (§9, `dir:"pqdc"`), so it is owed there
-  /// until the answer is held, stamp or no stamp. Whether it can ride the
+  /// [_maxPqNudges] times between two such sessions, as the `pqid`'s
+  /// re-sends are bounded, and (4.9.1) at most [_maxPqSealsPerHour] times
+  /// in any hour, all that device's sessions together; one held back by the
+  /// hour stays owed, and goes on the first message there once the hour
+  /// allows. A linked device's announcement to its root is also its ask for
+  /// its `pqdc` (§9, `dir:"pqdc"`), so it is owed there until the answer is
+  /// held, stamp or no stamp. Between this account's own devices otherwise a
+  /// stamp ends it, and nothing opens a session to forget the announcement,
+  /// so §18.11's window stays there until this device draws a key again:
+  /// announcing on the clock would bound it, at a standing load that buys
+  /// nothing before 44.7 (`CAPACITY.md` (f)). Whether it can ride the
   /// message at hand is the channel's to say ([pqSealMayRide]).
   bool _owesPqSeal(String? owner, String deviceRid) {
     if (debugBuildBeforeSealingKeys || _sealingKey == null) return false;
@@ -4428,6 +4463,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         _ownPqdc == null;
     if ((held?.holdsMine ?? false) && !asking) return false;
     if ((_pqSealsThisRun[deviceRid] ?? 0) >= _maxPqNudges) return false;
+    if (_pqSealsLastHour(deviceRid) >= _maxPqSealsPerHour) return false;
     final last = held?.announcedMs ?? 0;
     if (last == 0) return true;
     return _pqOfferRetry > 0 && _now() - last >= _pqOfferRetry;
@@ -4523,6 +4559,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     final now = _now();
     for (final r in deviceRids) {
       _pqSealsThisRun[r] = (_pqSealsThisRun[r] ?? 0) + 1;
+      (_pqSealTimes[r] ??= []).add(now);
       rec.device(r).announcedMs = now;
       debugPqSealSends++;
     }
@@ -4697,14 +4734,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// the key; and when it had said it holds this device's key, since one
   /// whose own announcement the relay lost may hold this device's word for
   /// an old key of its own (§18.11's window), which the stamp cannot tell
-  /// apart. A session costs each side at most one `pqseal` there. Nothing
-  /// is forgotten on the first session after a CONNECT ceremony of version
-  /// 3, whose reveal carried the key and drew no stamp yet. And on a session
-  /// that device opened, this device's `pqdc` is owed to it again
-  /// ([DeviceSeal.pqdcSent], 44.5). In memory, in the order the ratchet
-  /// decrypts; each door and each send writes it down with that session or
-  /// before it, as 4.8.1 writes the forgetting. Whether anything changed.
-  /// Nothing of 44.5's or 4.9.0's as a build from before.
+  /// apart. A session costs each side one `pqseal` there, and (4.9.1) the
+  /// count the bound keeps begins afresh with it ([_pqSealsThisRun]): the
+  /// announcement it owes is never one past the three a run allowed, which
+  /// left each side setting the other's stamps aside until its app started
+  /// again; [_maxPqSealsPerHour] bounds what sessions opened fast can ask
+  /// for. Nothing is forgotten on the first session after a CONNECT
+  /// ceremony of version 3, whose reveal carried the key and drew no stamp
+  /// yet. And on a session that device opened, this device's `pqdc` is
+  /// owed to it again ([DeviceSeal.pqdcSent], 44.5). In memory, in the
+  /// order the ratchet decrypts; each door and each send writes it down
+  /// with that session or before it, as 4.8.1 writes the forgetting.
+  /// Whether anything changed. Nothing of 44.5's or 4.9.0's as a build from
+  /// before.
   bool _newSessionWith(String? owner, String deviceRid,
       {bool theirs = true, bool startedOver = false}) {
     final forgot = _forgetHeldMine(owner, deviceRid);
@@ -4716,6 +4758,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         !debugBuildBefore481 &&
         d.announcedMs != 0) {
       d.announcedMs = 0;
+      _pqSealsThisRun.remove(deviceRid);
       changed = true;
     }
     if (theirs && d.pqdcSent) {

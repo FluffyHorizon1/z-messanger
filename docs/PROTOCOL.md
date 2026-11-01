@@ -4534,12 +4534,14 @@ The members that carry them, a new kind and two optional members (§14):
   4 096‑bucket one, 5 546 characters on the wire. It goes in an envelope of
   its own just ahead of the next message
   to that device, carrying that message's claim and echo (§3.6) — the first
-  time on the next one, again no sooner than
-  §17.4's retry interval after the last (six hours) and at most three times
-  a run, as `pqid` re‑sends are bounded — and a linked device's `pqseal` to
-  its root is also its ask for its `pqdc` (§9), owed until that has arrived
-  too. A receiver takes the key only when `alg` is `ML-KEM-768` and `ek`
-  is the `b64` of 1 184 bytes passing FIPS 203 §7.2's check (§8.3);
+  time on the next one, again no sooner than §17.4's retry interval after
+  the last (six hours) and at most three times a run, as `pqid` re‑sends
+  are bounded, the count begun afresh by a ratchet session that forgets the
+  announcement (below, 4.9.1), and never more than twelve times to one
+  device in any hour — and a linked device's `pqseal` to its root is also
+  its ask for its `pqdc` (§9), owed until that has arrived too. A receiver
+  takes the key only when `alg` is `ML-KEM-768` and `ek` is the `b64` of
+  1 184 bytes passing FIPS 203 §7.2's check (§8.3);
   otherwise it takes nothing and refuses nothing, reading the message as one
   of a kind it does not know (§6.1). A key it takes it keeps for that
   device, and from then on stamps `pqs:1` on what it sends there; a second,
@@ -4589,26 +4591,52 @@ The members that carry them, a new kind and two optional members (§14):
   its own reset — or had stamped `pqs:1` since the announcement: this device
   announces its key again at once rather than on its clock, so a contact
   added back is linked again without waiting six hours, and a session reset
-  costs each side one `pqseal` there — within the three announcements a
-  device makes to another in one run of the app: past them, each sets the
-  other's `pqs:1` aside until the app next starts, which nothing notices
-  before 44.7 and which is to be closed before it. Nothing is forgotten on the first
-  session after a CONNECT ceremony of version 3, whose reveal carried the
-  key. One window remains: a stamp the other device sent before the
-  announcement reached it, arriving after the announcement left, is taken;
-  were that announcement then lost at the relay, the pair stays so — a new
-  session forgot the stamp but not the announcement through 4.8.1, so the
-  next stamp counted again, and measured, a reset by either side and eight
-  messages each way later the other device still held the old key, with no
-  `pqseal` sent. From 4.9.0 a new session with a contact's device, opened by
-  either side, mends it, within the same three a run: the device announces
-  its key again, and the contact ends holding it (`restore_truth_test` 23). Between a device and its own
-  other devices 4.9.0 forgets the stamp alone, as 4.8.1 did — every `pqseal`
-  a linked device sends its root is also its ask for its `pqdc`, answered in
-  a 16 384‑bucket envelope, and announcing on every new self‑sync session
-  wants measuring first — so there the window stays until the device draws a
-  key again, and is to be closed before 44.7 seals to the key. 44.5's link
-  check finds a contact's device left so classical rather than refusing it.
+  costs each side one `pqseal` there. Through 4.9.0 that announcement was
+  one of the three a device makes to another in a run: four resets in one
+  run, the sides taking turns, left each side from the third setting the
+  other's `pqs:1` aside, with nothing to announce, until its app next
+  started. From 4.9.1 such a session begins the count afresh, so the
+  announcement it owes is never past the three; what bounds a device that
+  opens sessions as fast as it likes is the hour — at most twelve
+  announcements to one device in any hour, its sessions together, so at most
+  twelve 4 096‑bucket envelopes an hour to each of a contact's devices
+  (`restore_truth_test` 24, 25), 66 552 characters an hour to each, and no
+  total a run — through 4.9.0 there were three a run: a contact with N
+  devices can draw 12N an hour, each riding a message this device sends that
+  device anyway, the delivery receipts it sends without anyone doing
+  anything among them, and waiting, if at all, in that contact's own
+  mailboxes (`CAPACITY.md` (f)). Past them this device sets that device's
+  `pqs:1` aside, its announcement forgotten, until the hour allows another,
+  which goes on the first message there after. An announcement never opens a
+  session: it rides only a message on a session already post‑quantum.
+  Nothing is forgotten on the first session after a CONNECT ceremony of
+  version 3, whose reveal carried the key. One window remains: a stamp the
+  other device sent before the announcement reached it, arriving after the
+  announcement left, is taken; were that announcement then lost at the
+  relay, the pair stays so — a new session forgot the stamp but not the
+  announcement through 4.8.1, so the next stamp counted again, and
+  measured, a reset by either side and eight messages each way later the
+  other device still held the old key, with no `pqseal` sent. From 4.9.0 a
+  new session with a contact's device, opened by either side, mends it: the
+  device announces its key again, and the contact ends holding it
+  (`restore_truth_test` 23). Between a device and its own other devices
+  4.9.1 leaves the window as 4.9.0 did: there a stamp still ends the
+  announcement, and nothing opens a self‑sync session to forget it, so a
+  stamp of an old key, left by a lost announcement, is taken for the current
+  key until the device draws a key again (`restore_truth_test` 26 holds it
+  so). Announcing there again on §17.4's clock would bound the window, but
+  at a standing load — at the ceiling, an envelope of its own every six
+  hours to each of a device's own other devices, and about 84 MB waiting at
+  the relay in the typical population's worst 72 hours, more than the 72–80
+  MB the reference store has to spare at its worst moment (`CAPACITY.md`
+  (f)) — that buys nothing before 44.7 seals to the key; what closes it is a
+  stamp that names the key it is of, a wire change 44.7 needs (`adr/0033`'s
+  build plan). A linked device's announcement to its root is not left so
+  where the device knows its account's ML‑DSA key (the enrollment's `pqpub`,
+  §10): it is also its ask for its `pqdc` (§9), owed until a `pqdc` over the
+  key it holds has come, stamp or no stamp, and that answer is the root's
+  word for the key. 44.5's link check finds a contact's device left so
+  classical rather than refusing it.
 * **`pqid.pqdc`** is the sending device's own `pqdc`, in the `pqid` it
   already sends (§18.2): measured, 7 114 bytes of inner message, and 7 261
   with `ack` and every decoration, of the 8 959 the 16 384 bucket holds

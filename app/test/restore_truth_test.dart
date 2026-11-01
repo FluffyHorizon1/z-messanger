@@ -115,7 +115,26 @@
 //      lost — the restored device holding its contact's word for its old
 //      key as word for the new, the contact holding the old — stays so
 //      through more messages, and a new session from either side mends it:
-//      the device announces its key again, and its contact ends holding it.
+//      the device announces its key again, and its contact ends holding it;
+//  24. (4.9.1) four session resets in one run, the sides taking turns: each
+//      costs each side one announcement and opens one session at each, and
+//      after each both go on hearing that the other holds its key — none
+//      sets the other's word aside for the rest of the run, as 4.9.0 did
+//      from the third — and more messages open no session and announce
+//      nothing;
+//  25. (4.9.1) a contact device that opens sessions as fast as it likes is
+//      sent twelve announcements in an hour and no more: past them this
+//      device sets that device's word aside and announces nothing, and once
+//      the hour allows (shortened here) it announces again and hears that
+//      word;
+//  26. (PROTOCOL §18.11) the window between a root and its own linked
+//      laptop, which 4.9.1 leaves as 4.9.0 did: the root restored onto a
+//      new key, its announcement lost on the way to the laptop, takes the
+//      laptop's word for its old key as word for the new and announces
+//      nothing more there, through rounds past §17.4's clock (compressed),
+//      so the laptop keeps the old key until the root draws a key again —
+//      announcing on the clock would bound that window at a standing load
+//      that buys nothing before 44.7 (`CAPACITY.md` (f)).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 4))
 library;
@@ -2032,5 +2051,201 @@ void main() {
             '${revived.debugPqSealSends} announcements');
       }
     }
+  });
+
+  test(
+      '24. four session resets in one run, the sides taking turns: each costs '
+      'each side one announcement, and after each both go on hearing that the '
+      'other holds its key', () async {
+    final (alice, _) = await fresh('alice24');
+    final (bob, _) = await fresh('bob24');
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    String state() => 'bob pqseals this run=${bob.debugPqSealSends} '
+        'alice=${alice.debugPqSealSends} '
+        'bobHearsAliceHoldsHis=${bob.debugHoldsMySealKey(alice.myRid)} '
+        'aliceHearsBobHoldsHers=${alice.debugHoldsMySealKey(bob.myRid)}';
+    int sessions(ChatService s, ChatService of) =>
+        s.debugConversation(of.myRid)!.sessions.length;
+    for (var r = 1; r <= 4; r++) {
+      // Alice, Bob, Alice, Bob. The side that resets speaks first: what the
+      // other sends on the retired session before the new one reaches it is
+      // not read (§4).
+      final first = r.isOdd ? alice : bob, second = r.isOdd ? bob : alice;
+      final aliceSends = alice.debugPqSealSends;
+      final bobSends = bob.debugPqSealSends;
+      final theirs = sessions(second, first);
+      await first.resetSecureSession(second.myRid);
+      var m = 0;
+      try {
+        await waitFor(() async {
+          await exchange(first, second, 'r$r ${m++}');
+          return alice.debugHoldsMySealKey(bob.myRid) &&
+              bob.debugHoldsMySealKey(alice.myRid);
+        },
+            timeout: const Duration(seconds: 20),
+            what: '[$r] each hearing that the other holds its key again');
+      } on TimeoutException {
+        fail('after reset $r by ${first.displayName} and $m exchanges: '
+            '${state()}');
+      }
+      expect(alice.debugPqSealSends, aliceSends + 1,
+          reason: '[$r] one announcement from Alice: ${state()}');
+      expect(bob.debugPqSealSends, bobSends + 1,
+          reason: '[$r] and one from Bob: ${state()}');
+      // Nothing loops: the reset opened one session at each side, and no
+      // announcement opened another.
+      expect(sessions(first, second), 1,
+          reason: '[$r] the side that reset holds the session it opened');
+      expect(sessions(second, first), theirs + 1,
+          reason: '[$r] and the other side one more than before');
+    }
+    final aliceSends = alice.debugPqSealSends;
+    final bobSends = bob.debugPqSealSends;
+    final aliceSessions = sessions(alice, bob), bobSessions = sessions(bob, alice);
+    for (var i = 0; i < 4; i++) {
+      await exchange(alice, bob, 'after $i');
+    }
+    expect(alice.debugPqSealSends, aliceSends);
+    expect(bob.debugPqSealSends, bobSends);
+    expect(sessions(alice, bob), aliceSessions);
+    expect(sessions(bob, alice), bobSessions);
+  });
+
+  test(
+      '25. a contact device that opens sessions as fast as it likes is sent '
+      'twelve announcements in an hour, and announced to again once the hour '
+      'allows', () async {
+    final (alice, _) = await fresh('alice25');
+    final (bob, _) = await fresh('bob25');
+    await befriend(alice, bob);
+    await sealsStamped(alice, bob, 'k');
+    // One announcement, the first, already went from Alice to Bob's device.
+    expect(alice.debugPqSealSends, 1, reason: 'the premise');
+    var resets = 0;
+    var m = 0;
+    // Bob's device opens a new session, again and again: each forgets
+    // Alice's announcement there, and each that the hour allows earns one.
+    while (alice.debugPqSealSends < 12) {
+      final before = alice.debugPqSealSends;
+      await bob.resetSecureSession(alice.myRid);
+      resets++;
+      await waitFor(() async {
+        await exchange(bob, alice, 's$resets ${m++}');
+        return alice.debugPqSealSends == before + 1 &&
+            alice.debugHoldsMySealKey(bob.myRid);
+      },
+          timeout: const Duration(seconds: 20),
+          what: "[$resets] Alice's announcement on Bob's new session");
+    }
+    expect(resets, 11, reason: 'the first, and one for each of eleven');
+    // Two sessions more within the hour: nothing more is announced. A
+    // negative check over a window — six exchanges on each — and Alice sets
+    // Bob's word aside, having forgotten her announcement there.
+    for (var extra = 0; extra < 2; extra++) {
+      await bob.resetSecureSession(alice.myRid);
+      for (var i = 0; i < 6; i++) {
+        await exchange(bob, alice, 'past${extra}_${m++}');
+      }
+      expect(alice.debugPqSealSends, 12,
+          reason: 'twelve in the hour, and no more');
+      expect(alice.debugHoldsMySealKey(bob.myRid), isFalse,
+          reason: "Bob's word set aside until Alice has announced again");
+    }
+    // The hour passes, shortened here: the announcement owed goes, and the
+    // next word from Bob's device is taken.
+    alice.pqSealHour = const Duration(milliseconds: 1);
+    try {
+      await waitFor(() async {
+        await exchange(bob, alice, 'later ${m++}');
+        return alice.debugHoldsMySealKey(bob.myRid);
+      }, timeout: const Duration(seconds: 20), what: 'announced again');
+    } on TimeoutException {
+      fail('after the hour: alice pqseals=${alice.debugPqSealSends} '
+          'hearsBobHoldsHers=${alice.debugHoldsMySealKey(bob.myRid)}');
+    }
+    expect(alice.debugPqSealSends, 13);
+  });
+
+  test(
+      '26. a root restored onto a new key whose announcement to its laptop '
+      "was lost takes the laptop's word for its old key and announces nothing "
+      'more there, past the clock: the laptop keeps the old key', () async {
+    final (phone, phoneDir) = await fresh('phone26');
+    final (laptop, _, _) = await linkTo(phone, 'laptop26');
+    await waitFor(() async => await laptop.ownDeviceListVersion() >= 2,
+        what: 'the laptop learning v2');
+    final (carol, _) = await fresh('carol26');
+    await befriend(phone, carol);
+    await waitUntil(() => laptop.contacts.containsKey(carol.myRid),
+        what: 'the laptop learning Carol from its root');
+    var ph = phone;
+    var n = 0;
+    // Self-sync carries what each sends Carol to the other.
+    Future<void> round(String tag) async {
+      final i = n++;
+      await ph.sendText(carol.myRid, '$tag p$i');
+      await laptop.sendText(carol.myRid, '$tag l$i');
+      await waitUntil(
+          () =>
+              texts(carol, ph.myRid).contains('$tag p$i') &&
+              texts(carol, ph.myRid).contains('$tag l$i'),
+          what: '$tag round $i');
+    }
+
+    await waitFor(() async {
+      await round('k');
+      return ph.debugPqSealOf(laptop.myRid) != null &&
+          laptop.debugPqSealOf(ph.myRid) != null &&
+          ph.debugHoldsMySealKey(laptop.myRid) &&
+          laptop.debugHoldsMySealKey(ph.myRid);
+    }, what: 'the root and its laptop holding each other\'s keys, heard so');
+    final oldKey = phone.debugSealingKey!;
+
+    // The laptop's device drops the root's first announcement after the
+    // restore, as the relay losing it would, and counts the root's
+    // announcements that reach it.
+    var dropped = 0, heard = 0;
+    laptop.debugOnDecrypted = (path, from, dec) {
+      if (path != 'sync') return false;
+      if (!InnerMessage.looksLikeKind(dec.plaintext, 'pqseal')) return false;
+      if (dropped > 0) {
+        heard++;
+        return false;
+      }
+      dropped++;
+      return true;
+    };
+    ph = await restoredOntoNewKey(phone, phoneDir, 'phone26');
+    final newKey = ph.debugSealingKey!;
+    expect(newKey, isNot(oldKey), reason: 'the premise: a new key');
+    for (final s in [ph, laptop, carol]) {
+      s.pqOfferRetry = 300; // §17.4's clock, which the announcement runs on
+    }
+    // The root announces its new key; the laptop never reads it, holds the
+    // old one and says so, and the root takes that word.
+    await waitFor(() async {
+      await round('lost');
+      return dropped == 1 && ph.debugHoldsMySealKey(laptop.myRid);
+    }, what: "the root taking the laptop's word, its announcement lost");
+    expect(holdsKey(laptop, ph.myRid, oldKey), isTrue,
+        reason: 'the premise: the laptop holds the old key');
+    // A negative check over a window — six rounds, each past the clock: the
+    // root announces nothing more to the laptop, which keeps the old key,
+    // and the root goes on taking its word for the new one. This is the
+    // window §18.11 leaves between a device and its own devices until the
+    // device draws a key again; announcing on the clock would bound it, at a
+    // standing load that buys nothing before 44.7 (CAPACITY.md (f)).
+    for (var i = 0; i < 6; i++) {
+      await round('after');
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
+    expect(heard, 0, reason: 'the root announced to its laptop again');
+    expect(holdsKey(laptop, ph.myRid, oldKey), isTrue,
+        reason: 'the laptop keeps the old key');
+    expect(holdsKey(laptop, ph.myRid, newKey), isFalse,
+        reason: 'and never hears the new one');
+    expect(ph.debugHoldsMySealKey(laptop.myRid), isTrue,
+        reason: "the root still takes the laptop's word for its new key");
   });
 }

@@ -269,6 +269,48 @@ device that draws a new key — restored from an archive made before 44.3, or
 its seed unreadable — whose `pqdc` over that key otherwise comes only in a
 `pqid` sent for some other reason.
 
+## (f) Sealing-key announcements (4.9.1)
+
+A device announces its sealing key in a `pqseal` (`PROTOCOL.md` §18.11): a
+4 096-bucket envelope of its own, 5 546 characters on the wire (measured),
+charged 5 802 B by the relay, ≈ 7.0 KB in a Redis store (177 + 1.23 × 5 546)
+and ≈ 5.8 KB in RAM mode (299 + 5 546). It goes only ahead of a message this
+device is sending that device anyway — on a contact's door the send itself,
+on self-sync `DeviceSyncService.mirror` and `mirrorTo`, the only callers of
+`_sealsAhead` — on a session already post-quantum and never beside `pqct`
+(`pqSealMayRide`): it opens no session and leaves the message it rides with
+in the bucket that message was in, one envelope more beside it. A device
+stops announcing to a device once that device says it holds the key, and
+after that a new ratchet session with a contact's device that forgets the
+announcement costs one more there:
+
+- a session reset, by either side: one each side (`restore_truth_test.dart`
+  20, and 24 for four in a row);
+- a contact deleted and added back, either way: one each side;
+- a restore that keeps the key: one to each contact device, and one from
+  each — the last two measured on loopback (a pair, and four contacts), not
+  in a test.
+
+Announcing again between a device and its own other devices on §17.4's clock,
+which would bound §18.11's window there, is not built: at the ceiling it would
+leave up to twelve such envelopes from each device writing to a linked device
+that is away for the 72 hours a queue lives, ≈ 84 KB, and with a fifth of the
+typical population's 5 000 linked devices away while their roots write to them
+(D = 1.5, each person holding one device or two), 1 000 × 84 KB ≈ 84 MB at the
+relay — more than the 72–80 MB (a)'s bad moment leaves, for nothing before
+44.7.
+
+**A contact that opens sessions as fast as it likes.** A new ratchet session
+with a contact's device begins the count afresh (§18.11), so what bounds the
+announcements it can draw is the hour: twelve to each of its devices in any
+hour — 66 552 characters an hour, about 1.6 MB a day — with no total a run,
+where 4.9.0 sent at most three a run. A contact with N devices can so draw
+12N an hour, each riding a message this device sends that device anyway, the
+delivery receipts it sends without anyone doing anything among them. They
+wait, if at all, in that contact's own mailboxes, against its own 16 MiB each,
+so they fill nobody else's; what they cost is this device's traffic and the
+relay's.
+
 ## Reproduce
 
 ```bash
