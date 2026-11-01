@@ -128,7 +128,14 @@
 //      session, its device announces the new key again there and the `pqdc`
 //      kept links it (the state of a device whose `pqdc` had not reached
 //      this one, built in the vaults; the key, the session, the loss and the
-//      `pqdc` real) (4.9.0).
+//      `pqdc` real) (4.9.0);
+//  20. a one-device account's code with its X25519 key substituted — its
+//      Ed25519 key, its commitment and so its number kept, what someone who
+//      can forge Ed25519 and controls the exchange can hand over (ADR 0033
+//      §2) — is refused for the device's genuine `pqdc`, which covers the
+//      X25519 key the device holds: a root's code carries no `acct`, its
+//      device key is its account's, and a key established against its
+//      commitment binds that key (4.9.0, kept in 4.9.1).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 6))
 library;
@@ -2124,6 +2131,82 @@ void main() {
     expect(alice.svc.contacts[bRid]!.deviceLinkVerdict!.sk,
         await sha256Bytes(newKey));
     expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 0);
+    await closeAll();
+  });
+
+  test(
+      "20. a one-device account's code with its X25519 key substituted, its "
+      'Ed25519 key and commitment kept, is refused for the genuine pqdc',
+      () async {
+    // Bob's device, the root of an account with no other device: its own
+    // pqdc, over its two keys and its sealing key, signed at its first start.
+    final bob = await person('bob20');
+    await waitUntil(
+        () => bob.svc.debugOwnPqdc != null && bob.svc.debugSealingKey != null,
+        what: "Bob's root signing its own pqdc");
+    final bRid = bob.svc.myRid;
+    final genuine = Uint8List.fromList(bob.svc.debugOwnPqdc!);
+    final bobEk = Uint8List.fromList(bob.svc.debugSealingKey!);
+    final bobMl = (await bob.svc.pqAccountPublic())!;
+    expect(
+        deviceAttestationValid(
+            accountMlPub: bobMl,
+            accountEdPub: bob.id.edPub,
+            deviceEdPub: bob.id.edPub,
+            deviceXPub: bob.id.xPub,
+            sealEk: bobEk,
+            pqdc: genuine),
+        isTrue,
+        reason: "the premise: Bob's genuine pqdc, for the keys his device "
+            'holds');
+    final pqSeed = (await bob.vault.kvGet('pq_seed'))!;
+    final sealSeed = (await bob.vault.kvGet(sealSeedKey))!;
+    final edSeed = Uint8List.fromList(bob.id.edSeed);
+    await stop(bob);
+
+    // The substitute: Bob's Ed25519 key, which the adversary can forge, and
+    // an X25519 key of its own, relaying Bob's ML-DSA key, his sealing key
+    // and his genuine pqdc. Its code is Bob's with the X25519 key replaced:
+    // the same routing id, the same signed commitment, the same number.
+    final subId = await ZIdentity.fromSeeds(
+        edSeed: edSeed, xSeed: (await ZIdentity.generate()).xSeed);
+    final dir = await tempDir('bob20x');
+    final vault = await Vault.open(rootOverride: dir);
+    await vault.kvPut('identity', jsonEncode(subId.toJson()));
+    await vault.kvPut('display_name', 'bob20');
+    await vault.kvPut('pq_seed', pqSeed);
+    await vault.kvPut(sealSeedKey, sealSeed);
+    final sub = await boot(dir, 'bob20', vault: vault);
+    sub.svc.debugPqidAttestation = genuine;
+    expect(sub.svc.myRid, bRid, reason: "the premise: Bob's routing id");
+    expect(constantTimeEquals(sub.id.xPub, bob.id.xPub), isFalse,
+        reason: 'the premise: another X25519 key');
+
+    final alice = await person('alice20');
+    await pairUp(alice, sub);
+    final c = alice.svc.contacts[bRid]!;
+    expect(c.accountEdPub, isNull,
+        reason: "the premise: a root's code names no account");
+    expect(constantTimeEquals(c.bundle.xPub, sub.id.xPub), isTrue,
+        reason: 'the premise: Alice holds the substituted key');
+    await talkUntil(alice, sub,
+        () => alice.svc.deviceLinkWith(bRid) == DeviceLink.refused,
+        what: 'the substituted device refused');
+    expect(constantTimeEquals(alice.svc.contacts[bRid]!.pqPub!, bobMl), isTrue,
+        reason: "Bob's key established, against his commitment");
+    expect(constantTimeEquals(alice.svc.debugPqdcOf(bRid)!, genuine), isTrue,
+        reason: 'his genuine pqdc held');
+    expect(constantTimeEquals(alice.svc.debugPqSealOf(bRid)!, bobEk), isTrue,
+        reason: 'beside his own sealing key');
+    expect(await systemLines(alice.svc, bRid, SystemKind.deviceLinkRefused), 1,
+        reason: 'said once, in the chat');
+    final kept =
+        DeviceLinkVerdict.decode(await alice.vault.kvGet('dlink_$bRid'));
+    expect(kept?.finding, DeviceLinkFinding.refused, reason: 'and recorded');
+    // And after Alice's app starts again.
+    final again = await restart(alice);
+    expect(again.svc.deviceLinkWith(bRid), DeviceLink.refused);
+    expect(await systemLines(again.svc, bRid, SystemKind.deviceLinkRefused), 1);
     await closeAll();
   });
 }

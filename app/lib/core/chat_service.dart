@@ -5252,6 +5252,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       if (account != null && !constantTimeEquals(account, keyHash(ml))) {
         return changed;
       }
+      // Over the key [ml] is bound to (§18.11): the account their code named
+      // or, in a code without `acct`, the device's own key standing in for
+      // it — the account's whenever [ml] is established, since a code
+      // commits only beside its own anchor (`ContactBundleV3.forIdentity`)
+      // and a key is held to its commitment over that key ([_onPqIdentity]);
+      // a compared number covers it too. A linked device's honest `pqdc`
+      // failing here needs a code no build makes.
       final attested = deviceAttestationValid(
           accountMlPub: ml,
           accountEdPub: c.accountEd,

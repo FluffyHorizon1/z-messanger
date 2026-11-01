@@ -4457,8 +4457,27 @@ one over the other: it verifies, and the link is post‑quantum; it fails, and
 — when the two are known to be of one state of that device, and the `pqdc`
 came with their established key — the `pqdc` is refused, recorded durably and
 announced once (§18.3); neither yet, or the key only a candidate, and the
-link is classical. Which state a `pqdc` is of is told by the ratchet sessions
-(4.9.0). A device announces a key it draws ahead of the next message it sends
+link is classical. The account key it is checked over is the one their
+established key is bound to: the account their code names (§18.7) or, in a
+code without `acct` — every root's code is one — the device's own key; and
+every way a key is established binds it to that key. A commitment is met over
+it (the reference client's `_onPqIdentity`, `app/lib/core/chat_service.dart`,
+builds the key it checks from it, as a hint, a re‑scan, a mirrored `cadd` and
+a version‑3 reveal do), a compared number covers it (§18.5), and an archive
+or an enrollment carries the key beside it. A code commits only beside its
+own anchor: `ContactBundleV3.forIdentity`
+(`protocol/lib/src/identity_v3.dart`) refuses a hybrid key whose Ed25519 key
+is not `acct`, or not the device's own when there is none, and every build
+commits to its account's hybrid key — from 13.5, which first emitted a
+commitment, a linked device handed out a code without one, and from 13.6 one
+naming `acct` (§18.7). So the state in which a linked device's honest `pqdc`
+would fail over its own key, its code naming no account and its key
+established, needs a code no build makes; and a one‑device account's code,
+whose device key is its account's, is checked as an account‑anchored one is:
+one with its X25519 key substituted, its Ed25519 key and its commitment kept,
+is refused for the device's genuine `pqdc` (`scanned_device_pq_test` 20).
+Which state a `pqdc` is of is told by the ratchet sessions (4.9.0). A device
+announces a key it draws ahead of the next message it sends
 on the session it has, once that session is post‑quantum and the message
 carries no `pqct`, so on that session what follows the key is of the key's
 state. A receiver takes a `pqdc` and the key held as of one state when the
