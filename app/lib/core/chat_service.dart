@@ -12084,6 +12084,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// ADR 0036: throws [GroupListRefused], having written and sent nothing,
   /// when the group would name more than [maxGroupMembers] accounts, mine
   /// included, or its list is one no frame carries ([_listTooLarge]).
+  ///
+  /// The group, its first line in its thread and its invite are written in
+  /// one transaction, and a write the vault refuses leaves nothing of the
+  /// group behind, in memory or in the vault. Until 2026-11-01 each was
+  /// written on its own, the group put in memory first: a refused write
+  /// left it in the chat list until the app stopped, though no invite had
+  /// gone, and one refused after the first left it in the vault besides.
   Future<String> createGroup(String name, List<String> memberRids) async {
     final members = memberRids.toSet()..removeAll(_myAccountRids);
     if (!debugBuildBefore0036 && members.length + 1 > maxGroupMembers) {
@@ -12104,11 +12111,26 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     g.digest = Group.listDigest(data);
     g.stateDigest = Group.stateDigestOf(data);
     groups[gid] = g;
-    await _saveGroups();
     unread[gid] = 0;
-    await _insertSystemMessage(
-        gid, systemBody(SystemKind.createdYou, {'name': name}));
-    await _sendInvite(g, data);
+    // What _sendInvite sends, with the group and its first line written in
+    // the same transaction as the invite's rows.
+    final invite = InnerMessage(
+        kind: 'ginvite', mid: newMessageId(), ts: _now(), data: data);
+    try {
+      await _queueGroupFanout(g, invite, also: (txn) async {
+        await _saveGroups(txn: txn);
+        await _insertSystemMessage(
+            gid, systemBody(SystemKind.createdYou, {'name': name}),
+            txn: txn);
+      });
+    } catch (_) {
+      groups.remove(gid);
+      unread.remove(gid);
+      messagesByChat.remove(gid);
+      notifyListeners();
+      rethrow;
+    }
+    unawaited(_mirrorGroupChange(gid, invite));
     notifyListeners();
     return gid;
   }

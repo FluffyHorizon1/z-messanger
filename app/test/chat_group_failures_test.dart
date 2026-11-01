@@ -12,7 +12,7 @@
 // over the most one message can carry, the camera or the photo library
 // refusing Z, or one line for what was being done.
 //
-// Criteria, each a test below, each in English and in Spanish:
+// Criteria, each a test below, every line read in English and in Spanish:
 //   1. a text, a voice message, a file and a voice message to a group that
 //      this device's storage refuses to keep each say so, and a voice
 //      message, a file or a voice message to a group over the most one
@@ -25,7 +25,12 @@
 //      none carries the exception's text;
 //   5. no catch in the chat, group or CONNECT screens puts what it caught
 //      into a string: their source holds no `$e`, `${e}`, `e.toString()` or
-//      `e.message` for any name a catch there binds.
+//      `e.message` for any name a catch there binds;
+//   6. a group the vault refuses leaves nothing of itself behind, in memory
+//      or in the vault, whichever of its writes was refused — the group,
+//      its first line, its invite — and nothing after a restart: until
+//      2026-11-01 it stayed in the chat list until the app stopped, and in
+//      the vault when what was refused came after the group.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -238,6 +243,35 @@ void main() {
     final code = (await id.bundle(displayName: name)).encode();
     await svc.addContactFromCode(code);
     return (await ContactBundle.decode(code)).routingId();
+  }
+
+  /// [name]'s app on the vault in [dir], outside a widget test: its
+  /// identity there, or a new one, and its link down for good.
+  Future<ChatService> start(Directory dir, String name) async {
+    final vault = await Vault.open(rootOverride: dir);
+    final held = await vault.kvGet('identity');
+    final identity = held != null
+        ? await ZIdentity.fromJson(
+            (jsonDecode(held) as Map).cast<String, Object?>())
+        : await ZIdentity.generate();
+    if (held == null) {
+      await vault.kvPut('identity', jsonEncode(identity.toJson()));
+    }
+    final svc = await ChatService.init(
+      vault: vault,
+      identity: identity,
+      displayName: name,
+      transport: Transport(identity: identity, serverUrl: 'ws://127.0.0.1:1'),
+    );
+    await svc.transport.stop();
+    return svc;
+  }
+
+  /// [svc]'s app stopped: nothing in memory survives it.
+  Future<void> stop(ChatService svc) async {
+    await svc.transport.stop();
+    svc.dispose();
+    await svc.vault.db.close();
   }
 
   /// [svc]'s storage refusing every new row of [table] (that [when] holds
@@ -605,5 +639,66 @@ void main() {
       }
     }
     expect(found, isEmpty);
+  });
+
+  test(
+      '6. a group the vault refuses leaves nothing of itself behind, in '
+      'memory or in the vault, whichever of its writes was refused', () async {
+    final seen = <String>[];
+    for (final (what, table, rows) in const [
+      ('the group', 'kv', "NEW.k = 's:groups'"),
+      ('its first line', 'messages', null),
+      ('its invite', 'group_fanout', null),
+    ]) {
+      final dir = await Directory.systemTemp.createTemp('z_cgf_none');
+      temps.add(dir);
+      var svc = await start(dir, 'Gus');
+      final rid = await contact(svc, 'Pat');
+      await refuse(svc, table, when: rows);
+      Object? thrown;
+      try {
+        await svc.createGroup('Book club', [rid]);
+      } catch (e) {
+        thrown = e;
+      }
+      // What is left of it in memory, and in the vault: Pat's thread is the
+      // only one there was before.
+      final memory = [
+        if (svc.groups.isNotEmpty) 'the group',
+        if (svc.messagesByChat.keys.any((k) => k != rid)) 'a thread',
+        if (svc.unread.keys.any((k) => k != rid)) 'an unread count',
+        if (svc.chatSummaries().any((c) => c.group != null))
+          'a line in the chat list',
+      ];
+      final stored = await svc.vault.kvGet('groups');
+      Future<int> count(String sql, [List<Object?> args = const []]) async =>
+          (await svc.vault.db.rawQuery(sql, args)).first['n'] as int;
+      final vault = [
+        if (stored != null && (jsonDecode(stored) as List).isNotEmpty)
+          'the group',
+        if (await count('SELECT COUNT(*) AS n FROM messages WHERE rid != ?',
+                [rid]) >
+            0)
+          'its first line',
+        if (await count('SELECT COUNT(*) AS n FROM group_fanout') > 0)
+          'its invite',
+      ];
+      await stop(svc);
+      svc = await start(dir, 'Gus');
+      final restarted = svc.groups.isEmpty ? 'nothing' : 'the group';
+      await stop(svc);
+      String said(List<String> left) =>
+          left.isEmpty ? 'nothing' : left.join(', ');
+      seen.add('$what refused: '
+          '${thrown is DatabaseException ? 'the storage refused' : 'thrown: $thrown'}; '
+          'in memory: ${said(memory)}; in the vault: ${said(vault)}; '
+          'after a restart: $restarted');
+    }
+
+    expect(seen, [
+      for (final what in const ['the group', 'its first line', 'its invite'])
+        '$what refused: the storage refused; in memory: nothing; in the '
+            'vault: nothing; after a restart: nothing',
+    ]);
   });
 }
