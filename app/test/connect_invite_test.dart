@@ -120,7 +120,15 @@
 //     said on the card as the relay's refusal, not as a relay that could
 //     not be reached, in English and in Spanish, and once the relay takes
 //     it nothing is said. Until 2026-10-31 the card said "Could not reach
-//     the relay".
+//     the relay";
+// 18. an invite made or opened on the tab while the vault refuses its
+//     writes, and an invite said yes to then, is carried forward like any
+//     other, with no other invite pending: a round as the press ends, and
+//     the polls' after it; and once the vault takes writes, the ceremonies
+//     reach their digits and every invite is in its vault. Until 2026-11-01
+//     the write's refusal was thrown before the polls were armed, and the
+//     tab's round after it was not run, so such an invite had no round
+//     until the next resume, "Check now" or the tab opened again.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1339,7 +1347,9 @@ void main() {
       await t.enterText(find.byType(TextField), link);
       await press(l.connectOpen);
       said(0);
-      await t.runAsync(() => bob.invites.pump());
+      // The tab runs his invite's round after the open, as after any open
+      // (criterion 18), on this test's clock; this is the next.
+      await drain(t, [bob.invites]);
       await t.pump();
       said(1);
       await t.runAsync(() => allowWrites(bob));
@@ -1361,11 +1371,13 @@ void main() {
 
       // At the digits, Alice's answer fails after the add, as nothing
       // names (the seam that stops it there).
-      late PendingInvite ready;
-      await t.runAsync(() async {
-        await danceTo(alice, bob);
-        ready = alice.invites.invites.single;
-      });
+      // Bob's run has had its rounds on this test's clock, and has them
+      // there to the digits.
+      bool atDigits(Person p) => p.invites.invites.every((x) => x.sas != null);
+      for (var i = 0; i < 8 && !(atDigits(alice) && atDigits(bob)); i++) {
+        await drain(t, [alice.invites, bob.invites]);
+      }
+      final ready = alice.invites.invites.single;
       await t.pumpWidget(tab(alice,
           SingleChildScrollView(child: ConnectConfirmPanel(invite: ready)),
           locale: locale));
@@ -1643,4 +1655,115 @@ void main() {
       ],
     ]);
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  testWidgets(
+      '18. an invite made, opened or said yes to while the vault refuses its '
+      'writes is carried forward from then on', (t) async {
+    await t.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    final l = lookupAppLocalizations(const Locale('en'));
+    const poll = Duration(milliseconds: 300);
+    final seen = <String>[];
+    final rounds = <String, int>{};
+    late Person alice, bob, dee;
+    await t.runAsync(() async {
+      alice = await person('Alice', pollEvery: poll);
+      bob = await person('Bob', pollEvery: poll);
+      dee = await person('Dee', pollEvery: poll);
+      for (final (name, p) in [('Alice', alice), ('Bob', bob), ('Dee', dee)]) {
+        p.invites.debugBeforeRound =
+            (_) async => rounds[name] = (rounds[name] ?? 0) + 1;
+        // In front, as the app is, with nothing pending: no poll is armed.
+        p.invites.resume();
+        await p.invites.pump();
+      }
+    });
+
+    // [button] pressed on [p]'s tab while [p]'s vault refuses every write of
+    // the invites: whether a round ran before the press was over, and
+    // whether the polls ran more after it.
+    Future<String> refusedPress(String name, Person p, Finder button,
+        {String? typed}) async {
+      await t.pumpWidget(tab(p, const ConnectTab()));
+      await t.pump();
+      await drain(t, [p.invites]); // the round the tab begins as it opens
+      await t.runAsync(() => refuseWrites(p));
+      if (typed != null) await t.enterText(find.byType(TextField), typed);
+      final before = rounds[name] ?? 0;
+      await t.tap(button);
+      // Over once the tab says what the vault did.
+      await settleUntil(t, () => showing('en', 'connectSaveFailed'));
+      final atOnce = (rounds[name] ?? 0) - before;
+      // A negative check over a window where nothing comes: twenty seconds
+      // is many polls of [poll], and each round a second and a half.
+      await settleUntil(t, () => (rounds[name] ?? 0) - before > atOnce,
+          timeout: const Duration(seconds: 20));
+      final later = (rounds[name] ?? 0) - before - atOnce;
+      return '${atOnce > 0 ? 'a round as the press ended' : 'no round as the press ended'}, '
+          '${later > 0 ? 'rounds after it' : 'none after it in 20 s'}';
+    }
+
+    seen.add('Alice makes one: '
+        '${await refusedPress('Alice', alice, find.text(l.connectCreate))}');
+    final link = alice.invites.invites.single.link;
+    seen.add('Bob opens it: ${await refusedPress('Bob', bob, find.text(l.connectOpen), typed: link)}');
+
+    // Dee holds one of Alice's, opened from a link and waiting for a yes.
+    late String held;
+    await t.runAsync(() async {
+      await allowWrites(alice);
+      held = (await alice.invites.create()).link;
+      await dee.invites.open(held, consented: false);
+    });
+    final yes = find.text(l.connectHeldGo);
+    seen.add('Dee says yes to one: ${await refusedPress('Dee', dee, yes)}');
+
+    // The vault takes writes again: nothing pressed, and nothing lost.
+    await t.runAsync(() async {
+      await allowWrites(bob);
+      await allowWrites(dee);
+    });
+    await t.pumpWidget(const SizedBox());
+    bool atDigits(Person p) =>
+        p.invites.invites.isNotEmpty &&
+        p.invites.invites.every((i) => i.sas != null);
+    for (var i = 0;
+        i < 12 && !(atDigits(alice) && atDigits(bob) && atDigits(dee));
+        i++) {
+      await drain(t, [alice.invites, bob.invites, dee.invites]);
+    }
+    final a = alice.invites.invites;
+    final aBob = a.firstWhere((x) => x.link == link);
+    final aDee = a.firstWhere((x) => x.link == held);
+    Future<bool> stored(Person p) async {
+      final raw = (await t.runAsync(() => p.vault.kvGet('connect_invites')));
+      final ids = raw == null
+          ? <Object?>{}
+          : {for (final e in jsonDecode(raw) as List) (e as Map)['id']};
+      return p.invites.invites.every((i) => ids.contains(i.id));
+    }
+
+    final allStored =
+        await stored(alice) && await stored(bob) && await stored(dee);
+    String pair(PendingInvite x, Person other) =>
+        x.sas != null && x.sas == other.invites.invites.single.sas
+            ? 'at one string'
+            : 'not at the digits';
+    seen.add('once the vault takes writes: Alice and Bob '
+        '${pair(aBob, bob)}, Alice and Dee ${pair(aDee, dee)}; '
+        '${allStored ? 'every invite in its vault' : 'not every invite in its vault'}');
+    for (final p in [alice, bob, dee]) {
+      p.invites.pause();
+    }
+    await drain(t, [alice.invites, bob.invites, dee.invites]);
+
+    expect(seen, [
+      'Alice makes one: a round as the press ended, rounds after it',
+      'Bob opens it: a round as the press ended, rounds after it',
+      'Dee says yes to one: a round as the press ended, rounds after it',
+      'once the vault takes writes: Alice and Bob at one string, Alice and '
+          'Dee at one string; every invite in its vault',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
 }

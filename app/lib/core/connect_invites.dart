@@ -553,11 +553,31 @@ class ConnectInvites extends ChangeNotifier {
     }
   }
 
+  /// [_save] after an invite was made, opened or said yes to: the polls
+  /// armed for it and the tab told whether or not the vault took the write.
+  /// Refused, the invite is kept in memory and carried forward like any
+  /// other until a write of the invites goes through, and
+  /// [ConnectWriteRefused] goes on to the screen. Until 2026-11-01 the
+  /// refusal was thrown before the polls were armed, so with no other
+  /// invite pending such an invite had no round until the next resume,
+  /// "Check now" or the tab opened again.
+  Future<void> _keep() async {
+    try {
+      await _save();
+    } finally {
+      _arm();
+      notifyListeners();
+    }
+  }
+
   Future<ConnectIdentity> _me() async => ConnectIdentity.fromCode(
       debugMyCode ?? await _svc.myContactCode(),
       displayName: _svc.displayName);
 
   /// Make an invite. Nothing is posted until the first [pump].
+  /// [ConnectWriteRefused] when the vault refuses the write: the invite is
+  /// kept in memory all the same and carried forward ([_keep]), and goes
+  /// with the next write of the invites.
   ///
   /// [gid]: make it a link to that group (ADR 0020) — an ordinary one-time,
   /// 24-hour invite, with the group remembered here and nowhere else. The run
@@ -592,9 +612,7 @@ class ConnectInvites extends ChangeNotifier {
       run: run,
     );
     _invites.add(invite);
-    await _save();
-    _arm();
-    notifyListeners();
+    await _keep();
     return invite;
   }
 
@@ -643,8 +661,8 @@ class ConnectInvites extends ChangeNotifier {
   /// Refused with [ConnectNotAnInvite] or [ConnectInviteAlreadyOpen], and a
   /// version-3 invite with [ConnectNoSealingKey] on a run of the app that
   /// holds no sealing key. [ConnectWriteRefused] when the vault refuses the
-  /// write: the invite is kept in memory all the same, and goes with the
-  /// next write of the invites.
+  /// write: the invite is kept in memory all the same and carried forward
+  /// ([_keep]), and goes with the next write of the invites.
   Future<PendingInvite> open(String linkOrCode,
       {int? nowMs, bool consented = true}) async {
     await load();
@@ -683,9 +701,7 @@ class ConnectInvites extends ChangeNotifier {
       consented: consented,
     );
     _invites.add(invite);
-    await _save();
-    _arm();
-    notifyListeners();
+    await _keep();
     return invite;
   }
 
@@ -700,14 +716,21 @@ class ConnectInvites extends ChangeNotifier {
   Future<void> consent(PendingInvite invite) async {
     if (invite.consented) return;
     invite.consented = true;
-    await _save();
-    _arm();
-    notifyListeners();
+    // A yes the vault refuses to write down is kept in memory all the same,
+    // and the invite carried forward from now ([_keep]); the refusal goes on
+    // to the screen once its round has run.
+    (Object, StackTrace)? refused;
+    try {
+      await _keep();
+    } on ConnectWriteRefused catch (e, st) {
+      refused = (e, st);
+    }
     // A round already in flight passed this invite over while it was held:
     // let it finish, then run one that carries it.
     final running = _inFlight;
     if (running != null) await running;
     await pump();
+    if (refused != null) Error.throwWithStackTrace(refused.$1, refused.$2);
   }
 
   /// A link or a printed code, whichever was handed over, of any version

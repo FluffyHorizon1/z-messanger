@@ -130,7 +130,14 @@ class _ConnectTabState extends State<ConnectTab> {
             onPressed: _busy
                 ? null
                 : () => _run(() async {
-                      await invites.create();
+                      try {
+                        await invites.create();
+                      } on ConnectWriteRefused {
+                        // Made all the same, in memory: its round now, as
+                        // any invite's (ConnectInvites.create).
+                        await invites.pump();
+                        rethrow;
+                      }
                       await invites.pump();
                     }),
             label: Text(l.connectCreate),
@@ -154,7 +161,15 @@ class _ConnectTabState extends State<ConnectTab> {
             onPressed: _busy
                 ? null
                 : () => _run(() async {
-                      await invites.open(_openCtrl.text);
+                      try {
+                        await invites.open(_openCtrl.text);
+                      } on ConnectWriteRefused {
+                        // Open all the same, in memory: its round now, as
+                        // any invite's (ConnectInvites.open).
+                        _openCtrl.clear();
+                        await invites.pump();
+                        rethrow;
+                      }
                       _openCtrl.clear();
                       await invites.pump();
                     }),
