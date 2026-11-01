@@ -128,7 +128,14 @@
 //     reach their digits and every invite is in its vault. Until 2026-11-01
 //     the write's refusal was thrown before the polls were armed, and the
 //     tab's round after it was not run, so such an invite had no round
-//     until the next resume, "Check now" or the tab opened again.
+//     until the next resume, "Check now" or the tab opened again;
+// 19. every refusal PROTOCOL §12.2 names, a code it does not name, an
+//     error frame that names none and an authentication refused are each
+//     the relay's refusal, read from the code the relay sent, and a link
+//     lost is a relay that could not be reached. Until 2026-11-01 the
+//     relay client's message was matched against the codes this build
+//     knew, so a code it did not know, and an error frame that named none,
+//     read as a relay that could not be reached.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -185,12 +192,17 @@ void main() {
   // relay's answer to that post is held back and the connection left open,
   // and `taken` is completed with the means to cut it: the relay has the
   // message, and the app that posted it has not heard. With [refuseAt]
-  // instead (criterion 17), that post never reaches the relay: it is
-  // answered with the refusal [refuseAt] names, as the relay words one, once.
+  // instead (criteria 17 and 19), that post never reaches the relay: it is
+  // answered once with a refusal in the relay's words — its `code`, or none
+  // when that is null, and the post's `id` when [named], as the five
+  // refusals of an envelope carry it (§12.2) — and the relay's day and a
+  // difficulty for `pow_required`. With [refuseAuth], the next
+  // authentication is answered with that code instead (criterion 19).
   late HttpServer link;
   ({String id, bool relayTakes})? dropAt;
   ({String id, Completer<void Function()> taken})? holdAt;
-  ({String id, String code})? refuseAt;
+  ({String id, String? code, bool named})? refuseAt;
+  String? refuseAuth;
   final linkSends = <Map<String, Object?>>[];
 
   setUpAll(() async {
@@ -239,13 +251,23 @@ void main() {
         if (dead) return;
         final f = frame(d);
         final drop = dropAt;
+        final authRefused = refuseAuth;
+        if (f != null && f['t'] == 'auth' && authRefused != null) {
+          refuseAuth = null;
+          down.add(jsonEncode({'t': 'error', 'code': authRefused}));
+          return;
+        }
         if (f != null && f['t'] == 'send') {
           linkSends.add(f);
           final refuse = refuseAt;
           if (refuse != null && f['id'] == refuse.id) {
             refuseAt = null;
-            down.add(jsonEncode(
-                {'t': 'error', 'code': refuse.code, 'id': refuse.id}));
+            down.add(jsonEncode({
+              't': 'error',
+              if (refuse.code != null) 'code': refuse.code,
+              if (refuse.named) 'id': refuse.id,
+              if (refuse.code == 'pow_required') ...{'bits': 16, 'day': 20393},
+            }));
             return;
           }
           if (drop != null && f['id'] == drop.id) {
@@ -1634,7 +1656,7 @@ void main() {
         await alice.invites.create();
         // Message 1 refused as the relay refuses a send to a mailbox that
         // holds all it may (§12.4).
-        refuseAt = (id: 'z-connect-c1', code: 'queue_full');
+        refuseAt = (id: 'z-connect-c1', code: 'queue_full', named: true);
         await alice.invites.pump();
       });
       expect(refuseAt, isNull, reason: 'the post met the refusal');
@@ -1766,4 +1788,57 @@ void main() {
     ]);
   }, timeout: const Timeout(Duration(minutes: 5)));
 
+  test(
+      '19. every refusal PROTOCOL §12.2 names, and one it does not, is the '
+      'relay\'s refusal; a link lost is a relay that could not be reached',
+      () async {
+    final alice =
+        await person('Alice', url: 'ws://127.0.0.1:${link.port}');
+    final invite = await alice.invites.create();
+    // §12.2's codes; the five that refuse an envelope name it.
+    const codes = [
+      'rate_limited', 'bad_json', 'internal', 'bad_auth', 'not_authed',
+      'bad_send', 'too_large', 'bad_push', 'unknown_frame', 'queue_full',
+      'store_full', 'pow_required', 'bad_intro', 'push_refused',
+      'intro_full', 'bad_ikey', 'anon_only',
+    ];
+    const named = {
+      'too_large', 'bad_send', 'queue_full', 'store_full', 'pow_required',
+    };
+    final seen = <String>[];
+    // One round, its failure read from the card's kind.
+    Future<void> round(String what) async {
+      invite.lastFailure = null;
+      await alice.invites.pump();
+      seen.add('$what: ${invite.lastFailure?.name ?? 'carried forward'}');
+    }
+
+    for (final code in codes) {
+      refuseAt = (id: 'z-connect-c1', code: code, named: named.contains(code));
+      await round(code);
+      expect(refuseAt, isNull, reason: 'message 1 met $code');
+    }
+    // A code no relay this build knows of sends.
+    refuseAt = (id: 'z-connect-c1', code: 'mailbox_moved', named: true);
+    await round('mailbox_moved, a code §12.2 does not name');
+    // An error frame that names no code, with the envelope's id and without.
+    refuseAt = (id: 'z-connect-c1', code: null, named: true);
+    await round('an error naming no code, with the id');
+    refuseAt = (id: 'z-connect-c1', code: null, named: false);
+    await round('an error naming no code, without it');
+    refuseAuth = 'bad_auth';
+    await round('the authentication refused');
+    expect(refuseAuth, isNull, reason: 'the authentication met the refusal');
+    dropAt = (id: 'z-connect-c1', relayTakes: false);
+    await round('the link lost as message 1 goes');
+
+    expect(seen, [
+      for (final code in codes) '$code: refused',
+      'mailbox_moved, a code §12.2 does not name: refused',
+      'an error naming no code, with the id: refused',
+      'an error naming no code, without it: refused',
+      'the authentication refused: refused',
+      'the link lost as message 1 goes: relay',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

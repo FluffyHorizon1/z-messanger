@@ -250,8 +250,9 @@ class RelayClient {
         break;
       case 'error':
         if (!_ready.isCompleted) {
-          _ready
-              .completeError(RelayException('auth failed: ${frame['code']}'));
+          final code = frame['code'];
+          _ready.completeError(RelayException('auth failed: $code',
+              code: code is String ? code : null));
         }
         break;
       default:
@@ -371,18 +372,21 @@ class RelayClient {
           if (push != null) pending.add(push);
           for (final c in pending) {
             if (!c.isCompleted) {
-              c.completeError(
-                  RelayException(str('code') ?? 'refused'));
+              c.completeError(RelayException(str('code') ?? 'refused',
+                  code: str('code')));
             }
           }
           // And an introduction-key frame (§12.7): `bad_ikey`, `not_authed`
           // and `rate_limited` for `ikey`, `anon_only` for `ikey_get`, and
           // `unknown_frame` from a relay that keeps none.
-          _failIntroKeyFrames(RelayException(str('code') ?? 'refused'));
+          _failIntroKeyFrames(
+              RelayException(str('code') ?? 'refused', code: str('code')));
           break;
         }
         {
-          final code = str('code') ?? '?';
+          // `refused` for a frame that names no code, as for one that names
+          // no envelope either (above); until 2026-11-01 this said `?`.
+          final code = str('code') ?? 'refused';
           // §21.6: a send to an introduction mailbox without the work its
           // owner asked for. The frame names the difficulty and the relay's
           // own day, so the sender can stamp again — once — for that day.
@@ -390,7 +394,7 @@ class RelayClient {
           _sendAcks.remove(id)?.completeError(
               code == 'pow_required' && bits is int && day is int
                   ? RelayPowRequired(bits: bits, day: day)
-                  : RelayException(code));
+                  : RelayException(code, code: str('code')));
         }
         break;
       default:
@@ -689,7 +693,16 @@ class IntroKeyAnswer {
 
 class RelayException implements Exception {
   final String message;
-  RelayException(this.message);
+
+  /// The relay's own refusal of a frame: the code its error frame carried
+  /// (PROTOCOL §12.2), as it came — one this build knows, or one it does
+  /// not. Null for what the client says itself — a link lost, an answer
+  /// that did not come in time, something that is not a Z relay — and for
+  /// an error frame that named no code, whose [message] is then `refused`,
+  /// or `auth failed: null` when it refused the authentication.
+  final String? code;
+
+  RelayException(this.message, {this.code});
   @override
   String toString() => 'RelayException: $message';
 }
@@ -703,7 +716,7 @@ class RelayPowRequired extends RelayException {
   final int bits;
   final int day;
   RelayPowRequired({required this.bits, required this.day})
-      : super('pow_required');
+      : super('pow_required', code: 'pow_required');
   @override
   String toString() => 'RelayPowRequired(bits: $bits, day: $day)';
 }

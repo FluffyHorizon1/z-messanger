@@ -145,10 +145,11 @@ enum ConnectFailure {
   /// timeout.
   relay,
 
-  /// The relay was reached and refused a step, with one of its own refusals
-  /// (`PROTOCOL.md` §12.2): the other side's mailbox there full, too many
-  /// frames at once, its store full ([relayRefused]). Until 2026-10-31 it
-  /// was said as a relay that could not be reached.
+  /// The relay was reached and refused a step, with a refusal of its own
+  /// ([relayRefused]): one `PROTOCOL.md` §12.2 names — the other side's
+  /// mailbox there full, too many frames at once, its store full — or one
+  /// a later relay sends. Until 2026-10-31 it was said as a relay that could
+  /// not be reached.
   refused,
 
   /// This device's vault refused a write of the invites
@@ -159,21 +160,20 @@ enum ConnectFailure {
   fault,
 }
 
-/// Whether [e] is the relay's own refusal of a frame — one of the error
-/// codes of `PROTOCOL.md` §12.2, as the relay client puts it in a
-/// [RelayException], `refused` when an error frame named none, and
-/// `auth failed: ` and a code when it was the authentication that was
-/// refused — rather than a link lost, an answer that did not come in time,
-/// or something that is not a Z relay at all.
+/// Whether [e] is the relay's own refusal of a frame rather than a link
+/// lost, an answer that did not come in time, or something that is not a Z
+/// relay at all: an error frame's code (`PROTOCOL.md` §12.2), any code, one
+/// this build knows or one a later relay sends ([RelayException.code]); and,
+/// for an error frame that named none, the client's own word for it —
+/// `refused`, or `auth failed: ` when it was the authentication that was
+/// refused. Until 2026-11-01 the message was matched against the codes
+/// this build knew, and a code it did not know, or an error frame that
+/// named none but named the envelope it refused, read as a relay that could
+/// not be reached.
 bool relayRefused(RelayException e) =>
-    _relayRefusals.contains(e.message) || e.message.startsWith('auth failed: ');
-
-const _relayRefusals = {
-  'rate_limited', 'bad_json', 'internal', 'bad_auth', 'not_authed',
-  'bad_send', 'too_large', 'bad_push', 'unknown_frame', 'queue_full',
-  'store_full', 'pow_required', 'bad_intro', 'push_refused', 'intro_full',
-  'bad_ikey', 'anon_only', 'refused',
-};
+    e.code != null ||
+    e.message == 'refused' ||
+    e.message.startsWith('auth failed: ');
 
 /// A write of the invites that this device's vault refused — a full disk, a
 /// locked or closed database. What refused it stays with it, for logs; the
