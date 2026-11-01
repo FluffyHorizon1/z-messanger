@@ -135,7 +135,13 @@
 //     lost is a relay that could not be reached. Until 2026-11-01 the
 //     relay client's message was matched against the codes this build
 //     knew, so a code it did not know, and an error frame that named none,
-//     read as a relay that could not be reached.
+//     read as a relay that could not be reached;
+// 20. a ConnectInvites put away while a write of its invites is out answers
+//     as the vault did, and tells nobody after: an invite made, opened or
+//     said yes to, discarded or stopped at a mismatch, with the vault
+//     refusing the write and taking it. Until 2026-11-01 each told its
+//     listeners after the write whether or not it had been put away, which
+//     in a debug build is an assertion in place of the vault's answer.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1839,6 +1845,92 @@ void main() {
       'an error naming no code, without it: refused',
       'the authentication refused: refused',
       'the link lost as message 1 goes: relay',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '20. a ConnectInvites put away while a write of its invites is out '
+      'answers as the vault did', () async {
+    const steps = [
+      'makes one',
+      'opens one',
+      'says yes to one',
+      'discards one',
+      'stops one at a mismatch',
+    ];
+    final alice = await person('Alice');
+    final seen = <String>[];
+    for (final refused in const [true, false]) {
+      for (final step in steps) {
+        final bob = await person('Bob');
+        // What the step needs, made before the vault's lock is held; and
+        // nothing the step does before its write reads the vault — its
+        // invites loaded, its own code at hand.
+        await bob.invites.load();
+        bob.invites.debugMyCode = await bob.svc.myContactCode();
+        String? link;
+        PendingInvite? held;
+        switch (step) {
+          case 'opens one':
+            link = (await alice.invites.create()).link;
+          case 'says yes to one':
+            held = await bob.invites
+                .open((await alice.invites.create()).link, consented: false);
+          case 'discards one' || 'stops one at a mismatch':
+            held = await bob.invites.create();
+        }
+        if (refused) await refuseWrites(bob);
+        // The vault's lock held by the test, so that the step's write waits
+        // for it while the ConnectInvites is put away.
+        final gate = Completer<void>();
+        final holding = Completer<void>();
+        final hold = bob.vault.db.transaction((txn) async {
+          holding.complete();
+          await gate.future;
+        });
+        await holding.future;
+        final before = bob.invites.invites.length;
+        final Future<Object?> doing = switch (step) {
+          'makes one' => bob.invites.create(),
+          'opens one' => bob.invites.open(link!),
+          'says yes to one' => bob.invites.consent(held!),
+          'discards one' => bob.invites.discard(held!),
+          _ => bob.invites.mismatch(held!),
+        };
+        // Its write is out once what it changes in memory has changed,
+        // which each step does just before it writes.
+        bool out() => switch (step) {
+              'makes one' || 'opens one' => bob.invites.invites.length > before,
+              'says yes to one' => held!.consented,
+              _ => bob.invites.invites.length < before,
+            };
+        final until = DateTime.now().add(const Duration(seconds: 30));
+        while (!out()) {
+          if (DateTime.now().isAfter(until)) {
+            fail('$step: its write never began');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        bob.invites.dispose();
+        gate.complete();
+        await hold;
+        String answered;
+        try {
+          await doing;
+          answered = 'done';
+        } on ConnectWriteRefused {
+          answered = 'the vault refused';
+        } catch (e) {
+          answered = 'threw "${'$e'.split('\n').first}"';
+        }
+        if (refused) await allowWrites(bob);
+        seen.add('${refused ? 'refused' : 'taken'}, Bob $step: $answered');
+      }
+    }
+
+    expect(seen, [
+      for (final step in steps) 'refused, Bob $step: the vault refused',
+      for (final step in steps) 'taken, Bob $step: done',
     ]);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }

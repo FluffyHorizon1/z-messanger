@@ -566,8 +566,18 @@ class ConnectInvites extends ChangeNotifier {
       await _save();
     } finally {
       _arm();
-      notifyListeners();
+      _told();
     }
+  }
+
+  /// The tab told the invites changed, unless this has been put away
+  /// ([dispose]) meanwhile — after a write of the invites, which a dispose
+  /// can come in the middle of. Until 2026-11-01 [_keep], [discard] and
+  /// [_finish] told it regardless, and in a debug build that was an
+  /// assertion where the vault's answer should have been: the invite, or
+  /// [ConnectWriteRefused].
+  void _told() {
+    if (!_disposed) notifyListeners();
   }
 
   Future<ConnectIdentity> _me() async => ConnectIdentity.fromCode(
@@ -1140,12 +1150,12 @@ class ConnectInvites extends ChangeNotifier {
     } on ConnectWriteRefused {
       _invites.insert(at.clamp(0, _invites.length), going);
       _arm();
-      notifyListeners();
+      _told();
       rethrow;
     }
     going.run.abandon();
     _arm();
-    notifyListeners();
+    _told();
   }
 
   static Future<String> _peerRid(ConnectIdentity peer) async =>
@@ -1232,6 +1242,6 @@ class ConnectInvites extends ChangeNotifier {
     _invites.removeWhere((i) => i.id == invite.id);
     await _save();
     _arm();
-    notifyListeners();
+    _told();
   }
 }
