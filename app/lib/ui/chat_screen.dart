@@ -1225,98 +1225,115 @@ class _MessageRow extends StatelessWidget {
     final mine = msg.reactions.where((r) => r.mine).map((r) => r.emoji).toSet();
     showModalBottomSheet<void>(
       context: context,
+      // A list that scrolls when the sheet is shorter than its items — a
+      // short screen, large text. Until 2026-11-01 it was a column that did
+      // not: it overflowed at 800×600, and at 360×640 with text at twice its
+      // size Edit and Delete for everyone could not be reached.
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (onReact != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    for (final emoji in ChatService.quickReactions)
-                      IconButton(
-                        // Announced as "React with X", and as selected when it
-                        // is the one already on this message — an emoji glyph
-                        // alone tells a screen-reader user neither.
-                        tooltip: mine.contains(emoji)
-                            ? l.chatRemoveReaction(emoji)
-                            : l.chatReactWith(emoji),
-                        // The one already on this message reads as selected.
-                        style: mine.contains(emoji)
-                            ? IconButton.styleFrom(
-                                backgroundColor: ctx.z.accentDim)
-                            : null,
-                        onPressed: () {
-                          Navigator.pop(ctx);
-                          onReact!(emoji);
-                        },
-                        icon: Text(emoji, style: const TextStyle(fontSize: 22)),
-                      ),
-                  ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (onReact != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  // The sheet's width, so that six that fit are spread across
+                  // it as they were; and a row that wraps where six do not —
+                  // a narrow screen, large text — rather than overflowing it.
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Wrap(
+                      alignment: WrapAlignment.spaceEvenly,
+                      children: [
+                        for (final emoji in ChatService.quickReactions)
+                          IconButton(
+                            // Announced as "React with X", and as selected
+                            // when it is the one already on this message —
+                            // an emoji glyph alone tells a screen-reader
+                            // user neither.
+                            tooltip: mine.contains(emoji)
+                                ? l.chatRemoveReaction(emoji)
+                                : l.chatReactWith(emoji),
+                            // The one already on this message reads as
+                            // selected.
+                            style: mine.contains(emoji)
+                                ? IconButton.styleFrom(
+                                    backgroundColor: ctx.z.accentDim)
+                                : null,
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              onReact!(emoji);
+                            },
+                            icon: Text(emoji,
+                                style: const TextStyle(fontSize: 22)),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            ListTile(
-              leading: Icon(Icons.reply, color: ctx.z.accent),
-              title: Text(l.chatReply),
-              onTap: () {
-                Navigator.pop(ctx);
-                onReply?.call();
-              },
-            ),
-            // Save is the only way to get a file (or a voice note) off the
-            // device where the inline player cannot play it — desktop has no
-            // audio backend. It had no entry here, so the player's own "save
-            // the file instead" notice pointed at nothing.
-            if (msg.kind == 'file' && (msg.file?.complete ?? false))
               ListTile(
-                leading: Icon(Icons.download_outlined, color: ctx.z.accent),
-                title: Text(l.save),
+                leading: Icon(Icons.reply, color: ctx.z.accent),
+                title: Text(l.chatReply),
                 onTap: () {
                   Navigator.pop(ctx);
-                  saveAttachment(context, msg.file!.fid, msg.file!.name);
+                  onReply?.call();
                 },
               ),
-            if (msg.kind != 'file')
-              ListTile(
-                leading: Icon(Icons.copy_outlined, color: ctx.z.textSecondary),
-                title: Text(l.chatCopyText),
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: msg.body));
-                  Navigator.pop(ctx);
-                },
-              ),
-            if (onForward != null)
-              ListTile(
-                leading: Icon(Icons.shortcut, color: ctx.z.textSecondary),
-                title: Text(l.chatForward),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onForward!();
-                },
-              ),
-            // Editing and deleting for everyone are for my own messages.
-            if (msg.outgoing && onEdit != null && msg.kind != 'file')
-              ListTile(
-                leading: Icon(Icons.edit_outlined, color: ctx.z.textSecondary),
-                title: Text(l.chatEdit),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onEdit!();
-                },
-              ),
-            if (msg.outgoing && onDelete != null)
-              ListTile(
-                leading: Icon(Icons.delete_outline, color: ctx.z.danger),
-                title: Text(l.chatDeleteForEveryone,
-                    style: TextStyle(color: ctx.z.danger)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onDelete!();
-                },
-              ),
-          ],
+              // Save is the only way to get a file (or a voice note) off the
+              // device where the inline player cannot play it — desktop has no
+              // audio backend. It had no entry here, so the player's own "save
+              // the file instead" notice pointed at nothing.
+              if (msg.kind == 'file' && (msg.file?.complete ?? false))
+                ListTile(
+                  leading: Icon(Icons.download_outlined, color: ctx.z.accent),
+                  title: Text(l.save),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    saveAttachment(context, msg.file!.fid, msg.file!.name);
+                  },
+                ),
+              if (msg.kind != 'file')
+                ListTile(
+                  leading:
+                      Icon(Icons.copy_outlined, color: ctx.z.textSecondary),
+                  title: Text(l.chatCopyText),
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: msg.body));
+                    Navigator.pop(ctx);
+                  },
+                ),
+              if (onForward != null)
+                ListTile(
+                  leading: Icon(Icons.shortcut, color: ctx.z.textSecondary),
+                  title: Text(l.chatForward),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    onForward!();
+                  },
+                ),
+              // Editing and deleting for everyone are for my own messages.
+              if (msg.outgoing && onEdit != null && msg.kind != 'file')
+                ListTile(
+                  leading:
+                      Icon(Icons.edit_outlined, color: ctx.z.textSecondary),
+                  title: Text(l.chatEdit),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    onEdit!();
+                  },
+                ),
+              if (msg.outgoing && onDelete != null)
+                ListTile(
+                  leading: Icon(Icons.delete_outline, color: ctx.z.danger),
+                  title: Text(l.chatDeleteForEveryone,
+                      style: TextStyle(color: ctx.z.danger)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    onDelete!();
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     );

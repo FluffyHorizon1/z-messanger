@@ -30,7 +30,13 @@
 //      or in the vault, whichever of its writes was refused — the group,
 //      its first line, its invite — and nothing after a restart: until
 //      2026-11-01 it stayed in the chat list until the app stopped, and in
-//      the vault when what was refused came after the group.
+//      the vault when what was refused came after the group;
+//   7. a message's action sheet scrolls: at 360×640, text at twice its
+//      size, nothing overflows and every item can be reached, the one at
+//      its foot pressed. Until 2026-11-01 it was a column that did not: it
+//      overflowed by 2.5 pixels at the test's 800×600, which criterion 2
+//      met on a screen 1 600 high, and at 360×640 Edit and Delete for
+//      everyone were out of reach and its row of reactions overflowed.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -281,7 +287,8 @@ void main() {
           'ON $table ${when == null ? '' : 'WHEN $when '}'
           "BEGIN SELECT RAISE(ABORT, 'database is locked'); END");
 
-  Widget app(ChatService svc, Widget home, Locale locale) =>
+  Widget app(ChatService svc, Widget home, Locale locale,
+          {double textScale = 1}) =>
       ChangeNotifierProvider<ChatService>.value(
         value: svc,
         child: MaterialApp(
@@ -291,9 +298,34 @@ void main() {
           locale: locale,
           localizationsDelegates: AppLocalizations.localizationsDelegates,
           supportedLocales: AppLocalizations.supportedLocales,
+          // The size the person set their text to, as the platform hands
+          // it over.
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: TextScaler.linear(textScale)),
+            child: child!,
+          ),
           home: home,
         ),
       );
+
+  /// [svc]'s chat with [rid] on the screen, and marked open as opening it
+  /// marks it — its last write over before anything is asked of the screen,
+  /// so that none is left running when the test puts the vault away.
+  Future<void> openChat(
+      WidgetTester t, ChatService svc, String rid, Locale locale,
+      {double textScale = 1}) async {
+    var opened = false;
+    void heard() {
+      if (svc.openChatRid == rid) opened = true;
+    }
+
+    svc.addListener(heard);
+    await t.pumpWidget(
+        app(svc, ChatScreen(rid: rid), locale, textScale: textScale));
+    await _settleUntil(t, () => opened, what: 'the chat marked open');
+    svc.removeListener(heard);
+  }
 
   /// Record [sound] and send it as a voice message.
   Future<void> recordAndSend(
@@ -397,10 +429,9 @@ void main() {
   testWidgets(
       '2. a forward and a reaction the storage refuses say so, and a file '
       'that cannot be saved says it could not be', (t) async {
-    // Tall enough for the whole of a message's action sheet, which is not a
-    // list that scrolls.
-    await t.binding.setSurfaceSize(const Size(800, 1600));
-    addTearDown(() => t.binding.setSurfaceSize(null));
+    // The test's own 800×600, at which a message's action sheet is a little
+    // shorter than its items (criterion 7): Forward is brought into view
+    // before it is pressed.
     final seen = <String>[];
     for (final lang in const ['en', 'es']) {
       final locale = Locale(lang);
@@ -430,12 +461,16 @@ void main() {
         await refuse(svc, 'reactions');
       });
       // A sheet's items are pressed once it is up, not while it rises.
+      final reply = find.text(l.chatReply).hitTestable();
       final forward = find.text(l.chatForward).hitTestable();
       final quinn = find.text('Quinn').hitTestable();
       final thumbs = find.byTooltip(l.chatReactWith('👍')).hitTestable();
       await t.longPress(find.text('Hello'));
-      await _settleUntil(t, () => forward.evaluate().isNotEmpty,
+      await _settleUntil(t, () => reply.evaluate().isNotEmpty,
           what: 'what can be done with it');
+      await t.ensureVisible(find.text(l.chatForward));
+      await _settleUntil(t, () => forward.evaluate().isNotEmpty,
+          what: 'Forward, scrolled to');
       await t.tap(forward);
       await _settleUntil(t, () => quinn.evaluate().isNotEmpty,
           what: 'who it can go to');
@@ -701,4 +736,77 @@ void main() {
             'vault: nothing; after a restart: nothing',
     ]);
   });
+
+  testWidgets(
+      '7. a message\'s action sheet scrolls: at 360×640 with text at twice '
+      'its size nothing overflows, and every item can be reached', (t) async {
+    await t.binding.setSurfaceSize(const Size(360, 640));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final l = lookupAppLocalizations(locale);
+      final svc = await person(t, 'sheet$lang');
+      late String rid;
+      await t.runAsync(() async {
+        rid = await contact(svc, 'Pat');
+        await svc.sendText(rid, 'Hello');
+      });
+      await openChat(t, svc, rid, locale, textScale: 2);
+      final overflowBefore = t.takeException();
+      final reply = find.text(l.chatReply).hitTestable();
+      await t.longPress(find.text('Hello'));
+      await _settleUntil(t, () => reply.evaluate().isNotEmpty,
+          what: 'the sheet');
+      // Up, and still: its rise is a few frames.
+      for (var i = 0; i < 20; i++) {
+        await t.pump(const Duration(milliseconds: 50));
+      }
+      // Every item of a message of mine: the six reactions, then the list.
+      final items = <(String, Finder)>[
+        for (final emoji in ChatService.quickReactions)
+          (emoji, find.byTooltip(l.chatReactWith(emoji))),
+        for (final label in [
+          l.chatReply,
+          l.chatCopyText,
+          l.chatForward,
+          l.chatEdit,
+          l.chatDeleteForEveryone,
+        ])
+          (label, find.text(label)),
+      ];
+      final unreached = <String>[];
+      for (final (what, item) in items) {
+        if (item.evaluate().isNotEmpty) await t.ensureVisible(item);
+        await t.pump();
+        if (item.hitTestable().evaluate().isEmpty) unreached.add(what);
+      }
+      // The one at its foot, pressed: Delete for everyone asks first.
+      final foot = find.text(l.chatDeleteForEveryone).hitTestable();
+      var pressed = 'could not be pressed';
+      if (foot.evaluate().isNotEmpty) {
+        await t.tap(foot);
+        await _settleUntil(
+            t, () => find.byType(AlertDialog).evaluate().isNotEmpty,
+            what: 'its question');
+        pressed = 'asks first';
+        await t.tap(find.descendant(
+            of: find.byType(AlertDialog), matching: find.text(l.cancel)));
+        await t.pump(const Duration(milliseconds: 400));
+      }
+      final overflow = t.takeException();
+      seen.add('$lang: overflow: '
+          '${overflowBefore == null && overflow == null ? 'none' : 'some'}; '
+          'out of reach: ${unreached.isEmpty ? 'nothing' : unreached.join(', ')}; '
+          '${l.chatDeleteForEveryone}: $pressed');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es'])
+        '$lang: overflow: none; out of reach: nothing; '
+            '${lookupAppLocalizations(Locale(lang)).chatDeleteForEveryone}: '
+            'asks first',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }
