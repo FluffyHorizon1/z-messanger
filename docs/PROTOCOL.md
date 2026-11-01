@@ -2277,8 +2277,13 @@ second attempt waited for a commitment that would not come. The reference
 client now hosts one link per code: an attempt on a code it is already
 hosting first stops the earlier one, and starts once it is over, and
 leaving the link screen stops the attempt it started. A stopped attempt
-ends at once in any wait — for a frame, for the relay, for its user's answer
-— but one: once its reply is on its way, it waits for the relay's word on the
+ends at once in any wait — for a frame, for its user's answer — but two.
+While it opens a connection to the relay (the existing device opens three,
+one after another, the new device one), the opening runs to its end — up to
+fifteen seconds to connect and fifteen for the relay's welcome — before the
+stop is seen, so a stop made while a slow connection opens, and an attempt on
+the code started after it, waits for that, as it always has. And once its
+reply is on its way, it waits for the relay's word on the
 reply (`sent`) — for five seconds from the stop at most, and less when its
 connection fails, or the twenty seconds a send has run out, first — since
 whether the new device can hold that reply is what the code is left with

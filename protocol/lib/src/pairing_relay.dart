@@ -75,13 +75,15 @@ class PairingResult {
 /// until it begins to install the enrolment, after which it runs to its
 /// end, so that a device that holds the account is listed.
 ///
-/// The attempt stops at its next step — while it waits for a frame, for the
-/// relay or for its person — in [PairingCancelled], until it sends the
+/// The attempt stops at its next step — while it waits for a frame or for
+/// its person — in [PairingCancelled], until it sends the
 /// enrolment: from then on the new device may come to hold the account, and
 /// only the report the attempt goes on to wait for can list it, so it runs
-/// to its end whatever [cancel] says ([sentEnrolment]). The one wait it
-/// keeps to is for the relay's word on the existing device's reply, once
-/// that is on its way, and that for at most [RelayPairing.stoppedReplyWait]
+/// to its end whatever [cancel] says ([sentEnrolment]). Two waits it keeps
+/// to. A connection it is opening to the relay is not raced: the opening
+/// runs to its end, within [RelayClient.connect]'s timeouts, before the stop
+/// is seen. And once the existing device's reply is on its way, the relay's
+/// word on it is waited for, for at most [RelayPairing.stoppedReplyWait]
 /// from the stop: whether the new device can hold the reply is what decides
 /// whether the code has a ceremony left ([answered]). What the relay holds
 /// for this side that it had not read, or not answered, when it stopped is

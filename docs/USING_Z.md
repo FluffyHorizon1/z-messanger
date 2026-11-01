@@ -518,8 +518,9 @@ differ, one that timed out or lost its connection — and the new device
 shows a new one when it gives up: start again on both devices with that.
 Your phone says so at once if you enter a used code again, once the relay
 has told it that it took your phone's answer. If your phone's connection
-went before the relay could tell it, or you stopped the link and five
-seconds passed without word, your phone cannot know: the code entered again
+went before the relay could tell it, the relay did not answer within twenty
+seconds, or you stopped the link and five seconds passed without word, your
+phone cannot know: the code entered again
 either links, or waits until that link times out. A code that linked a
 device has done its work too, and your phone says so if you enter it again:
 to link another device, get a new code on that one. And if your phone ever
