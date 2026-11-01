@@ -98,7 +98,13 @@
 //     not in, still get its photo and the text after it;
 //  22. while the store refuses everyone — a pass ended on eight
 //     `store_full`s — no group file is staged, whosever mailbox it is for,
-//     and once the store takes an envelope again the file goes.
+//     and once the store takes an envelope again the file goes;
+//  23. a refusal is read from the code the relay's frame named, whole:
+//     `too_large` and `bad_send` fail their own message, and every other
+//     code §12.2 names keeps it, as does a code this build does not know —
+//     `bad_sender`, which has `bad_send` inside it, among them — and an
+//     error frame that names none. Until 2026-11-01 the client's message
+//     was searched for each code, and `bad_sender` failed the message.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1916,6 +1922,115 @@ void main() {
             await hasWhole(carol, files, file),
         timeout: const Duration(seconds: 60),
         what: 'once the store takes envelopes, Bob and Carol have the file');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '23. a refusal is read from the code the relay\'s frame named, whole: '
+      'too_large and bad_send fail their own message, and every other code '
+      'keeps it', () async {
+    final port = await startRelay({});
+    final proxy = await startProxy(port);
+    final alice = await personAt('Alice', proxy.url);
+    // A held mailbox tried again long after the test.
+    alice.outboxRetryDelay = const Duration(seconds: 30);
+    await warm(alice);
+    final bobId = await ZIdentity.generate();
+    final bobRid = await bobId.routingId();
+    await alice.addContactFromCode(
+        (await bobId.bundle(displayName: 'Bob')).encode(),
+        alias: 'Bob');
+    // §12.2's codes; the five that refuse an envelope name it, as the
+    // relay sends them.
+    const codes = [
+      'rate_limited', 'bad_json', 'internal', 'bad_auth', 'not_authed',
+      'bad_send', 'too_large', 'bad_push', 'unknown_frame', 'queue_full',
+      'store_full', 'pow_required', 'bad_intro', 'push_refused',
+      'intro_full', 'bad_ikey', 'anon_only',
+    ];
+    const named = {
+      'too_large', 'bad_send', 'queue_full', 'store_full', 'pow_required',
+    };
+    final cases = <(String, String?, bool)>[
+      for (final code in codes) (code, code, named.contains(code)),
+      ('mailbox_moved, a code §12.2 does not name', 'mailbox_moved', true),
+      ('bad_sender, which has bad_send inside it', 'bad_sender', true),
+      ('an error naming no code, with the id', null, true),
+      ('an error naming no code, without it', null, false),
+    ];
+    final seen = <String>[];
+    for (final (i, (what, code, withId)) in cases.indexed) {
+      // A message of Alice's to Bob, its envelope to a mailbox of its own,
+      // answered with [code] each time it goes.
+      await waitUntil(
+          () =>
+              alice.transport.isConnected &&
+              alice.transport.isSenderConnected,
+          what: 'Alice connected for $what');
+      final mid = 'refused-$i';
+      final mailbox = nobody();
+      await alice.vault.db.insert('messages', {
+        'mid': mid,
+        'rid': bobRid,
+        'outgoing': 1,
+        'kind': 'text',
+        'enc_body': await alice.vault.seal(jsonEncode({'b': what})),
+        'ts_ms': DateTime.now().millisecondsSinceEpoch,
+        'status': MsgStatus.pending,
+        'expire_at_ms': 0,
+      });
+      var answered = 0;
+      proxy.answer = (link, f) {
+        if (f['to'] != mailbox) return null;
+        answered++;
+        return {
+          't': 'error',
+          if (code != null) 'code': code,
+          if (withId) 'id': f['id'],
+          if (code == 'pow_required') ...{'bits': 20, 'day': 20000},
+        };
+      };
+      await alice.vault.db.insert('outbox', {
+        'id': newMessageId(),
+        'mid': mid,
+        'thread_rid': bobRid,
+        'rid': mailbox,
+        'payload': 'zs1.${newMessageId()}',
+        'created_ms': DateTime.now().millisecondsSinceEpoch,
+      });
+      unawaited(alice.flushOutbox());
+      await waitUntil(() => answered > 0, what: '$what answered');
+      await waitUntil(() => !alice.debugOutboxPassRunning,
+          what: 'the pass that met $what over');
+      final status = (await alice.vault.db.query('messages',
+              columns: ['status'], where: 'mid = ?', whereArgs: [mid]))
+          .single['status'] as int;
+      final kept = (await alice.vault.db
+              .query('outbox', where: 'mid = ?', whereArgs: [mid]))
+          .isNotEmpty;
+      final String outcome;
+      if (status == -1 && !kept) {
+        outcome = 'failed';
+      } else if (status == MsgStatus.pending && kept) {
+        outcome = 'kept';
+      } else {
+        outcome = 'status $status, ${kept ? 'kept' : 'gone'}';
+      }
+      seen.add('$what: $outcome');
+      // Nothing of it tried again under the next case.
+      proxy.answer = null;
+      await alice.vault.db
+          .delete('outbox', where: 'mid = ?', whereArgs: [mid]);
+    }
+
+    const failing = {'too_large', 'bad_send'};
+    expect(seen, [
+      for (final code in codes)
+        '$code: ${failing.contains(code) ? 'failed' : 'kept'}',
+      'mailbox_moved, a code §12.2 does not name: kept',
+      'bad_sender, which has bad_send inside it: kept',
+      'an error naming no code, with the id: kept',
+      'an error naming no code, without it: kept',
+    ]);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
 

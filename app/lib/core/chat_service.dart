@@ -6023,8 +6023,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   Future<void> _outboxRefused(_OutboxPass p, Map<String, Object?> row,
       _OutboxSend out, Object e) async {
     final rid = row['rid'] as String;
-    final code = e is RelayException ? e.message : '';
-    if (code.contains('too_large') || code.contains('bad_send')) {
+    // The relay's own refusal is read from the code its error frame named
+    // ([RelayException.code], PROTOCOL §12.2), whole; the message stands in
+    // only for what the client says itself — the link lost, a send the relay
+    // did not answer in time — which names no code. Until 2026-11-01 the
+    // message was searched for each code, so a code this build does not
+    // know that has one it does inside it — `bad_sender` holds `bad_send` —
+    // was read as that one.
+    final code = e is RelayException ? (e.code ?? e.message) : '';
+    if (code == 'too_large' || code == 'bad_send') {
       // Permanent rejection: drop and surface failure. The message is named
       // by the row's own `mid` and `thread_rid`, not by the envelope id and
       // the mailbox — those were the same string until the envelope id was
@@ -6040,7 +6047,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         _updateLoadedStatus(thread, failedMid, -1);
         p.failedAny = true;
       }
-    } else if (code.contains('queue_full') || code.contains('pow_required')) {
+    } else if (code == 'queue_full' || code == 'pow_required') {
       // That recipient's mailbox at the relay is at its cap (PROTOCOL
       // §12.4): theirs alone, and temporary — it empties when they next
       // connect. The row waits, still pending, and is tried again shortly;
@@ -6050,7 +6057,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       _timeAnswer(out);
       p.held.add(rid);
       _mailboxRefusing(rid);
-    } else if (code.contains('store_full')) {
+    } else if (code == 'store_full') {
       // No room at the relay for this envelope (§12.4). That is the store
       // full, which refuses everyone, or the first-contact gate, which
       // refuses only mailboxes the relay has not seen; one refusal does not
@@ -6067,7 +6074,7 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       if (p.storeFullRun.length >= outboxStoreFullRun) {
         p.stop ??= _OutboxStop.storeFull;
       }
-    } else if (code.contains('rate_limited')) {
+    } else if (code == 'rate_limited') {
       // This connection is being told to slow down, which is about the
       // sender and not about any one mailbox. Stop the pass and come back
       // on the backoff timer: waiting for the next *reconnect*, as this

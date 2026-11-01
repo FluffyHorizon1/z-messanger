@@ -568,6 +568,142 @@ void main() {
     await online(dev);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test(
+      '8. a refusal of a push frame is read from the relay\'s code: '
+      'bad_push, push_refused and unknown_frame refuse a token for good, '
+      'unknown_frame alone ends a withdrawal, and any other refusal is asked '
+      'again on the next connection', () async {
+    Map<String, Object?>? frame(dynamic d) {
+      if (d is! String) return null;
+      try {
+        final j = jsonDecode(d);
+        return j is Map ? j.cast<String, Object?>() : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // A link between the app and the relay that passes every frame on, but
+    // answers the next push frame itself, as the relay words a refusal: an
+    // error frame with [refusing]'s code, or with none. Each connection's
+    // frames from the app are kept, in order.
+    String? refusingCode;
+    var refusing = false;
+    var refused = 0;
+    final links =
+        <({List<Map<String, Object?>> frames, void Function() cut})>[];
+    final link = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => link.close(force: true));
+    link.listen((req) async {
+      final WebSocket down;
+      try {
+        down = await WebSocketTransformer.upgrade(req);
+      } catch (_) {
+        req.response.statusCode = HttpStatus.badRequest;
+        await req.response.close();
+        return;
+      }
+      // The Host header passed on, as a front passes it: the app signs its
+      // authentication over the address it dialled (§12.1).
+      final up = await WebSocket.connect('ws://127.0.0.1:$port',
+          headers: {'host': req.headers.value('host') ?? ''});
+      final frames = <Map<String, Object?>>[];
+      var dead = false;
+      void cut() {
+        dead = true;
+        unawaited(down.close());
+        unawaited(up.close());
+      }
+
+      links.add((frames: frames, cut: cut));
+      down.listen((d) {
+        if (dead) return;
+        final f = frame(d);
+        if (f != null) frames.add(f);
+        if (f != null &&
+            refusing &&
+            (f['t'] == 'push-register' || f['t'] == 'push-unregister')) {
+          refusing = false;
+          refused++;
+          down.add(jsonEncode(
+              {'t': 'error', if (refusingCode != null) 'code': refusingCode}));
+          return;
+        }
+        up.add(d);
+      }, onDone: () => up.close(), onError: (_) => up.close());
+      up.listen((d) {
+        if (!dead) down.add(d);
+      }, onDone: () => down.close(), onError: (_) => down.close());
+    });
+
+    final me = await ZIdentity.generate();
+    final transport =
+        Transport(identity: me, serverUrl: 'ws://127.0.0.1:${link.port}');
+    addTearDown(transport.stop);
+    transport.start();
+    await waitUntil(() => transport.isConnected, what: 'connected');
+    final nobody = b64url(randomBytes(32));
+
+    // [code] answers the next push frame, the one [ask] makes; then the link
+    // that carried it is cut, and the app connects again at once. Whether
+    // the frame was asked again: what the app asks on connecting goes before
+    // the first frame the test has it send there.
+    Future<bool> askedAgain(
+        String? code, String kind, void Function() ask) async {
+      refusingCode = code;
+      refusing = true;
+      final mark = refused;
+      ask();
+      await waitUntil(() => refused > mark, what: 'the $kind refused');
+      final carried =
+          links.lastWhere((l) => l.frames.any((f) => f['t'] == kind));
+      carried.cut();
+      await waitUntil(() => !transport.isConnected, what: 'the link cut');
+      transport.nudge();
+      await waitUntil(() => transport.isConnected, what: 'back');
+      final marker = newMessageId();
+      await transport.send(to: nobody, id: marker, payload: 'marker $marker');
+      final again = links.lastWhere((l) =>
+          l.frames.any((f) => f['t'] == 'send' && f['id'] == marker));
+      return again.frames
+          .takeWhile((f) => !(f['t'] == 'send' && f['id'] == marker))
+          .any((f) => f['t'] == kind);
+    }
+
+    const codes = [
+      'rate_limited', 'bad_json', 'internal', 'bad_auth', 'not_authed',
+      'bad_send', 'too_large', 'bad_push', 'unknown_frame', 'queue_full',
+      'store_full', 'pow_required', 'bad_intro', 'push_refused',
+      'intro_full', 'bad_ikey', 'anon_only',
+    ];
+    final cases = <(String, String?)>[
+      for (final code in codes) (code, code),
+      ('mailbox_moved, a code §12.2 does not name', 'mailbox_moved'),
+      ('an error naming no code', null),
+    ];
+    final seen = <String>[];
+    for (final (i, (what, code)) in cases.indexed) {
+      final again = await askedAgain(code, 'push-register',
+          () => transport.setPushToken('fcm-token-refused-$i'));
+      seen.add('$what, a token: ${again ? 'asked again' : 'refused for good'}');
+    }
+    for (final (what, code) in cases) {
+      final again =
+          await askedAgain(code, 'push-unregister', transport.unregisterPush);
+      seen.add('$what, a withdrawal: ${again ? 'asked again' : 'ended'}');
+    }
+
+    const forGood = {'bad_push', 'push_refused', 'unknown_frame'};
+    expect(seen, [
+      for (final (what, code) in cases)
+        '$what, a token: '
+            '${forGood.contains(code) ? 'refused for good' : 'asked again'}',
+      for (final (what, code) in cases)
+        '$what, a withdrawal: '
+            '${code == 'unknown_frame' ? 'ended' : 'asked again'}',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   group('Settings', () {
     late Directory dir;
     late ChatService svc;

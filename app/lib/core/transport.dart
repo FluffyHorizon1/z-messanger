@@ -332,7 +332,10 @@ class Transport extends ChangeNotifier {
         _withdrawn();
       }
     }, onError: (Object e) {
-      final code = e is RelayException ? e.message : '';
+      // The relay's code ([RelayException.code], PROTOCOL §12.2), and the
+      // message only for what the client says itself, which names none.
+      // Until 2026-11-01 the message alone was read, which held the code.
+      final code = e is RelayException ? (e.code ?? e.message) : '';
       if (token == null && code == 'unknown_frame') {
         // A relay with no push at all: it holds no token to forget.
         _withdrawn();
