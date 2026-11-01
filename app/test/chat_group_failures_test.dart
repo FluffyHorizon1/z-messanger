@@ -46,7 +46,14 @@
 //      until 2026-11-01 either went uncaught, and nothing was said;
 //  10. a file still arriving says how much of it has come in the reader's
 //      language: until 2026-11-01 its card said "receiving 3/12…" in
-//      English whatever the language.
+//      English whatever the language;
+//  11. a write of the groups list made while a group is being made carries
+//      all of the group or none of it: the group refused, nothing of it is
+//      kept, in memory, in the vault or after a restart, and the other
+//      write's change is; the group made, both are kept. Until 2026-11-01
+//      such a write sealed the list with the group in it while the group's
+//      own transaction was still to come, and wrote it after that
+//      transaction had been refused.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -983,4 +990,79 @@ void main() {
 
     expect(seen, ['en: its own line', 'es: its own line']);
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+      '11. a write of the groups list made while a group is being made '
+      'carries all of the group or none of it', () async {
+    final seen = <String>[];
+    for (final refused in const [true, false]) {
+      final dir = await Directory.systemTemp.createTemp('z_cgf_both');
+      temps.add(dir);
+      var svc = await start(dir, 'Gus');
+      // What a group's invite leaves to send stays queued: nothing is sent
+      // from here, and nothing is left running when the app stops.
+      svc.debugPauseGroupFanout = true;
+      final rid = await contact(svc, 'Pat');
+      final choir = await svc.createGroup('Choir', [rid]);
+      // The new group's invite refused, and nothing else.
+      if (refused) {
+        await refuse(svc, 'group_fanout', when: "NEW.gid != '$choir'");
+      }
+      // The vault's lock held while the new group is begun and Choir is
+      // renamed, then let go: the rename's write of the list is asked for
+      // while the new group's creation is under way.
+      final gate = Completer<void>();
+      final holding = Completer<void>();
+      final hold = svc.vault.db.transaction((txn) async {
+        holding.complete();
+        await gate.future;
+      });
+      await holding.future;
+      final making = svc.createGroup('Book club', [rid]);
+      final renaming = svc.renameGroup(choir, 'Chorus');
+      gate.complete();
+      await hold;
+      Object? thrown;
+      try {
+        await making;
+      } catch (e) {
+        thrown = e;
+      }
+      await renaming;
+      String names(Iterable<Object?> all) =>
+          (all.map((n) => '$n').toList()..sort()).join(', ');
+      final memory = names(svc.groups.values.map((g) => g.name));
+      final stored = await svc.vault.kvGet('groups');
+      final vault = names([
+        for (final g in jsonDecode(stored ?? '[]') as List) (g as Map)['name']
+      ]);
+      // The list the vault holds, byte for byte, beside the one memory
+      // would write now.
+      final asMemory = stored ==
+          jsonEncode([for (final g in svc.groups.values) g.toJson()]);
+      // Nothing queued is what this is about.
+      await svc.vault.db.delete('group_fanout');
+      await svc.vault.db.delete('outbox');
+      await stop(svc);
+      svc = await start(dir, 'Gus');
+      final restarted = names(svc.groups.values.map((g) => g.name));
+      await stop(svc);
+      final how = thrown == null
+          ? 'made'
+          : thrown is DatabaseException
+              ? 'the storage refused'
+              : 'thrown: $thrown';
+      seen.add('${refused ? 'its invite refused' : 'made'}: $how; '
+          'in memory: $memory; in the vault: $vault '
+          '(${asMemory ? 'as memory holds it' : 'not as memory holds it'}); '
+          'after a restart: $restarted');
+    }
+
+    expect(seen, [
+      'its invite refused: the storage refused; in memory: Chorus; in the '
+          'vault: Chorus (as memory holds it); after a restart: Chorus',
+      'made: made; in memory: Book club, Chorus; in the vault: Book club, '
+          'Chorus (as memory holds it); after a restart: Book club, Chorus',
+    ]);
+  });
 }

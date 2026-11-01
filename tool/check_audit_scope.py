@@ -114,8 +114,9 @@ UNCITED_OK = {
         "and never as the exception's text — a localisation property (G9), as "
         "unlock_error_test's is — and leaves the screen and the vault as they "
         "were: the text still in the composer, nothing of a refused group "
-        "behind, a message's action sheet that scrolls. Screen and storage "
-        "properties, not a security claim",
+        "behind, through a write of the groups list made while it was being "
+        "made as well, a message's action sheet that scrolls. Screen and "
+        "storage properties, not a security claim",
     "app/test/destructive_confirm_test.dart":
         "that resetting a secure session and removing a group member ask "
         "before they act, as every other destructive action does, and that "

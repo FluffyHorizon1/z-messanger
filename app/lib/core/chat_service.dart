@@ -11091,10 +11091,25 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
 
   /// Persist all groups. Matches the vault's sensitive-kv format so it can be
   /// written inside an inbound transaction (kvPut cannot take a txn).
+  ///
+  /// The list is read from memory and sealed under the vault's lock — in
+  /// [txn], or in a transaction of its own when there is none — so that
+  /// what is written is what memory holds when the write is made, not when
+  /// it was asked for. A group being made is in memory only inside its own
+  /// transaction and once that has committed ([createGroup]), so a write
+  /// made meanwhile carries all of it or none. Until 2026-11-01 a write
+  /// with no [txn] sealed the list first and then waited for the lock: one
+  /// asked for while a group's creation was under way carried that group,
+  /// and wrote it into the vault after its creation had been refused.
   Future<void> _saveGroups({DatabaseExecutor? txn}) async {
+    if (txn == null) return vault.db.transaction(_writeGroups);
+    return _writeGroups(txn);
+  }
+
+  Future<void> _writeGroups(DatabaseExecutor txn) async {
     final v = await vault
         .seal(jsonEncode([for (final g in groups.values) g.toJson()]));
-    await (txn ?? vault.db).insert('kv', {'k': 's:groups', 'v': v},
+    await txn.insert('kv', {'k': 's:groups', 'v': v},
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
@@ -11507,8 +11522,14 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// against the recipients this snapshot names (ADR 0036 §4) — the group
   /// can have grown since [sendGroupFile] first looked — and refused with
   /// [GroupFileOverBudget] before anything is written.
+  ///
+  /// [undo]: run inside the transaction when one of its writes, [also]'s or
+  /// the rows', is refused — before it is rolled back, while this device
+  /// still holds the vault's lock — to take out of memory what [also] put
+  /// there ([createGroup]).
   Future<void> _queueGroupFanout(Group g, InnerMessage inner,
       {Future<void> Function(Transaction txn)? also,
+      void Function()? undo,
       Iterable<String> extraRids = const [],
       int? fileChunks}) async {
     final rids = _fanoutRids(g, extraRids);
@@ -11522,19 +11543,24 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
         rids.isEmpty ? null : await vault.seal(utf8.decode(inner.toBytes()));
     final now = _now();
     await vault.db.transaction((txn) async {
-      if (also != null) await also(txn);
-      for (final rid in rids) {
-        await txn.insert(
-          'group_fanout',
-          {
-            'mid': inner.mid,
-            'gid': g.gid,
-            'rid': rid,
-            'payload': payload,
-            'created_ms': now,
-          },
-          conflictAlgorithm: ConflictAlgorithm.ignore,
-        );
+      try {
+        if (also != null) await also(txn);
+        for (final rid in rids) {
+          await txn.insert(
+            'group_fanout',
+            {
+              'mid': inner.mid,
+              'gid': g.gid,
+              'rid': rid,
+              'payload': payload,
+              'created_ms': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      } catch (_) {
+        undo?.call();
+        rethrow;
       }
     });
     if (rids.isEmpty) return;
@@ -12091,6 +12117,15 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// written on its own, the group put in memory first: a refused write
   /// left it in the chat list until the app stopped, though no invite had
   /// gone, and one refused after the first left it in the vault besides.
+  ///
+  /// The group is in memory only while its transaction holds the vault's
+  /// lock and once it has committed: put there as the transaction's first
+  /// step, and taken out again inside it when one of its writes is refused,
+  /// so that a write of the groups list made meanwhile ([_saveGroups]),
+  /// which reads memory under the same lock, carries all of the group or
+  /// none of it. Until 2026-11-01 it was put there before the transaction
+  /// began, and such a write, sealed then and made after the transaction
+  /// had been refused, left the group in the vault and not in memory.
   Future<String> createGroup(String name, List<String> memberRids) async {
     final members = memberRids.toSet()..removeAll(_myAccountRids);
     if (!debugBuildBefore0036 && members.length + 1 > maxGroupMembers) {
@@ -12110,24 +12145,38 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     g.digest = Group.listDigest(data);
     g.stateDigest = Group.stateDigestOf(data);
-    groups[gid] = g;
-    unread[gid] = 0;
     // What _sendInvite sends, with the group and its first line written in
     // the same transaction as the invite's rows.
     final invite = InnerMessage(
         kind: 'ginvite', mid: newMessageId(), ts: _now(), data: data);
+    void forget() {
+      groups.remove(gid);
+      unread.remove(gid);
+      messagesByChat.remove(gid);
+    }
+
     try {
       await _queueGroupFanout(g, invite, also: (txn) async {
+        groups[gid] = g;
+        unread[gid] = 0;
         await _saveGroups(txn: txn);
         await _insertSystemMessage(
             gid, systemBody(SystemKind.createdYou, {'name': name}),
             txn: txn);
-      });
+      }, undo: forget);
     } catch (_) {
-      groups.remove(gid);
-      unread.remove(gid);
-      messagesByChat.remove(gid);
+      // Still in memory, the group's writes all went in and it was the
+      // commit that failed, with the lock let go: a write of the list that
+      // took the lock then may have carried the group, so the list is
+      // written again, as memory now holds it, if the vault takes it.
+      final atCommit = identical(groups[gid], g);
+      forget();
       notifyListeners();
+      if (atCommit) {
+        try {
+          await _saveGroups();
+        } catch (_) {}
+      }
       rethrow;
     }
     unawaited(_mirrorGroupChange(gid, invite));
