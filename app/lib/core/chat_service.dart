@@ -9660,14 +9660,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// account is not stopped — the new device may hold it, and only the
   /// report the attempt waits for lists it — so it runs on to its end, and a
   /// call that came for its code meanwhile ends as it does. One whose reply
-  /// the relay has taken leaves its code with no ceremony to run, however it
-  /// then ends without a link — stopped, the digits said to differ, a wait
-  /// run out, a connection dropped — the new device taking no second answer:
-  /// the code is kept, by its rendezvous id — the last [_spentLinkCodesKept]
-  /// such codes — and the call that stopped it, or any later one, says so at
-  /// once ([PairingCodeAnswered]), across restarts. One whose reply never
-  /// reached the relay is not kept: the new device may still answer the next
-  /// reply it gets. Until 2026-10-31 only a stopped attempt kept its code, and
+  /// the relay has said it took ([PairingCancel.answered]) leaves its code
+  /// with no ceremony to run, however it then ends without a link — stopped,
+  /// the digits said to differ, a wait run out, a connection dropped — the
+  /// new device taking no second answer: the code is kept, by its rendezvous
+  /// id — the last [_spentLinkCodesKept] such codes — and the call that
+  /// stopped it, or any later one, says so at once ([PairingCodeAnswered]),
+  /// across restarts. One whose reply the relay has not said it took is not
+  /// kept: the new device may still answer the next reply it gets, or, when
+  /// the relay took the reply without its word reaching this device, the
+  /// next attempt on the code waits out its timer. Until 2026-10-31 only a
+  /// stopped attempt kept its code, and
   /// the code entered again after any other end waited out its timer for a
   /// commitment that would not come. A code that linked a device is kept the
   /// same way, under a key of its own, and an attempt on it says at once that
@@ -9749,8 +9752,8 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     if ((await _keptLinkCodes(_linkedLinkCodesKey)).contains(mark)) {
       throw const PairingCodeLinked();
     }
-    // One whose link ended without linking once the relay had taken its
-    // reply: the new device holds that answer and takes no other (§10.2
+    // One whose link ended without linking once the relay had said it took
+    // its reply: the new device holds that answer and takes no other (§10.2
     // rule 5), so the code has no ceremony left ([PairingCodeAnswered]).
     if ((await _keptLinkCodes(_answeredLinkCodesKey)).contains(mark)) {
       throw const PairingCodeAnswered();
@@ -9814,9 +9817,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // while it runs (§10.2). Until 2026-10-31 it said only that the link
       // was cancelled, and kept nothing.
       if (!cancel.closedByAnotherLogin) {
-        // Stopped once the relay had taken its reply: the code is kept, so
-        // that an attempt on it, now or after a restart, says at once that
-        // it has no ceremony left.
+        // Stopped once the relay had said it took its reply: the code is
+        // kept, so that an attempt on it, now or after a restart, says at
+        // once that it has no ceremony left.
         if (cancel.answered) await _keepAnsweredLinkCode(mark);
         rethrow;
       }
@@ -9828,11 +9831,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       await RelayPairing.closeNewDeviceMailboxV3(transport.serverUrl, pairing);
       throw const PairingTakenOver();
     } catch (_) {
-      // Ended any other way once the relay had taken its reply — a wait run
-      // out, a connection dropped, the new device's person not confirming, an
-      // enrolment that did not finish: the new device can hold that reply and
-      // takes no other (§10.2 rule 5), so the code is kept as a stopped one's
-      // is. Until 2026-10-31 only a stop kept it.
+      // Ended any other way once the relay had said it took its reply — a
+      // wait run out, a connection dropped, the new device's person not
+      // confirming, an enrolment that did not finish: the new device can hold
+      // that reply and takes no other (§10.2 rule 5), so the code is kept as
+      // a stopped one's is. Until 2026-10-31 only a stop kept it.
       if (cancel.answered) await _keepAnsweredLinkCode(mark);
       rethrow;
     }
@@ -9865,10 +9868,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   static const int _spentLinkCodesKept = 32;
 
   /// The vault key under which this device keeps the codes whose link ended
-  /// without linking once the relay had taken its reply to the new device
-  /// (§10.2), kept as the spent ones are: each by its v3 rendezvous id, the
-  /// last [_spentLinkCodesKept], with no time bound, in no backup and handed
-  /// to no device this one links (`DATA_MAP.md`).
+  /// without linking once the relay had said it took its reply to the new
+  /// device (§10.2), kept as the spent ones are: each by its v3 rendezvous
+  /// id, the last [_spentLinkCodesKept], with no time bound, in no backup and
+  /// handed to no device this one links (`DATA_MAP.md`).
   static const String _answeredLinkCodesKey = 'link_answered_codes';
 
   /// The vault key under which this device keeps the codes that linked a
@@ -9900,9 +9903,10 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       _keepLinkCode(_spentLinkCodesKey, mark);
 
   /// Keeps [mark] among the codes whose link ended without linking once the
-  /// relay had taken its reply. What the screen says is the same whether or
-  /// not the store takes it: if it refuses the write, a later attempt on the
-  /// code waits out its timer, as every one did until 2026-10-31.
+  /// relay had said it took its reply. What the screen says is the same
+  /// whether or not the store takes it: if it refuses the write, a later
+  /// attempt on the code waits out its timer, as every one did until
+  /// 2026-10-31.
   Future<void> _keepAnsweredLinkCode(String mark) async {
     try {
       await _keepLinkCode(_answeredLinkCodesKey, mark);

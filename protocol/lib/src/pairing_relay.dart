@@ -115,13 +115,15 @@ class PairingCancel {
   /// holding the code, unless it was the caller's own next attempt on it.
   bool get closedByAnotherLogin => _closedByAnotherLogin;
 
-  /// Whether the relay has taken the attempt's reply to the new device's
-  /// commitment. The new device answers the first reply it gets and no other
-  /// (§10.2 rule 5), so once the relay has one for it a later attempt on the
-  /// code has no ceremony to run unless this one finished it. A reply the
-  /// relay never said it took leaves this false: until 2026-10-31 it was set
-  /// before the reply went, and a code whose reply never left the device
-  /// could be taken for one answered.
+  /// Whether the relay has said it took the attempt's reply to the new
+  /// device's commitment (its `sent`). The new device answers the first reply
+  /// it gets and no other (§10.2 rule 5), so once the relay has one for it a
+  /// later attempt on the code has no ceremony to run unless this one
+  /// finished it. A reply the relay never said it took leaves this false,
+  /// whether or not the relay took it: one it took as this side's connection
+  /// failed, before its word came down, is not known here. Until 2026-10-31
+  /// it was set before the reply went, and a code whose reply never left the
+  /// device could be taken for one answered.
   bool get answered => _answered;
 
   /// Whether the attempt is to stop: asked to, with the enrolment neither

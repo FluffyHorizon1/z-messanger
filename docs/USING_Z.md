@@ -511,15 +511,18 @@ Link a device on your phone while a link is running, the phone stops it —
 unless it has already started sending your account, which then finishes —
 and your phone does not take that for someone else using the code; leaving
 the link screen on the new device stops its link too, unless it has already
-started installing your account. You can enter the same code again until the
-new device shows its digits; once it has, a link that does not finish has
-used that code up — one you stopped, one whose codes were said to differ,
-one that timed out or lost its connection — and your phone says so if you
-enter it again, and the new device shows a new one when it gives up: start
-again on both devices with that. A code that linked a device has done its
-work too, and your phone says so if you enter it again: to link another
-device, get a new code on that one. And
-if your phone ever lists a device you did not finish linking, revoke it in
+started installing your account. You can enter the same code again until
+the new device shows its digits; once it has, a link that does not finish
+has used that code up — one you stopped, one whose codes were said to
+differ, one that timed out or lost its connection — and the new device
+shows a new one when it gives up: start again on both devices with that.
+Your phone says so at once if you enter a used code again, once the relay
+has told it that it took your phone's answer; if your phone's connection
+went before the relay could tell it, your phone cannot know, and the code
+entered again waits until that link times out. A code that linked a device
+has done its work too, and your phone says so if you enter it again: to
+link another device, get a new code on that one. And if your phone ever
+lists a device you did not finish linking, revoke it in
 Settings → Linked devices.
 
 **Both devices need this version of Z or later.** Linking changed in this

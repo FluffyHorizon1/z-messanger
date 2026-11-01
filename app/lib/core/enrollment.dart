@@ -161,8 +161,8 @@ class PairingCodeLinked implements Exception {
 }
 
 /// What `ChatService.hostDeviceLink` throws for a code whose link on this
-/// device ended without linking once the relay had taken its reply to the
-/// new device — stopped, the digits said to differ, a wait run out, a
+/// device ended without linking once the relay had said it took its reply to
+/// the new device — stopped, the digits said to differ, a wait run out, a
 /// connection dropped: the new device can hold that answer and takes no
 /// other (§10.2 rule 5), so the code has no ceremony left, and the new device
 /// shows a new one once it gives up. Said at once, where the call used to

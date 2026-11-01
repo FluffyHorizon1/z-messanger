@@ -2297,24 +2297,32 @@ stand between it and the account, while one that is answered at once,
 because the stopped attempt had answered the new device (below), never logs
 in, and that login stays until it leaves, as it does when no attempt follows
 — with nothing of the account to read, since this device sends nothing more
-on the code. An attempt
-whose reply the relay has taken, and that then ends without linking —
-stopped, its user saying the digits differ, a wait run out, its connection
-dropped, the new device not confirming — leaves its code with no ceremony to
-run, since the new device answers the first reply it gets and no other
-(rule 5): the reference client keeps that code as it keeps a spent one — by
-its v3 rendezvous id, the last 32, with no time bound, in no backup — and an
-attempt on it, whether the one that stopped the first or any later one,
-across restarts, says so at once, with how to get a new code, where until
-2026‑10‑31 it waited out its timer for a commitment that would not come.
+on the code. An attempt whose reply the relay has taken, and that then ends
+without linking, leaves its code with no ceremony to run, since the new device
+answers the first reply it gets and no other (rule 5). The reference client
+knows that the relay has taken the reply from the relay's word on it (`sent`),
+and from nothing else: once that word has come, an attempt that ends without
+linking — stopped, its user saying the digits differ, a wait run out, its
+connection dropped, the new device not confirming — has its code kept as a
+spent one is — by its v3 rendezvous id, the last 32, with no time bound, in no
+backup — and an attempt on it, whether the one that stopped the first or any
+later one, across restarts, says so at once, with how to get a new code, where
+until 2026‑10‑31 it waited out its timer for a commitment that would not come.
 Until 2026‑10‑31, too, only a stopped attempt kept its code, and it counted
-its reply as given before it went. A reply the relay never took is not
-counted: the attempt acknowledged the commitment on the same connection just
-before the reply, so if the reply never reached the relay that
+its reply as given before it went. A reply the relay has not said it took is
+not counted: the attempt acknowledged the commitment on the same connection
+just before the reply, so if the reply never reached the relay that
 acknowledgement may not have either, and the next attempt may find the
 commitment and answer it — the new device, having had no reply, takes that
-one. A code that has linked a device is kept the same way, in a list of its
-own, since what the user is told differs — the code did its work — and an
+one. That leaves one case in which an attempt on the code still waits out its
+timer: the relay has taken the acknowledgement, with the reply or without it,
+and its word on the reply never reaches this device — the connection fails
+first, even as the `sent` comes down, or the twenty seconds a send has run
+out. The code is not kept then; the next attempt on it finds no commitment and
+waits out its timer, as such attempts did until 2026‑10‑31, and the new
+device, with the reply or without one, gives up in its own time and shows a
+new code. A code that has linked a device is kept the same way, in a list of
+its own, since what the user is told differs — the code did its work — and an
 attempt on it says at once that it has already linked a device, with how to
 link another; until 2026‑10‑31 that attempt too waited out its timer. An
 attempt
