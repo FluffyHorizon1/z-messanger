@@ -956,5 +956,9 @@
   "linkCodeLinked": "Ese código ya vinculó un dispositivo a tu cuenta. Para vincular otro dispositivo, elige «Vincular a una cuenta existente» en él para obtener un código nuevo, e introdúcelo aquí.",
   "backupSaveDialogTitle": "Guarda tu copia de seguridad de Z",
   "backupAutoNotOn": "Este dispositivo no pudo guardar el código, así que las copias automáticas siguen desactivadas. Comprueba que tiene espacio libre y vuelve a intentarlo.",
-  "backupAutoNotOff": "Este dispositivo no pudo cambiar el ajuste, así que las copias automáticas siguen activadas. Vuelve a intentarlo."
+  "backupAutoNotOff": "Este dispositivo no pudo cambiar el ajuste, así que las copias automáticas siguen activadas. Vuelve a intentarlo.",
+  "chatPickFailed": "No se pudo abrir el explorador de archivos. Vuelve a intentarlo.",
+  "@chatPickFailed": {"description": "Shown in a chat when the file browser, opened to choose a file to send, failed for a reason the app does not name. Nothing was sent; no detail of the failure is shown, and the person can try again."},
+  "chatPickReadFailed": "No se pudo leer el archivo que elegiste, así que no se envió nada. Vuelve a intentarlo.",
+  "@chatPickReadFailed": {"description": "Shown in a chat when a file was chosen in the file browser but the copy it handed over could not be read. Nothing was sent; no detail of the failure is shown, and the person can try again."}
 }

@@ -10,8 +10,9 @@ import 'app_localizations.dart';
 //
 // Nothing here shows an exception's own text. A failure is said by what was
 // being done and, where it can be told apart, by what refused it: this
-// device's storage, or the camera or the photo library refusing Z. Anything
-// else is one line in the reader's language for what was being done. Until
+// device's storage, the camera or the photo library refusing Z, or a copy
+// the file browser handed over that could not be read. Anything else is one
+// line in the reader's language for what was being done. Until
 // 2026-10-31 these screens put the exception itself on the screen, in
 // English whatever the language: after the screen's words for what had
 // failed ("Send failed: " and its kin), or with nothing before it when
@@ -34,6 +35,10 @@ enum ChatAction {
   /// Taking a photo, or choosing one or a video from the library.
   attach,
 
+  /// Choosing a file in the file browser, and reading the copy it hands
+  /// over.
+  pickFile,
+
   /// Saving an attachment's decrypted copy.
   save,
 
@@ -45,7 +50,9 @@ enum ChatAction {
 String chatFailureText(AppLocalizations l, ChatAction action, Object error) {
   // What these actions write goes to the vault (a database) and, for a
   // file, beside it: refused, it is this device's storage that said no.
-  final writes = action != ChatAction.attach && action != ChatAction.save;
+  final writes = action != ChatAction.attach &&
+      action != ChatAction.pickFile &&
+      action != ChatAction.save;
   if (writes && (error is DatabaseException || error is FileSystemException)) {
     return l.chatFailedStorage;
   }
@@ -55,11 +62,16 @@ String chatFailureText(AppLocalizations l, ChatAction action, Object error) {
       error.code.endsWith('_access_denied')) {
     return l.chatAttachNoAccess;
   }
+  // The file browser handed over a copy, and it could not be read.
+  if (action == ChatAction.pickFile && error is FileSystemException) {
+    return l.chatPickReadFailed;
+  }
   return switch (action) {
     ChatAction.send => l.chatSendFailedOther,
     ChatAction.forward => l.chatForwardFailedOther,
     ChatAction.react => l.chatReactionFailedOther,
     ChatAction.attach => l.chatAttachFailed,
+    ChatAction.pickFile => l.chatPickFailed,
     ChatAction.save => l.chatSaveFailedOther,
     ChatAction.createGroup => l.grpCreateFailedOther,
   };

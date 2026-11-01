@@ -505,6 +505,8 @@ class _ChatScreenState extends State<ChatScreen> {
   /// file into the app cache and returns that, and a copy left there outlives
   /// the sweeper, the disappearing timer and "reset identity" alike.
   Future<void> _attachFile() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
     final Uint8List? bytes;
     final PlatformFile? f;
     try {
@@ -519,6 +521,15 @@ class _ChatScreenState extends State<ChatScreen> {
         read = await File(f!.path!).readAsBytes();
       }
       bytes = read;
+    } catch (e) {
+      // The file browser's own failure, or a copy it handed over that could
+      // not be read: said in the reader's words, and nothing sent. Until
+      // 2026-11-01 it went uncaught, and the screen said nothing.
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(
+            content: Text(chatFailureText(l, ChatAction.pickFile, e))));
+      }
+      return;
     } finally {
       // Whether or not the read worked: a copy that could not be read is
       // still a copy (42.2).

@@ -3577,5 +3577,9 @@
   "backupAutoNotOn": "This device could not store the code, so automatic backups stay off. Check that it has space free, then try again.",
   "@backupAutoNotOn": {"description": "Backup: turning automatic backups on failed because this device's store refused to keep the recovery code (a full disk, a closed or locked database). Nothing changed: they stay off, with no code kept. One line, never the error's own text."},
   "backupAutoNotOff": "This device could not change the setting, so automatic backups stay on. Try again.",
-  "@backupAutoNotOff": {"description": "Backup: turning automatic backups off failed because this device's store refused the change (a full disk, a closed or locked database). Nothing changed: they stay on, with their code. One line, never the error's own text."}
+  "@backupAutoNotOff": {"description": "Backup: turning automatic backups off failed because this device's store refused the change (a full disk, a closed or locked database). Nothing changed: they stay on, with their code. One line, never the error's own text."},
+  "chatPickFailed": "The file browser could not be opened. Try again.",
+  "@chatPickFailed": {"description": "Shown in a chat when the file browser, opened to choose a file to send, failed for a reason the app does not name. Nothing was sent; no detail of the failure is shown, and the person can try again."},
+  "chatPickReadFailed": "The file you chose could not be read, so nothing was sent. Try again.",
+  "@chatPickReadFailed": {"description": "Shown in a chat when a file was chosen in the file browser but the copy it handed over could not be read. Nothing was sent; no detail of the failure is shown, and the person can try again."}
 }

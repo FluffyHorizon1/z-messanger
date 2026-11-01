@@ -3664,4 +3664,12 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get backupAutoNotOff =>
       'Este dispositivo no pudo cambiar el ajuste, así que las copias automáticas siguen activadas. Vuelve a intentarlo.';
+
+  @override
+  String get chatPickFailed =>
+      'No se pudo abrir el explorador de archivos. Vuelve a intentarlo.';
+
+  @override
+  String get chatPickReadFailed =>
+      'No se pudo leer el archivo que elegiste, así que no se envió nada. Vuelve a intentarlo.';
 }

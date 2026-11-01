@@ -5647,6 +5647,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This device could not change the setting, so automatic backups stay on. Try again.'**
   String get backupAutoNotOff;
+
+  /// Shown in a chat when the file browser, opened to choose a file to send, failed for a reason the app does not name. Nothing was sent; no detail of the failure is shown, and the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The file browser could not be opened. Try again.'**
+  String get chatPickFailed;
+
+  /// Shown in a chat when a file was chosen in the file browser but the copy it handed over could not be read. Nothing was sent; no detail of the failure is shown, and the person can try again.
+  ///
+  /// In en, this message translates to:
+  /// **'The file you chose could not be read, so nothing was sent. Try again.'**
+  String get chatPickReadFailed;
 }
 
 class _AppLocalizationsDelegate

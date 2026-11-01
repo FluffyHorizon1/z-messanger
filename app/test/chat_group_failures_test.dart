@@ -40,7 +40,10 @@
 //   8. a text the vault refuses stays in the composer as it was typed, with
 //      the message it answers, and goes from there once it is sent — as a
 //      reply to it: until 2026-11-01 the composer was emptied, and the reply
-//      let go, before the send.
+//      let go, before the send;
+//   9. a file browser that fails, and a copy it hands over that cannot be
+//      read, are each said in a line of their own, and nothing is sent:
+//      until 2026-11-01 either went uncaught, and nothing was said.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -64,9 +67,13 @@ import 'package:zapp/ui/chat_screen.dart';
 import 'package:zapp/ui/group_screens.dart';
 import 'package:zapp/ui/theme.dart';
 
-/// The file picker, handing over [bytes] as the file the person chose.
+/// The file picker, handing over [bytes] as the file the person chose — or,
+/// when [path] is set, a copy at that path and no bytes, as Android's picker
+/// hands one over; or throwing [fails], as a picker that fails does.
 class _HandingPicker extends FilePicker {
   Uint8List bytes = Uint8List(0);
+  String? path;
+  Object? fails;
 
   @override
   Future<FilePickerResult?> pickFiles({
@@ -82,9 +89,16 @@ class _HandingPicker extends FilePicker {
     bool withReadStream = false,
     bool lockParentWindow = false,
     bool readSequential = false,
-  }) async =>
-      FilePickerResult(
-          [PlatformFile(name: 'clip.bin', size: bytes.length, bytes: bytes)]);
+  }) async {
+    final failing = fails;
+    if (failing != null) throw failing;
+    final at = path;
+    return FilePickerResult([
+      at == null
+          ? PlatformFile(name: 'clip.bin', size: bytes.length, bytes: bytes)
+          : PlatformFile(name: 'clip.bin', size: 4096, path: at),
+    ]);
+  }
 
   @override
   Future<bool?> clearTemporaryFiles() async => true;
@@ -110,7 +124,7 @@ class _Reading {
   /// service put in one — what these screens showed until 2026-10-31.
   static final leak = RegExp('Exception|Bad state|errno|OS Error|sqlite|'
       'database is locked|INSERT INTO|attachment too large|'
-      'no such attachment');
+      'no such attachment|already active|Cannot open file');
 
   /// The ARB's line [key], with [args] in it; null when it has none.
   String? line(String key, [Map<String, String> args = const {}]) {
@@ -586,6 +600,8 @@ void main() {
         'chatForwardFailedOther': l.chatForwardFailedOther,
         'chatReactionFailedOther': l.chatReactionFailedOther,
         'chatSaveFailedOther': l.chatSaveFailedOther,
+        'chatPickFailed': l.chatPickFailed,
+        'chatPickReadFailed': l.chatPickReadFailed,
         'grpCreateFailedOther': l.grpCreateFailedOther,
       };
       for (final action in ChatAction.values) {
@@ -627,6 +643,12 @@ void main() {
       ChatAction.attach: [
         'chatAttachFailed', 'chatAttachFailed', 'chatAttachNoAccess',
         'chatAttachNoAccess', 'chatAttachFailed', 'chatAttachFailed',
+      ],
+      // Nor does the file browser; what can fail after it is reading the
+      // copy it handed over.
+      ChatAction.pickFile: [
+        'chatPickFailed', 'chatPickReadFailed', 'chatPickFailed',
+        'chatPickFailed', 'chatPickFailed', 'chatPickFailed',
       ],
       // Nor does a save write to the vault: what it writes is the person's.
       ChatAction.save: [
@@ -878,6 +900,47 @@ void main() {
         '$lang, refused: the composer: "See you at six "; the reply: kept',
         '$lang, sent: the composer: empty; the reply: let go; as a reply to '
             'Hello',
+      ],
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  testWidgets(
+      '9. a file browser that fails, and a copy it hands over that cannot be '
+      'read, are each said, and nothing is sent', (t) async {
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final l = lookupAppLocalizations(locale);
+      final r = _Reading(t, lang, seen);
+      final svc = await person(t, 'pick$lang');
+      late String rid;
+      await t.runAsync(() async => rid = await contact(svc, 'Pat'));
+      final picker = _HandingPicker();
+      FilePicker.platform = picker;
+      await openChat(t, svc, rid, locale);
+      // As file_picker's Android side refuses a pick while one is open.
+      picker.fails = PlatformException(
+          code: 'already_active', message: 'File picker is already active');
+      await _fails(t, r, 'the file browser failing', 'chatPickFailed',
+          () => t.tap(find.byTooltip(l.chatAttachFile)));
+      // A copy handed over by its path, with no bytes, and nothing there.
+      picker.fails = null;
+      picker.path = '${Directory.systemTemp.path}/z_cgf_no_such_dir/clip.bin';
+      await _fails(t, r, 'a copy that cannot be read', 'chatPickReadFailed',
+          () => t.tap(find.byTooltip(l.chatAttachFile)));
+      final sent = (svc.messagesByChat[rid] ?? const [])
+          .where((m) => m.kind == 'file')
+          .length;
+      seen.add('$lang: ${sent == 0 ? 'nothing' : '$sent'} sent');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es']) ...[
+        '$lang, the file browser failing: its own line; exception text: none',
+        '$lang, a copy that cannot be read: its own line; exception text: '
+            'none',
+        '$lang: nothing sent',
       ],
     ]);
   }, timeout: const Timeout(Duration(minutes: 3)));

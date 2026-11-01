@@ -3629,4 +3629,12 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get backupAutoNotOff =>
       'This device could not change the setting, so automatic backups stay on. Try again.';
+
+  @override
+  String get chatPickFailed =>
+      'The file browser could not be opened. Try again.';
+
+  @override
+  String get chatPickReadFailed =>
+      'The file you chose could not be read, so nothing was sent. Try again.';
 }
