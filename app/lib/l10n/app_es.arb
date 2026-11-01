@@ -960,5 +960,7 @@
   "chatPickFailed": "No se pudo abrir el explorador de archivos. Vuelve a intentarlo.",
   "@chatPickFailed": {"description": "Shown in a chat when the file browser, opened to choose a file to send, failed for a reason the app does not name. Nothing was sent; no detail of the failure is shown, and the person can try again."},
   "chatPickReadFailed": "No se pudo leer el archivo que elegiste, así que no se envió nada. Vuelve a intentarlo.",
-  "@chatPickReadFailed": {"description": "Shown in a chat when a file was chosen in the file browser but the copy it handed over could not be read. Nothing was sent; no detail of the failure is shown, and the person can try again."}
+  "@chatPickReadFailed": {"description": "Shown in a chat when a file was chosen in the file browser but the copy it handed over could not be read. Nothing was sent; no detail of the failure is shown, and the person can try again."},
+  "chatFileReceiving": "Recibiendo {got} de {total}…",
+  "@chatFileReceiving": {"description": "Under the name of a file in a chat while it is still arriving: how many of its parts have come so far, and how many it has. {got} and {total} are those two numbers. Replaced by the file's size once every part has come.", "placeholders": {"got": {"type": "int"}, "total": {"type": "int"}}}
 }

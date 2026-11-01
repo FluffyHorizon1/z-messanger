@@ -5659,6 +5659,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The file you chose could not be read, so nothing was sent. Try again.'**
   String get chatPickReadFailed;
+
+  /// Under the name of a file in a chat while it is still arriving: how many of its parts have come so far, and how many it has. {got} and {total} are those two numbers. Replaced by the file's size once every part has come.
+  ///
+  /// In en, this message translates to:
+  /// **'Receiving {got} of {total}…'**
+  String chatFileReceiving(int got, int total);
 }
 
 class _AppLocalizationsDelegate

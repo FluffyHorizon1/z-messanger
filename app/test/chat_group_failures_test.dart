@@ -43,7 +43,10 @@
 //      let go, before the send;
 //   9. a file browser that fails, and a copy it hands over that cannot be
 //      read, are each said in a line of their own, and nothing is sent:
-//      until 2026-11-01 either went uncaught, and nothing was said.
+//      until 2026-11-01 either went uncaught, and nothing was said;
+//  10. a file still arriving says how much of it has come in the reader's
+//      language: until 2026-11-01 its card said "receiving 3/12…" in
+//      English whatever the language.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -943,5 +946,41 @@ void main() {
         '$lang: nothing sent',
       ],
     ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  testWidgets(
+      '10. a file still arriving says how much of it has come, in the '
+      'reader\'s language', (t) async {
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final r = _Reading(t, lang, seen);
+      final svc = await person(t, 'part$lang');
+      late String rid;
+      await t.runAsync(() async {
+        rid = await contact(svc, 'Pat');
+        await svc.sendFile(
+            rid,
+            'notes.bin',
+            Uint8List.fromList(List.generate(4096, (i) => i % 251)),
+            'application/octet-stream');
+      });
+      await openChat(t, svc, rid, locale);
+      // Held as a file whose parts are still arriving is: three of twelve.
+      svc.messagesByChat[rid]!.singleWhere((m) => m.kind == 'file').file!
+        ..complete = false
+        ..gotChunks = 3
+        ..totalChunks = 12;
+      svc.notifyListeners();
+      await t.pump();
+      final own = r.line('chatFileReceiving', {'got': '3', 'total': '12'});
+      final shown = own != null && find.text(own).evaluate().isNotEmpty;
+      final english = find.text('receiving 3/12…').evaluate().isNotEmpty;
+      seen.add('$lang: ${shown ? 'its own line' : 'not its line'}'
+          '${english ? '; "receiving 3/12…", in English' : ''}');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, ['en: its own line', 'es: its own line']);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }

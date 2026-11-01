@@ -1672,7 +1672,7 @@ class _FileBodyState extends State<_FileBody> {
                     Text(
                       f.complete
                           ? _size(l, f.size)
-                          : 'receiving ${f.gotChunks}/${f.totalChunks}…',
+                          : l.chatFileReceiving(f.gotChunks, f.totalChunks),
                       style: TextStyle(
                           fontSize: 11, color: context.z.textSecondary),
                     ),

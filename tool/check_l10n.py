@@ -143,7 +143,12 @@ def literals(src: str, name: str = ""):
         v = v.replace("\\'", "'").replace('\\"', '"').replace("\\n", " ")
         if v in ALLOWED or v in here:
             continue
-        if v.startswith("package:") or "/" in v or v.startswith("z/"):
+        # An import, a path, a URI or a MIME type: none has a space in it.
+        # Until 2026-11-01 any literal with a "/" was taken for one, and the
+        # chat screen's file card said "receiving ${f.gotChunks}/
+        # ${f.totalChunks}…" in English in every language, unflagged.
+        if v.startswith("package:") or ("/" in v and " " not in v) \
+                or v.startswith("z/"):
             continue
         if " " in v or v[0].isupper():
             out.append((src.count("\n", 0, m.start()) + 1, v))

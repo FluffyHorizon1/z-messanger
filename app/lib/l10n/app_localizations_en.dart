@@ -3637,4 +3637,9 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get chatPickReadFailed =>
       'The file you chose could not be read, so nothing was sent. Try again.';
+
+  @override
+  String chatFileReceiving(int got, int total) {
+    return 'Receiving $got of $total…';
+  }
 }
