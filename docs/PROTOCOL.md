@@ -2278,10 +2278,15 @@ client now hosts one link per code: an attempt on a code it is already
 hosting first stops the earlier one, and starts once it is over, and
 leaving the link screen stops the attempt it started. A stopped attempt
 ends at once in any wait — for a frame, for the relay, for its user's answer
-— but one: once its reply is on its way, it waits for the relay's word on
-the reply (`sent`), or for its connection to fail, since whether the new
-device can hold that reply is what the code is left with (below); it then
-sends nothing more, logs in as no other mailbox, keeps nothing as spent,
+— but one: once its reply is on its way, it waits for the relay's word on the
+reply (`sent`) — for five seconds from the stop at most, and less when its
+connection fails, or the twenty seconds a send has run out, first — since
+whether the new device can hold that reply is what the code is left with
+(below); five seconds is several round trips of a slow mobile connection for a
+frame of under two kilobytes, while a connection that has stalled without
+closing no longer holds the user who stopped the attempt, and an attempt on
+the code started after it, for twenty seconds, as it did until 2026‑11‑01. It
+then sends nothing more, logs in as no other mailbox, keeps nothing as spent,
 and acknowledges nothing it had not read, nor the commitment when it had not
 yet sent its reply, so that the next attempt on the code reads them. It
 cannot say what closed its connection, if something did — this device's own
@@ -2317,11 +2322,14 @@ commitment and answer it — the new device, having had no reply, takes that
 one. That leaves one case in which an attempt on the code still waits out its
 timer: the relay has taken the acknowledgement, with the reply or without it,
 and its word on the reply never reaches this device — the connection fails
-first, even as the `sent` comes down, or the twenty seconds a send has run
-out. The code is not kept then; the next attempt on it finds no commitment and
-waits out its timer, as such attempts did until 2026‑10‑31, and the new
-device, with the reply or without one, gives up in its own time and shows a
-new code. A code that has linked a device is kept the same way, in a list of
+first, even as the `sent` comes down, the twenty seconds a send has run out,
+or the attempt, stopped, waits its five seconds without it. The code is not
+kept then; the next attempt on it finds no commitment and waits out its timer,
+as such attempts did until 2026‑10‑31, and the new device, with the reply or
+without one, gives up in its own time and shows a new code. When nothing of
+the attempt's had reached the relay — as on a connection that has died without
+closing — the commitment is still there, and the next attempt answers it and
+links. A code that has linked a device is kept the same way, in a list of
 its own, since what the user is told differs — the code did its work — and an
 attempt on it says at once that it has already linked a device, with how to
 link another; until 2026‑10‑31 that attempt too waited out its timer. An

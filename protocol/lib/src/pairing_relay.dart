@@ -79,9 +79,10 @@ class PairingResult {
 /// relay or for its person — in [PairingCancelled], until it sends the
 /// enrolment: from then on the new device may come to hold the account, and
 /// only the report the attempt goes on to wait for can list it, so it runs
-/// to its end whatever [cancel] says ([sentEnrolment]). The one wait it sees
-/// out is the relay's word on the existing device's reply, once that is on
-/// its way: whether the new device can hold the reply is what decides
+/// to its end whatever [cancel] says ([sentEnrolment]). The one wait it
+/// keeps to is for the relay's word on the existing device's reply, once
+/// that is on its way, and that for at most [RelayPairing.stoppedReplyWait]
+/// from the stop: whether the new device can hold the reply is what decides
 /// whether the code has a ceremony left ([answered]). What the relay holds
 /// for this side that it had not read, or not answered, when it stopped is
 /// left unacknowledged, for the next attempt on the code to read.
@@ -151,6 +152,22 @@ class RelayPairing {
   /// and nothing is linked. Too much, and the existing device keeps the
   /// person waiting longer when the new device has gone.
   static const Duration enrolmentMargin = Duration(seconds: 15);
+
+  /// How long an existing device's attempt, stopped while its reply is on
+  /// its way up, waits for the relay's word on that reply (`sent`, §10.2):
+  /// five seconds from the stop. The relay says it took a frame once the
+  /// whole frame has arrived, and the reply is under two kilobytes, so on a
+  /// connection that works the word comes within a round trip — well under
+  /// a second on a mobile network, and the bound is several times a slow
+  /// one. A stop waits for it because whether the relay took the reply is
+  /// whether the code is left with a ceremony ([PairingCancel.answered]);
+  /// it waits no longer because a connection that has stalled without
+  /// closing would otherwise hold the person who stopped the attempt, and an
+  /// attempt on the same code started after it, for the twenty seconds a
+  /// send has. Until 2026-11-01 it did. A word that has not come by then
+  /// leaves the reply counted as not taken: the attempt stops, and the code
+  /// is not kept.
+  static const Duration stoppedReplyWait = Duration(seconds: 5);
 
   /// A throwaway relay identity for one side of a pairing, derived from the
   /// shared code. role is 'i' (initiator / new device) or 'r' (responder /
@@ -612,10 +629,11 @@ class RelayPairing {
       box.acknowledge(committed);
       final (reply, pending) = answer;
       // A stop that comes while the reply is going up waits for the relay's
-      // word on it: taken, the new device can hold this reply and will take
-      // no other, so the code has had its answer ([PairingCancel.answered]);
-      // not taken, the next attempt on the code may find the commitment and
-      // answer it. Either way the attempt then stops.
+      // word on it, for at most [stoppedReplyWait]: taken, the new device can
+      // hold this reply and will take no other, so the code has had its
+      // answer ([PairingCancel.answered]); not taken, or no word by then, the
+      // next attempt on the code may find the commitment and answer it.
+      // Either way the attempt then stops.
       await _post(box,
           to: iMailbox,
           id: 'z-pair-reply',
@@ -751,8 +769,9 @@ class RelayPairing {
   /// connection closed: the relay closes a connection for another login
   /// whether or not it has yet taken a frame still going up from it. An
   /// attempt cancelled before or meanwhile stops ([_unlessCancelled]) —
-  /// meanwhile, unless [whole]: then a send under way is seen to its end, the
-  /// relay's word on it or the connection's failure.
+  /// meanwhile, unless [whole]: then a send under way is waited for, the
+  /// relay's word on it or the connection's failure, for at most
+  /// [stoppedReplyWait] from the stop ([_seenOut]).
   static Future<void> _post(_Mailbox box,
       {required String to,
       required String id,
@@ -761,7 +780,7 @@ class RelayPairing {
     try {
       if (whole) {
         if (box.cancelled) throw const PairingCancelled();
-        await box.client.send(to: to, id: id, payload: payload);
+        await _seenOut(box, box.client.send(to: to, id: id, payload: payload));
       } else {
         await _unlessCancelled(
             box, () => box.client.send(to: to, id: id, payload: payload));
@@ -787,6 +806,32 @@ class RelayPairing {
       going,
       cancel._asked.future.then<T>((_) => throw const PairingCancelled()),
     ]);
+  }
+
+  /// What [sending] comes to — the relay's word on the frame, or the send's
+  /// failure — unless [box]'s attempt is asked to stop while it is under
+  /// way: then it is waited for [stoppedReplyWait] from the stop and no
+  /// longer, and comes to [PairingCancelled] if it has not ended by then,
+  /// the relay's word unheard. A word that comes later changes nothing here.
+  static Future<void> _seenOut(_Mailbox box, Future<void> sending) async {
+    final cancel = box.cancel;
+    if (cancel == null) return sending;
+    final unheard = Completer<void>();
+    Timer? bound;
+    unawaited(cancel._asked.future.then((_) {
+      if (unheard.isCompleted) return;
+      bound = Timer(stoppedReplyWait, () {
+        if (!unheard.isCompleted) {
+          unheard.completeError(const PairingCancelled());
+        }
+      });
+    }));
+    try {
+      await Future.any<void>([sending, unheard.future]);
+    } finally {
+      bound?.cancel();
+      if (!unheard.isCompleted) unheard.complete();
+    }
   }
 
   /// [_awaitCommitHeld], the frame acknowledged as it is taken (v2).

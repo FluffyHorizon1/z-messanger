@@ -1389,6 +1389,64 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // The relay never says it took the reply: the front holds it for good,
+    // as a connection that has stalled without closing does. Until
+    // 2026-11-01 the stop waited for the twenty seconds a send has, and an
+    // attempt on the same code started meanwhile waited behind it.
+    test('an existing device stopped while its reply is held, the relay never '
+        "saying it took it, stops once the relay's word has not come within "
+        'the bound, and has not answered', () async {
+      const timeout = Duration(seconds: 4), margin = Duration(seconds: 2);
+      const bound = RelayPairing.stoppedReplyWait;
+      final code = PairingCode.generate();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      var going = false;
+      final watch = await front(url, (frame) => [frame], holdUp: (frame) {
+        if (!isSendOf(frame, 'z-pair-reply')) return null;
+        going = true;
+        return Completer<void>().future;
+      });
+      try {
+        final laptop = RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final cancel = PairingCancel();
+        final phone = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+          cancel: cancel,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        await waitUntil(() => going, what: "the phone's reply on its way up");
+        final since = Stopwatch()..start();
+        cancel.cancel();
+        // A deadline, not a sleep: the bound and three seconds more.
+        final out = await phone.timeout(bound + const Duration(seconds: 3),
+            onTimeout: () => 'still running ${since.elapsed} after the stop');
+        final took = since.elapsed;
+        expect(out, isA<PairingCancelled>(), reason: 'it stops');
+        expect(took,
+            greaterThanOrEqualTo(bound - const Duration(milliseconds: 50)),
+            reason: "having waited the bound for the relay's word");
+        expect(cancel.answered, isFalse,
+            reason: 'the relay never said it took the reply');
+        expect(await laptop, isNot(isA<PairingResult>()),
+            reason: 'the new device, with no reply, links nothing');
+      } finally {
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {
