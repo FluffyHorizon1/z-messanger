@@ -392,4 +392,151 @@ void main() {
     expect(await x.vault.kvGet('pql_alert_${y.myRid}'), isNull,
         reason: 'and not kept');
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  // 4.9.2: a signature that has arrived is not missing, whether or not it can
+  // be checked here. Builds through 4.9.1 cleared the claim only once the
+  // list was hybrid, so a contact of two devices whose post-quantum key was
+  // only a candidate here — one added by accepting their request, as the
+  // 4.8.1 vaults' Frank accepted Alice's — was asked three times a run, each
+  // answered with a 16 384-bucket `dlpq`, and past the grace accused of
+  // having it removed.
+
+  /// [y] links a laptop: its list moves to version 2 and goes to its
+  /// contacts, and its post-quantum signature over it follows.
+  Future<void> linkLaptop(ChatService y) async {
+    final acct = await y.accountIdentity();
+    final laptop = await ZIdentity.generate();
+    await y.addMyDevice(await acct.signDeviceCert(
+        deviceEdPub: laptop.edPub, deviceXPub: laptop.xPub, deviceId: 'laptop'));
+  }
+
+  /// [y] talks to [x] for twice [x]'s grace — every message claims the
+  /// signature it sent — and [x] reads the last of it.
+  Future<void> claimPastTheGrace(ChatService x, ChatService y, String tag) async {
+    final until = DateTime.now().add(x.devlistGrace * 2);
+    var i = 0;
+    while (DateTime.now().isBefore(until)) {
+      await y.sendText(x.myRid, '$tag $i');
+      i++;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    await waitUntil(
+        () => (x.messagesByChat[y.myRid] ?? const <ChatMessage>[])
+            .any((m) => m.body == '$tag ${i - 1}'),
+        what: 'the last claim read');
+  }
+
+  test('a contact whose key is only a candidate here, added by accepting '
+      'their request, its signature arrived, is neither asked nor accused, '
+      'and a banner an earlier build raised over one is gone at the next '
+      'start', () async {
+    var x = await start('cq1');
+    final y = await start('cq2');
+    await waitUntil(() => x.transport.isConnected && y.transport.isConnected,
+        what: 'connected');
+    // y adds x from x's code, and x accepts y's request: what x holds of y
+    // names no commitment, so y's post-quantum key is only a candidate here
+    // until the two compare the number (ADR 0021).
+    await y.addContactFromCode(await x.myContactCode());
+    await waitUntil(() => x.requestsByRid.containsKey(y.myRid),
+        what: "y's request reached x");
+    await x.acceptRequest(y.myRid);
+    await linkLaptop(y);
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    var n = 0;
+    while (await x.debugHeldPqListSignature(y.myRid) == null ||
+        await x.vault.kvGet('cdev_${y.myRid}') == null) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail("y's list or its signature never reached x");
+      }
+      await y.sendText(x.myRid, 'list ${n++}');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    expect(x.contacts[y.myRid]!.pqPub, isNull,
+        reason: "the premise: y's key not established here");
+    expect(x.deviceAssuranceWith(y.myRid), DeviceAssurance.classical,
+        reason: 'so the signature cannot be checked yet');
+    await claimPastTheGrace(x, y, 'claim');
+    expect(x.pqListAlerts[y.myRid], isNull,
+        reason: 'nobody accused of removing a signature that came');
+    expect(await x.vault.kvGet('pql_alert_${y.myRid}'), isNull);
+    expect(x.pqListRequestsSent(y.myRid), 0,
+        reason: 'and nothing asked: the signature it claims is held');
+
+    // What a build before 4.9.2 left in the vault for this contact.
+    final body = devlistAlertBody(DevlistAlertKind.pqSignatureMissing);
+    await x.vault.kvPut('pql_alert_${y.myRid}', body, sensitive: false);
+    x = await restart(x);
+    expect(x.pqListAlerts[y.myRid], isNull,
+        reason: 'raised over a key not established here, so not shown');
+    expect(await x.vault.kvGet('pql_alert_${y.myRid}'), isNull,
+        reason: 'and not kept');
+
+    // Once the two compare the number, the signature held all along makes
+    // the list post-quantum, with nothing asked for.
+    await waitUntil(() => x.contacts[y.myRid]!.showsPostQuantumNumber,
+        what: 'the number x and y can compare');
+    await x.setVerified(y.myRid, true);
+    await waitUntil(
+        () => x.deviceAssuranceWith(y.myRid) == DeviceAssurance.hybrid,
+        what: "y's list verified post-quantum");
+    expect(x.pqListRequestsSent(y.myRid), 0);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a signature for a list whose update is still on its way is neither '
+      'asked for nor reported missing', () async {
+    final (alice, ben) = await pairWithDevice('lu1', 'lu2');
+    await waitUntil(
+        () => alice.deviceAssuranceWith(ben.myRid) == DeviceAssurance.hybrid,
+        what: 'settles');
+    // Ben's next list, at version 3, does not reach Alice yet — his
+    // signature over it does, and his messages claim it.
+    alice.debugOnDecrypted = (path, from, dec) {
+      try {
+        return InnerMessage.fromBytes(dec.plaintext).kind == 'devlist';
+      } catch (_) {
+        return false;
+      }
+    };
+    await linkLaptop(ben);
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    var n = 0;
+    while (int.parse(
+            await alice.vault.kvGet('cdev_pq_ver_${ben.myRid}') ?? '0') <
+        3) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail("Ben's signature over version 3 never reached Alice");
+      }
+      await ben.sendText(alice.myRid, 'sig ${n++}');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    expect(alice.deviceAssuranceWith(ben.myRid), DeviceAssurance.classical,
+        reason: 'the premise: the list it covers is not held yet');
+    await claimPastTheGrace(alice, ben, 'claim');
+    expect(alice.pqListAlerts[ben.myRid], isNull,
+        reason: 'nobody accused of removing a signature that came');
+    expect(alice.pqListRequestsSent(ben.myRid), 0,
+        reason: 'and nothing asked: the signature it claims is held');
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a banner an earlier build raised over a contact whose claimed '
+      'signature is held is gone at the next start', () async {
+    var (alice, ben) = await pairWithDevice('hs1', 'hs2');
+    await waitUntil(
+        () => alice.deviceAssuranceWith(ben.myRid) == DeviceAssurance.hybrid,
+        what: 'settles');
+    await claimPastTheGrace(alice, ben, 'claim');
+    expect(await alice.vault.kvGet('cdl_claims_${ben.myRid}'), isNotNull,
+        reason: "the premise: Ben's claims of his list are kept");
+    // What a build before 4.9.2 could leave for him: one that saw his list
+    // classical for a while — an update still on its way — and said his
+    // signature never came.
+    final body = devlistAlertBody(DevlistAlertKind.pqSignatureMissing);
+    await alice.vault.kvPut('pql_alert_${ben.myRid}', body, sensitive: false);
+    alice = await restart(alice);
+    expect(alice.pqListAlerts[ben.myRid], isNull,
+        reason: 'the signature for every version he claimed is held');
+    expect(await alice.vault.kvGet('pql_alert_${ben.myRid}'), isNull,
+        reason: 'and not kept');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

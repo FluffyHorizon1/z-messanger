@@ -15259,10 +15259,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   /// Three outcomes, and telling them apart is the whole job:
   ///   * no claim — an older build that does not sign lists. Not an attack,
   ///     and saying so would make every future warning worthless.
-  ///   * claim, and we hold the signature — nothing to do.
+  ///   * claim, and we hold the signature — nothing to do, whether or not it
+  ///     can be checked here (4.9.2, below).
   ///   * claim, and we do not — it was lost or removed. Ask first, because
   ///     most losses are a dropped connection; alarm only if asking does not
-  ///     help within the grace period.
+  ///     help within the grace period, and only once their key is
+  ///     established, the key the signature would be checked against.
   Future<void> _observePqListClaim(Contact contact, int claimed) async {
     final rid = contact.rid;
     // No list of theirs held, nothing to judge: the claim is about a list
@@ -15287,7 +15289,17 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
     }
     final held =
         int.tryParse(await vault.kvGet('cdev_pq_ver_$rid') ?? '0') ?? 0;
-    if (held >= claimed && deviceAssuranceWith(rid) == DeviceAssurance.hybrid) {
+    // 4.9.2: the claim says the signature was SENT, and the banner says it
+    // never ARRIVED. One held at the version claimed, or a later one, has
+    // arrived, whether or not it can be checked here — their key only a
+    // candidate, or the list it covers not held yet — and what it is
+    // checked for is [deviceAssuranceWith]'s to say: nothing here asks for
+    // it again. Through 4.9.1 this also wanted the list hybrid, so every
+    // contact of two or more devices whose key is only a candidate here —
+    // one added by accepting their request, among others — was asked three
+    // times a run, each answered with a 16 384-bucket `dlpq`, and past the
+    // grace told it had been removed.
+    if (held >= claimed) {
       _pqMissingSince.remove(rid);
       _pqReqSent.remove(rid);
       if (pqListAlerts.remove(rid) != null) {
@@ -15312,6 +15324,11 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       return;
     }
     if (DateTime.now().difference(since) < devlistGrace) return;
+    // 4.9.2: and the banner waits for their key. Until it is established no
+    // signature of theirs verifies here, arrived or not, so one missing
+    // takes nothing away yet; once it is, the next claim still missing its
+    // signature raises it at once — the asking done, the grace long past.
+    if (contact.pqPub == null) return;
     if (pqListAlerts.containsKey(rid)) return;
     // A kind, not the sentence. The sentence named the contact, and this
     // value is written unsealed next to a routing id that says whose name it
@@ -17110,6 +17127,36 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   // 7.7a device-list transparency (gossip). See docs/adr/0001-key-transparency.md.
   // ------------------------------------------------------------------
 
+  /// 4.9.2 (§18.9): whether the vault shows that a stored banner saying
+  /// [rid]'s post-quantum list signature never arrived could not have been
+  /// evidence of that. Builds before 4.9.2 raised it whenever the list was
+  /// not hybrid ([_observePqListClaim]), so it says nothing where their key
+  /// is not established here — this build raises none there — or where a
+  /// signature is held at the highest version of their list any device of
+  /// theirs has claimed (`mx` in `cdl_claims_`, §7.7a): the message that
+  /// says a signature was sent (`pql`) claims the sender's own list with it,
+  /// at that version or a later one, so no such message can have named a
+  /// version above that. One that could have been real stays, and the next
+  /// claim judges it.
+  Future<bool> _pqListAlertDisproved(
+      String rid, Future<String?> Function(String key) get) async {
+    final c = contacts[rid];
+    if (c == null || c.pqPub == null) return true;
+    final held = int.tryParse(await get('cdev_pq_ver_$rid') ?? '') ?? 0;
+    final stored = await get('cdl_claims_$rid');
+    if (held <= 0 || stored == null) return false;
+    var claimed = 0;
+    try {
+      for (final v in (jsonDecode(stored) as Map).values) {
+        final mx = (v as Map)['mx'];
+        if (mx is num && mx.toInt() > claimed) claimed = mx.toInt();
+      }
+    } catch (_) {
+      return false;
+    }
+    return claimed > 0 && held >= claimed;
+  }
+
   /// Load persisted alerts and per-contact claims at startup.
   Future<void> _loadDevlistState({Map<String, String>? kv}) async {
     Future<String?> get(String key) async =>
@@ -17158,8 +17205,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // not hold: a list's signature covers that list, so with none of
       // theirs held here it covers nothing this device could be missing —
       // what builds before it raised for a contact still at list version 1
-      // ([_observePqListClaim]).
-      if (a != null && isDevlistAlertBody(a) && await get('cdev_$rid') != null) {
+      // ([_observePqListClaim]). Since 4.9.2, also one the vault shows could
+      // not have been evidence ([_pqListAlertDisproved]).
+      if (a != null &&
+          isDevlistAlertBody(a) &&
+          await get('cdev_$rid') != null &&
+          !await _pqListAlertDisproved(rid, get)) {
         pqListAlerts[rid] = a;
       } else if (a != null) {
         await vault.kvDelete('pql_alert_$rid');

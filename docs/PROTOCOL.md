@@ -4352,15 +4352,31 @@ distinguishable cases:
 | what it sees | what it means | what to do |
 |---|---|---|
 | no `pql` | a client that does not sign its lists | report `classical`; accuse nobody |
-| `pql` ≤ what it holds and verifies | nothing missing | clear any alert |
-| `pql` > what it holds | it was lost or removed | ask, then alert |
+| `pql` ≤ what it holds | nothing missing, whether or not it verifies here — their key not established, or the list it covers not yet held, leaves the list `classical` (§18.4) and is not a signature missing | ask nothing; clear any alert |
+| `pql` > what it holds | it was lost or removed | ask, then alert once their key is established |
 | `pql`, and no list of theirs held | nothing for it to cover here: a list still at version 1 is never sent, since a contact computes it from the code | accuse nobody; ask nothing |
 
 A receiver MUST ask before alerting — most losses are a dropped connection,
 and the sender answers a `dlpqreq` with the signature it already holds. Only
 when asking (bounded; the reference client asks three times) has not produced
-it within the grace period is the user told. The list stays `classical`
-throughout: nothing is ever accepted on the strength of a claim. A claim is
+it within the grace period is the user told, and the reference client tells
+them only once the contact's key is established here: until then no
+signature of theirs verifies, arrived or not, so one missing takes nothing
+away yet, and once the key is established the next claim still missing its
+signature is reported at once. A signature held at the version claimed, or
+a later one, has arrived, whether or not it can be checked here, and is
+never asked for again or reported missing (4.9.2). Through 4.9.1 the
+reference client cleared a claim only once the list was `hybrid`, so it
+asked three times a run — each answer a 16 384‑byte `dlpq` — and then
+reported as removed the signature of every contact of two or more devices
+whose key was only a candidate here (§18.2: one added by accepting their
+request, among others), of one whose list update was still on its way, and
+of one whose account had drawn a new post‑quantum key; such a report is
+dropped at the next start where the vault shows it could not have been
+evidence — their key not established, or a signature held at the highest
+list version any device of theirs has claimed (§7.7a). The list stays
+`classical` throughout: nothing is ever accepted on the strength of a
+claim. A claim is
 judged only over a list the receiver holds. A list goes to contacts only at a
 later version than 1 — once a device is linked or removed, or a migration
 re‑signs it — so an account still at version 1 never sends one, and builds

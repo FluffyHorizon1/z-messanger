@@ -406,8 +406,8 @@ words "Device link"):
   would an app that is not theirs. Z refuses nothing, and can check nothing
   signed with that key: the device stays linked classically — for a contact
   added since this version the label reads **"Device link classical"** — and
-  a post-quantum signature for their device list can read as never arrived,
-  for the same reason. Reset secure session does not change it. Speak to
+  their device list stays verified classically, for the same reason. Reset
+  secure session does not change it. Speak to
   them another way: if they did restore such a backup, deleting them and
   adding them again from their code takes their new key and links the device
   again — and deletes your chat with them on this device.
@@ -422,6 +422,22 @@ words "Device link"):
 
 Updating changes nothing else for a contact you already had: a tick, the
 number and the label stay as they were, and the line is added.
+
+**A banner about their device list: "A post-quantum signature never
+arrived".** Their app also signs its list of devices with its post-quantum
+key, and says inside every message, where nothing on the way can strip it,
+that it has sent you that signature. If the signature it says it sent does
+not come, Z asks their app for it, three times, and if it has still not come
+a few seconds later Z shows this banner for them: their device list is still
+verified classically, and something on the network may be removing the
+signature. It shows only once you hold their post-quantum key as theirs — it
+matched their code, or you compared the number — since until then no
+signature of theirs could be checked anyway. A signature that has come is
+never reported missing, even when Z cannot check it yet: their list reads as
+verified classically until it can be, as it does for someone whose request
+you accepted until you compare the number, and for a moment while their
+newest device list is on its way. Through 4.9.1 those showed this banner by
+mistake; this version removes such a banner the first time it starts.
 
 **Two labels you may see beside the number.** Which number Z shows depends on
 what each of you has of the other, and Z will not move your number until it
