@@ -993,10 +993,14 @@ class RelayPairing {
     box.cancel?._sentEnrolment = true;
     // The send's own timeout is twice the wait, so that it never ends the
     // wait: a `sent` that has not come by the deadline is no refusal.
+    // The relay's refusal is its code (§12.2), read where its error frame
+    // named one; the exception's message only where none was named. Until
+    // 2026-11-01 the message was read, which this client sets to the code,
+    // or to `refused` for a frame that named none.
     unawaited(box.client
         .send(to: to, id: id, payload: payload, timeout: wait * 2)
         .then<void>((_) {}, onError: (Object e) {
-      refused = e is RelayException ? e.message : '$e';
+      refused = e is RelayException ? (e.code ?? e.message) : '$e';
     }));
     final deadline = DateTime.now().add(wait);
     while (!box.acknowledged(id) &&
