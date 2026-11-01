@@ -36,7 +36,11 @@
 //      its foot pressed. Until 2026-11-01 it was a column that did not: it
 //      overflowed by 2.5 pixels at the test's 800×600, which criterion 2
 //      met on a screen 1 600 high, and at 360×640 Edit and Delete for
-//      everyone were out of reach and its row of reactions overflowed.
+//      everyone were out of reach and its row of reactions overflowed;
+//   8. a text the vault refuses stays in the composer as it was typed, with
+//      the message it answers, and goes from there once it is sent — as a
+//      reply to it: until 2026-11-01 the composer was emptied, and the reply
+//      let go, before the send.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -807,6 +811,74 @@ void main() {
         '$lang: overflow: none; out of reach: nothing; '
             '${lookupAppLocalizations(Locale(lang)).chatDeleteForEveryone}: '
             'asks first',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  testWidgets(
+      '8. a text the vault refuses stays in the composer as typed, with the '
+      'message it answers, until it goes', (t) async {
+    final seen = <String>[];
+    for (final lang in const ['en', 'es']) {
+      final locale = Locale(lang);
+      final l = lookupAppLocalizations(locale);
+      final svc = await person(t, 'keep$lang');
+      late String rid;
+      await t.runAsync(() async {
+        rid = await contact(svc, 'Pat');
+        await svc.sendText(rid, 'Hello');
+      });
+      await t.pumpWidget(app(svc, ChatScreen(rid: rid), locale));
+      await _settleUntil(t, () => find.text('Hello').evaluate().isNotEmpty,
+          what: 'the chat');
+      // An answer to Hello, typed with a space at its end.
+      final reply = find.text(l.chatReply).hitTestable();
+      final replying = find.byTooltip(l.chatCancelReply);
+      await t.longPress(find.text('Hello'));
+      await _settleUntil(t, () => reply.evaluate().isNotEmpty,
+          what: 'what can be done with it');
+      await t.tap(reply);
+      await _settleUntil(t, () => replying.evaluate().isNotEmpty,
+          what: 'the answer begun');
+      const typed = 'See you at six ';
+      final composer = find.byType(TextField);
+      String composing() => t.widget<TextField>(composer).controller!.text;
+      String state() =>
+          'the composer: ${composing().isEmpty ? 'empty' : '"${composing()}"'}; '
+          'the reply: ${replying.evaluate().isEmpty ? 'let go' : 'kept'}';
+
+      await t.runAsync(() => refuse(svc, 'messages'));
+      await t.enterText(composer, typed);
+      await t.tap(find.byIcon(Icons.arrow_upward));
+      await _settleUntil(t, () => find.byType(SnackBar).evaluate().isNotEmpty,
+          what: 'the refusal said');
+      seen.add('$lang, refused: ${state()}');
+      t
+          .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+          .removeCurrentSnackBar();
+      await t.runAsync(
+          () => svc.vault.db.execute('DROP TRIGGER refuse_messages'));
+      // Typed again only where it was lost, so that the rest is read on any
+      // build.
+      if (composing().isEmpty) await t.enterText(composer, typed);
+      await t.tap(find.byIcon(Icons.arrow_upward));
+      bool sent() => (svc.messagesByChat[rid] ?? const [])
+          .any((m) => m.body == typed.trim());
+      await _settleUntil(t, sent, what: 'the text sent');
+      await t.pump();
+      final messages = svc.messagesByChat[rid]!;
+      final hello = messages.singleWhere((m) => m.body == 'Hello');
+      final answer = messages.singleWhere((m) => m.body == typed.trim());
+      seen.add('$lang, sent: ${state()}; '
+          '${answer.replyTo == hello.mid ? 'as a reply to Hello' : 'as a reply to nothing'}');
+      await t.pumpWidget(const SizedBox());
+    }
+
+    expect(seen, [
+      for (final lang in const ['en', 'es']) ...[
+        '$lang, refused: the composer: "See you at six "; the reply: kept',
+        '$lang, sent: the composer: empty; the reply: let go; as a reply to '
+            'Hello',
+      ],
     ]);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }

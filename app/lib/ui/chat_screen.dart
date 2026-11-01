@@ -417,21 +417,28 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _send() async {
-    final text = _input.text.trim();
+    final typed = _input.text;
+    final text = typed.trim();
     if (text.isEmpty || _sending) return;
     final l = AppLocalizations.of(context);
-    _input.clear();
-    final replyTo = _replyTo?.mid;
-    setState(() {
-      _sending = true;
-      _replyTo = null;
-    });
+    // What is in the composer stays there, as typed and with the message it
+    // answers, until it has gone: a text that does not go is not typed
+    // again. Until 2026-11-01 the composer was emptied, and the reply let
+    // go, before the send, and a text the vault refused was lost with them.
+    final replying = _replyTo;
+    setState(() => _sending = true);
     try {
       final svc = context.read<ChatService>();
       if (svc.groups.containsKey(widget.rid)) {
-        await svc.sendGroupText(widget.rid, text, replyTo: replyTo);
+        await svc.sendGroupText(widget.rid, text, replyTo: replying?.mid);
       } else {
-        await svc.sendText(widget.rid, text, replyTo: replyTo);
+        await svc.sendText(widget.rid, text, replyTo: replying?.mid);
+      }
+      if (mounted) {
+        // Gone: out of the composer, and the reply with it — unless the
+        // person has typed on, or picked another message to answer, since.
+        if (_input.text == typed) _input.clear();
+        if (identical(_replyTo, replying)) setState(() => _replyTo = null);
       }
       _jumpToEnd();
     } on KtSendHeldException {
