@@ -1186,9 +1186,12 @@ class Vault {
     return out;
   }
 
-  Future<void> kvDelete(String key) async {
+  /// Removes [key], in both storage classes. With [txn], as part of that
+  /// transaction, as for [kvPut].
+  Future<void> kvDelete(String key, {DatabaseExecutor? txn}) async {
+    final from = txn ?? db;
     for (final prefix in ['s:', 'p:']) {
-      await db.delete('kv', where: 'k = ?', whereArgs: [prefix + key]);
+      await from.delete('kv', where: 'k = ?', whereArgs: [prefix + key]);
     }
   }
 

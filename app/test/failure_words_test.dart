@@ -58,7 +58,11 @@
 //      reader's language;
 //  13. the backup screen, asked to turn automatic backups on or off on a
 //      store that refuses, says so in English and in Spanish, and they stay
-//      as they were.
+//      as they were;
+//  14. the backup screen, asked to turn automatic backups on or off on a
+//      store that takes the first write and refuses the rest, says what the
+//      vault then holds, in English and in Spanish: off with no code kept,
+//      or on with its code.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -71,6 +75,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:z_protocol/z_protocol.dart';
 import 'package:zapp/core/app_lock.dart';
+import 'package:zapp/core/backup_store.dart';
 import 'package:zapp/core/chat_service.dart';
 import 'package:zapp/core/key_transparency.dart';
 import 'package:zapp/core/models.dart';
@@ -1233,6 +1238,60 @@ void main() {
       await says(t, words(lang, 'backupAutoNotOff'),
           '$lang: automatic backups the store would not turn off');
       expect(autoIsOn(t, l), isTrue, reason: '$lang: they stay on');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, on);
+    }
+  });
+
+  testWidgets(
+      '14. the backup screen, asked to turn automatic backups on or off on a '
+      'store that takes the first write and refuses the rest, says what the '
+      'vault then holds', (t) async {
+    final code = (await t.runAsync(
+        () async => (await RecoveryCode.generate()).format()))!;
+    // Refuses an interval that turns the schedule on, and forgetting the
+    // code: turning on takes the code and is refused the interval, turning
+    // off takes the interval and is refused the code's removal, and until
+    // 2026-11-01 what took the first write back was refused too.
+    Future<void> refuse(Vault vault) => t.runAsync(() async {
+          await vault.db.execute("CREATE TRIGGER refuse_on BEFORE INSERT ON "
+              "kv WHEN NEW.k = 'p:backup_interval_days' AND NEW.v != '0' "
+              "BEGIN SELECT RAISE(ABORT, 'refused'); END");
+          await vault.db.execute("CREATE TRIGGER refuse_forget BEFORE "
+              "DELETE ON kv WHEN OLD.k = 's:backup_code' "
+              "BEGIN SELECT RAISE(ABORT, 'refused'); END");
+        });
+    Future<(int, bool)> held(Vault vault) async => (await t.runAsync(
+        () async => (
+              await BackupSchedule(vault).intervalDays(),
+              await BackupSchedule(vault).storedCode() != null,
+            )))!;
+    for (final lang in ['es', 'en']) {
+      final l = lookupAppLocalizations(Locale(lang));
+      FilePicker.platform = FakePicker(temp('auto_rest_cache_$lang'));
+      final off = (await t.runAsync(() => service('Ines_$lang')))!;
+      await openBackup(t, lang, off);
+      await refuse(off.vault);
+      await flipAuto(t, l, code: code, what: '$lang, turning them on');
+      await says(t, words(lang, 'backupAutoNotOn'),
+          '$lang: automatic backups the store would not turn on');
+      expect(autoIsOn(t, l), isFalse, reason: '$lang: the switch off');
+      expect(await held(off.vault), (0, false),
+          reason: '$lang: and the vault off, with no code kept');
+      await t.pumpWidget(const SizedBox());
+      await stop(t, off);
+      final on = (await t.runAsync(() => service('Igor_$lang')))!;
+      await openBackup(t, lang, on);
+      await flipAuto(t, l, code: code, what: '$lang, turning them on first');
+      await says(t, words(lang, 'backupAutoOn'), '$lang: automatic backups on');
+      await dismissWord(t);
+      await refuse(on.vault);
+      await flipAuto(t, l, what: '$lang, turning them off');
+      await says(t, words(lang, 'backupAutoNotOff'),
+          '$lang: automatic backups the store would not turn off');
+      expect(autoIsOn(t, l), isTrue, reason: '$lang: the switch on');
+      expect(await held(on.vault), (7, true),
+          reason: '$lang: and the vault on, with its code');
       await t.pumpWidget(const SizedBox());
       await stop(t, on);
     }

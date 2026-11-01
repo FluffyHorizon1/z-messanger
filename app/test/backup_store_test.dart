@@ -385,6 +385,50 @@ void main() {
       await vault.db.close();
     });
 
+    // Each change writes the interval and the code. Until 2026-11-01 they
+    // were separate writes, and what took the first back was a write of its
+    // own, which a store refusing the rest refused too.
+    test(
+        'a schedule whose store takes the first write and refuses the rest '
+        'stays as it was, off with no code or on with its code', () async {
+      final vault = await seededVault('sched_rest', messages: 1);
+      final sched = BackupSchedule(vault);
+      final code = await RecoveryCode.generate();
+      // Refuses an interval that turns the schedule on, and forgetting the
+      // code.
+      Future<void> refuse() async {
+        await vault.db.execute("CREATE TRIGGER refuse_on BEFORE INSERT ON kv "
+            "WHEN NEW.k = 'p:backup_interval_days' AND NEW.v != '0' "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END");
+        await vault.db.execute("CREATE TRIGGER refuse_forget BEFORE DELETE "
+            "ON kv WHEN OLD.k = 's:backup_code' "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END");
+      }
+
+      Future<void> allow() async {
+        await vault.db.execute('DROP TRIGGER refuse_on');
+        await vault.db.execute('DROP TRIGGER refuse_forget');
+      }
+
+      // Turning on: the code taken, the interval refused.
+      await refuse();
+      await expectLater(
+          sched.enable(code: code, everyDays: 7), throwsA(isA<Exception>()));
+      expect(await sched.intervalDays(), 0, reason: 'off');
+      expect(await sched.storedCode(), isNull, reason: 'with no code kept');
+      await allow();
+
+      // Turning off: the interval taken, forgetting the code refused.
+      await sched.enable(code: code, everyDays: 7);
+      await refuse();
+      await expectLater(sched.disable(), throwsA(isA<Exception>()));
+      expect(await sched.intervalDays(), 7, reason: 'on');
+      expect((await sched.storedCode())!.entropy, code.entropy,
+          reason: 'with its code');
+      await allow();
+      await vault.db.close();
+    });
+
     test('the due policy is exact at the boundary', () {
       final last = DateTime(2026, 1, 1, 12);
       expect(

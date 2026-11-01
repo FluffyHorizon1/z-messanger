@@ -576,13 +576,13 @@ encryption. Turning the schedule off erases the stored code.
 The user is asked to type the code when enabling, so the stored copy is one
 they actually hold rather than one they have already lost.
 
-A vault that refuses the write leaves automatic backup as it was, and the
+A vault that refuses the change leaves automatic backup as it was, and the
 screen says so in the reader's language: off, with no code kept, when it was
-being turned on; on, with its code, when it was being turned off. The interval
-is written last when turning on and first when turning off, and a refusal of
-the second write takes the first back. Until 4.9.1 neither refusal was said,
-and a store that would not forget the code left the schedule off with the code
-still kept, while the screen showed it on.
+being turned on; on, with its code, when it was being turned off. The code and
+the interval are written in one transaction, so a refusal of either leaves
+both as they were. Until 4.9.1 neither refusal was said, and a store that
+would not forget the code left the schedule off with the code still kept,
+while the screen showed it on.
 
 ---
 

@@ -269,44 +269,28 @@ class BackupSchedule {
   /// Turns automatic backup on, reusing the code the user has already
   /// written down. Storing it is what makes an unattended run possible.
   ///
-  /// A store that refuses throws, and the schedule stays as it was: the
-  /// interval, written last, is what turns it on, and a code stored before
-  /// a refusal of the interval is taken back out, as far as the store will.
+  /// The code and the interval are written in one transaction: a store that
+  /// refuses either throws, and leaves both as they were. Until 2026-11-01
+  /// they were separate writes, and a store that refused the interval, and
+  /// then the code's removal, kept the code with the schedule off.
   Future<void> enable({required RecoveryCode code, int everyDays = 7}) async {
     if (everyDays <= 0) throw ArgumentError('everyDays must be positive');
-    final held = await vault.kvGet(_kCode);
-    await vault.kvPut(_kCode, b64(code.entropy));
-    try {
-      await vault.kvPut(_kInterval, '$everyDays', sensitive: false);
-    } catch (_) {
-      try {
-        if (held == null) {
-          await vault.kvDelete(_kCode);
-        } else {
-          await vault.kvPut(_kCode, held);
-        }
-      } catch (_) {}
-      rethrow;
-    }
+    await vault.db.transaction((txn) async {
+      await vault.kvPut(_kCode, b64(code.entropy), txn: txn);
+      await vault.kvPut(_kInterval, '$everyDays', sensitive: false, txn: txn);
+    });
   }
 
-  /// Turns it off and forgets the stored code. A store that refuses throws,
-  /// and the schedule stays on: an interval set to off before a refusal to
-  /// forget the code is put back, as far as the store will, rather than
-  /// leave the schedule off with its code still held.
+  /// Turns it off and forgets the stored code, in one transaction: a store
+  /// that refuses either throws, and leaves the schedule on with its code.
+  /// Until 2026-11-01 they were separate writes, and a store that refused to
+  /// forget the code, and then to set the interval back, left the schedule
+  /// off with the code it was asked to forget.
   Future<void> disable() async {
-    final was = await vault.kvGet(_kInterval);
-    await vault.kvPut(_kInterval, '0', sensitive: false);
-    try {
-      await vault.kvDelete(_kCode);
-    } catch (_) {
-      try {
-        if (was != null) {
-          await vault.kvPut(_kInterval, was, sensitive: false);
-        }
-      } catch (_) {}
-      rethrow;
-    }
+    await vault.db.transaction((txn) async {
+      await vault.kvPut(_kInterval, '0', sensitive: false, txn: txn);
+      await vault.kvDelete(_kCode, txn: txn);
+    });
   }
 
   Future<RecoveryCode?> storedCode() async {
