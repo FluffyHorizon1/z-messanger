@@ -456,6 +456,58 @@ void main() {
           isTrue);
     });
 
+    // Two backups started in one second, as a backup made in the second the
+    // schedule ran at start-up is, each on a store of its own, as the
+    // Backup screen and the schedule each open one. Until 2026-11-01 they
+    // shared the temporary file, and one of them failed.
+    test(
+        'two backups started in the same second are written one after the '
+        'other, each whole under a name of its own and opened by its own '
+        'code, and the folder pruned as after two one after the other',
+        () async {
+      final vault = await seededVault('samesecond', messages: 2);
+      final screen = await BackupStore.open(vault);
+      final schedule = await BackupStore.open(vault);
+      final older = await screen.write(
+          code: await RecoveryCode.generate(),
+          now: DateTime(2026, 1, 1, 11, 0, 0));
+      final at = DateTime(2026, 1, 1, 12, 0, 0);
+      final codeA = await RecoveryCode.generate();
+      final codeB = await RecoveryCode.generate();
+      final results = await Future.wait([
+        screen
+            .write(code: codeA, now: at)
+            .then<Object>((b) => b, onError: (Object e) => e),
+        schedule
+            .write(code: codeB, now: at)
+            .then<Object>((b) => b, onError: (Object e) => e),
+      ]);
+      expect(results, everyElement(isA<StoredBackup>()),
+          reason: 'neither write fails');
+      final a = results[0] as StoredBackup, b = results[1] as StoredBackup;
+      expect([a.name, b.name],
+          ['z-backup-20260101-120000.zbk', 'z-backup-20260101-120001.zbk'],
+          reason: 'one after the other, the second at the next free second');
+      for (final (backup, code) in [(a, codeA), (b, codeB)]) {
+        final fresh =
+            await Vault.open(rootOverride: await tempDir('samesecond_in'));
+        expect(
+            (await BackupArchive.import(
+                    vault: fresh, file: backup.file, code: code))
+                .messages,
+            2,
+            reason: '${backup.name} is whole, and opens with its own code');
+        await fresh.db.close();
+      }
+      final left = [
+        await for (final e in screen.dir.list()) e.uri.pathSegments.last
+      ]..sort();
+      expect(left, [a.name, b.name],
+          reason: 'no .partial left, and ${older.name} pruned as after two '
+              'backups one after the other');
+      await vault.db.close();
+    });
+
     test('ordering survives archives sharing one filesystem timestamp',
         () async {
       final vault = await seededVault('sametick', messages: 1);

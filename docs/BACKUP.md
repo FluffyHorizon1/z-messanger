@@ -502,7 +502,12 @@ differently and only the first has to succeed for the history to be safe.
    Until 4.9.1 a folder that could not be written, or a full disk, was an
    error nothing caught, and the write then waited for ever, the screen still
    at its progress line; a write that failed part-way left its `.partial`
-   behind.
+   behind. Two backups started at once — one made in the second the schedule
+   runs at start-up — are written one after the other, each under a stamp of
+   its own, the second taking the next free second, so that neither is renamed
+   over the other. Until 4.9.2 they shared the temporary file: one failed, and
+   the one that finished first returned an archive that opened with the
+   other's code, not its own.
 2. **Hand over.** The finished file is copied wherever the user chooses,
    through a dialog titled in the reader's language (until 4.9.1 the title
    was English in every language).

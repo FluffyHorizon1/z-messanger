@@ -90,6 +90,11 @@ class BackupStore {
   final Directory dir;
   BackupStore._(this.vault, this.dir);
 
+  /// The write under way in each backup folder, by the folder's path:
+  /// [write] runs one at a time per folder, whichever [BackupStore] it is
+  /// called on — the Backup screen and the schedule each open their own.
+  static final Map<String, Future<void>> _writing = {};
+
   static Future<BackupStore> open(Vault vault) async {
     final d = Directory('${vault.root.path}${Platform.pathSeparator}backups');
     if (!await d.exists()) await d.create(recursive: true);
@@ -109,22 +114,56 @@ class BackupStore {
   /// folder that could not be written, or a full disk, was an uncaught error
   /// and a backup that waited for ever. A write that failed part-way left
   /// its `.partial` behind.
+  ///
+  /// Writes to one folder go one at a time, each waiting for the one before
+  /// it, and each under a stamp no archive there has yet: one that comes in
+  /// the second an archive already has takes the next free second. Until
+  /// 2026-11-01 two writes in one second — a backup made in the second the
+  /// schedule ran at start-up — shared the temporary file: both wrote into
+  /// it, the first to finish renamed it and returned it, the other went on
+  /// writing into it and then failed, and what the first returned opened
+  /// with the other's code, not its own.
   Future<StoredBackup> write({
     required RecoveryCode code,
     DateTime? now,
     void Function(ArchiveProgress)? onProgress,
   }) async {
-    final at = now ?? DateTime.now();
-    final stamp = '${at.year.toString().padLeft(4, '0')}'
-        '${at.month.toString().padLeft(2, '0')}'
-        '${at.day.toString().padLeft(2, '0')}-'
-        '${at.hour.toString().padLeft(2, '0')}'
-        '${at.minute.toString().padLeft(2, '0')}'
-        '${at.second.toString().padLeft(2, '0')}';
+    final folder = dir.absolute.path;
+    final before = _writing[folder];
+    final mine = Completer<void>();
+    _writing[folder] = mine.future;
+    try {
+      if (before != null) await before;
+      return await _writeOne(code: code, now: now, onProgress: onProgress);
+    } finally {
+      mine.complete();
+      if (identical(_writing[folder], mine.future)) _writing.remove(folder);
+    }
+  }
+
+  Future<StoredBackup> _writeOne({
+    required RecoveryCode code,
+    DateTime? now,
+    void Function(ArchiveProgress)? onProgress,
+  }) async {
+    var at = now ?? DateTime.now();
+    String stampAt(DateTime t) => '${t.year.toString().padLeft(4, '0')}'
+        '${t.month.toString().padLeft(2, '0')}'
+        '${t.day.toString().padLeft(2, '0')}-'
+        '${t.hour.toString().padLeft(2, '0')}'
+        '${t.minute.toString().padLeft(2, '0')}'
+        '${t.second.toString().padLeft(2, '0')}';
+    File targetAt(DateTime t) => File(
+        '${dir.path}${Platform.pathSeparator}$_prefix${stampAt(t)}$_ext');
+    // No archive is renamed over another: a second one already has moves
+    // this one on to the next.
+    while (await targetAt(at).exists()) {
+      at = at.add(const Duration(seconds: 1));
+    }
+    final stamp = stampAt(at);
     final partial = File('${dir.path}${Platform.pathSeparator}'
         '.$_prefix$stamp$_ext.partial');
-    final target =
-        File('${dir.path}${Platform.pathSeparator}$_prefix$stamp$_ext');
+    final target = targetAt(at);
 
     try {
       // Opened here, so that a folder that cannot be written fails to the
