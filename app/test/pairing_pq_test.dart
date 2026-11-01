@@ -148,7 +148,11 @@
 //      languages, that it has already linked a device and how to link
 //      another — once restarted too — the phone keeping the code by its
 //      rendezvous id under a key of its own, and logging in as the code's
-//      mailbox for neither.
+//      mailbox for neither;
+//  31. a link stopped on the phone while its connection to the code's
+//      mailbox opens — the relay's welcome held — ends at once, the phone
+//      closing that connection and keeping, spending and acknowledging
+//      nothing, and the code entered again links the laptop (4.9.2).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -196,7 +200,9 @@ typedef Person = ({
 /// for a frame from the client, which never reaches the relay. [holdUp],
 /// when it answers a frame from the client with a future, keeps that frame
 /// from the relay — as one still going up — until the future completes,
-/// then passes it on if the connection is still there. [welcomed] keeps the
+/// then passes it on if the connection is still there. [holdDown] does the
+/// same for a frame from the relay, keeping it, and every frame after it on
+/// that connection, from the client. [welcomed] keeps the
 /// routing id of every login the relay welcomes through it, and [left] that
 /// of every such connection once the client's side of it has closed —
 /// whichever end closed it, the client has taken the close by then.
@@ -213,7 +219,8 @@ class Recorder {
       {List<String> Function(String frame)? hand,
       bool Function(String frame)? cut,
       bool Function(String frame)? cutUp,
-      Future<void>? Function(String frame)? holdUp}) async {
+      Future<void>? Function(String frame)? holdUp,
+      Future<void>? Function(String frame)? holdDown}) async {
     final r =
         Recorder._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     r._server.listen((req) async {
@@ -252,6 +259,7 @@ class Recorder {
         leave();
         up.close();
       }, onError: (Object _) => up.close());
+      var handed = Future<void>.value();
       up.listen((d) {
         if (gone) return;
         r._note(d, 'msg');
@@ -262,13 +270,26 @@ class Recorder {
           up.close();
           return;
         }
-        if (hand == null || d is! String) {
-          down.add(d);
-        } else {
-          for (final f in hand(d)) {
-            down.add(f);
+        void pass() {
+          if (hand == null || d is! String) {
+            down.add(d);
+          } else {
+            for (final f in hand(d)) {
+              down.add(f);
+            }
           }
         }
+
+        if (holdDown == null) {
+          pass();
+          return;
+        }
+        // Held, and every frame after it on this connection behind it,
+        // passed on if the client is still there.
+        final held = d is String ? holdDown(d) : null;
+        handed = handed.then((_) => held ?? Future<void>.value()).then((_) {
+          if (!gone && down.readyState == WebSocket.open) pass();
+        });
       }, onDone: () {
         // The relay's own close code passes on — 4002 above all, its word
         // that another connection logged in as this one's routing id. The
@@ -2261,10 +2282,18 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 500));
     expect(find.byType(HostLinkScreen), findsNothing);
-    await drive(t, () => mailboxes.every(rec.left.contains),
+    // Every mailbox it had logged in as closed: the phone's first, and of
+    // the two it opens after it, any the relay had welcomed. One still
+    // opening is given up and never logged in; until 2026-11-01 each ran to
+    // its end first, and all three closed.
+    await drive(t, () {
+      final opened = mailboxes.where(rec.welcomed.contains).toList();
+      return opened.contains(mailboxes.first) &&
+          opened.every(rec.left.contains);
+    },
         within: const Duration(seconds: 10),
         what: 'the attempt the screen started stopped once the screen was '
-            'left, its three mailboxes closed');
+            'left, every mailbox it had logged in as closed');
 
     // The person enters the same code again, and the laptop starts.
     late Future<Object?> again, joined;
@@ -2817,6 +2846,93 @@ void main() {
         .routingId();
     expect(rec.welcomed.where((id) => id == box), hasLength(1),
         reason: 'the attempt that linked alone logged in as the mailbox');
+    await vault.db.close();
+  });
+
+  test(
+      '31. a link stopped while the phone opens its connection to the code\'s '
+      'mailbox ends at once, keeps nothing, and the code entered again links',
+      () async {
+    // The relay's welcome to the phone's login as the code's mailbox is
+    // held for good, as on a connection that stalls while it opens. Until
+    // 2026-11-01 the stop was seen only once the opening had run to its end,
+    // up to fifteen seconds for the welcome.
+    String? box;
+    var holding = true;
+    final rec = await Recorder.start(relayUrl(), holdDown: (frame) {
+      if (!holding || box == null) return null;
+      try {
+        final f = jsonDecode(frame);
+        if (f is Map && f['t'] == 'ready' && f['id'] == box) {
+          return Completer<void>().future;
+        }
+      } catch (_) {}
+      return null;
+    });
+    addTearDown(rec.close);
+    final alice = await person('Alice31', url: rec.url);
+    await connected([alice]);
+    const timeout = Duration(seconds: 6), margin = Duration(seconds: 1);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    box = await (await RelayPairing.relayIdentityV3(
+            PairingCode.parse(code), 'r'))
+        .routingId();
+    final dir = await tempDir('laptop31');
+    final vault = await Vault.open(rootOverride: dir);
+    final laptop = n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: timeout,
+          margin: margin,
+          install: (r) async {
+            await setRelayUrl(vault, relayUrl(), acceptedInsecure: true);
+            await installEnrollment(vault, r, sealingKey: n.sealingKey);
+          },
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final stop = PairingCancel();
+    final first = alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true, cancel: stop)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    await waitUntil(() => rec.welcomed.contains(box),
+        what: "the relay welcoming the phone's login as the code's mailbox");
+    final since = Stopwatch()..start();
+    stop.cancel();
+    // A deadline, not a sleep.
+    final out = await first.timeout(const Duration(seconds: 2),
+        onTimeout: () => 'still running ${since.elapsed} after the stop');
+    final took = since.elapsed;
+    holding = false;
+    // ignore: avoid_print
+    print('a link stopped while its connection opened: '
+        '${out is PairingCancelled ? 'ended ${took.inMilliseconds} ms after '
+            'the stop' : '$out'}');
+    expect(out, isA<PairingCancelled>(), reason: 'the link stops');
+    expect(took, lessThan(const Duration(milliseconds: 500)),
+        reason: 'at once');
+    await waitUntil(() => rec.left.contains(box),
+        what: 'the welcomed connection closed by the phone',
+        timeout: const Duration(seconds: 2));
+    for (final key in [
+      'link_answered_codes',
+      'link_spent_codes',
+      'link_linked_codes'
+    ]) {
+      expect(await alice.vault.kvGet(key), isNull,
+          reason: 'nothing kept under $key');
+    }
+    // The person enters the same code again: the laptop's commitment was
+    // left for it, unacknowledged.
+    final again = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    expect(again, isTrue, reason: 'the code entered again links');
+    expect(await laptop, isA<PairingResult>());
+    expect(await alice.svc.linkedDevices(), hasLength(1));
     await vault.db.close();
   });
 }

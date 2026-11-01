@@ -1447,6 +1447,227 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    // A stop while a connection is opening: the front holds the relay's
+    // welcome to one of the existing device's three logins for good. Until
+    // 2026-11-01 the opening ran to its end first — up to fifteen seconds
+    // for the welcome — before the stop was seen, and an attempt on the
+    // same code waited behind it.
+    test('an existing device stopped while each of its three connections '
+        'opens stops at once, closes that connection, acknowledges nothing, '
+        'and the code then links', () async {
+      const timeout = Duration(seconds: 10), margin = Duration(seconds: 2);
+      final me = await AccountIdentity.generate();
+      for (final which in ['v3', 'v2', 'v1']) {
+        final code = PairingCode.generate();
+        final rid = await (await switch (which) {
+          'v3' => RelayPairing.relayIdentityV3(code, 'r'),
+          'v2' => RelayPairing.relayIdentityV2(code, 'r'),
+          _ => RelayPairing.relayIdentity(code, 'r'),
+        })
+            .routingId();
+        final desktop = await PairingInitiatorV3.create(
+            code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+        int? held;
+        final gone = <int>{};
+        final watch = await front(url, (frame) => [frame],
+            holdDown: (frame, connection) {
+              if (!isFrameOf(frame, 'ready', id: rid)) return null;
+              held = connection;
+              return Completer<void>().future;
+            },
+            clientDone: gone.add);
+        try {
+          // The laptop first: its commitment waits at the relay.
+          final laptop = RelayPairing.runNewDeviceV3(
+            relayUrl: url,
+            n: desktop,
+            confirm: (s) async => true,
+            timeout: timeout,
+            margin: margin,
+          ).then<Object?>((r) => r, onError: (Object e) => e);
+          final cancel = PairingCancel();
+          final phone = RelayPairing.runExistingDeviceV3(
+            relayUrl: 'ws://127.0.0.1:${watch.port}',
+            code: code,
+            me: me,
+            contacts: const [],
+            attest: (s) async => randomBytes(3309),
+            confirm: (s) async => true,
+            timeout: timeout,
+            margin: margin,
+            cancel: cancel,
+          ).then<Object?>((r) => r, onError: (Object e) => e);
+          await waitUntil(() => held != null,
+              what: "the relay's welcome to the phone's $which login");
+          final since = Stopwatch()..start();
+          cancel.cancel();
+          // A deadline, not a sleep.
+          final out = await phone.timeout(const Duration(seconds: 2),
+              onTimeout: () => 'still running ${since.elapsed} after the stop');
+          final took = since.elapsed;
+          final ended = 'ended ${took.inMilliseconds} ms after the stop';
+          print('$which login: ${out is PairingCancelled ? ended : '$out'}');
+          expect(out, isA<PairingCancelled>(), reason: '$which: it stops');
+          expect(took, lessThan(const Duration(milliseconds: 500)),
+              reason: '$which: at once');
+          await waitUntil(() => gone.contains(held),
+              what: '$which: the welcomed connection closed by the phone',
+              timeout: const Duration(seconds: 2));
+          // The code again, nothing held: the laptop's commitment was left
+          // for it, unacknowledged.
+          final again = await RelayPairing.runExistingDeviceV3(
+            relayUrl: url,
+            code: code,
+            me: me,
+            contacts: const [],
+            attest: (s) async => randomBytes(3309),
+            confirm: (s) async => true,
+            timeout: timeout,
+            margin: margin,
+          ).then<Object?>((r) => r, onError: (Object e) => e);
+          expect(again, isA<DeviceCertificate>(),
+              reason: '$which: the code entered again links');
+          expect(await laptop, isA<PairingResult>(),
+              reason: '$which: and the laptop with it');
+        } finally {
+          await watch.close(force: true);
+        }
+      }
+    }, timeout: const Timeout(Duration(minutes: 3)));
+
+    test('a new device stopped while its connection opens stops at once, '
+        'closes that connection, and the code then links', () async {
+      const timeout = Duration(seconds: 10), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final rid =
+          await (await RelayPairing.relayIdentityV3(code, 'i')).routingId();
+      int? held;
+      final gone = <int>{};
+      final watch = await front(url, (frame) => [frame],
+          holdDown: (frame, connection) {
+            if (!isFrameOf(frame, 'ready', id: rid)) return null;
+            held = connection;
+            return Completer<void>().future;
+          },
+          clientDone: gone.add);
+      try {
+        final cancel = PairingCancel();
+        final laptop = RelayPairing.runNewDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          n: await PairingInitiatorV3.create(
+              code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+          cancel: cancel,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        await waitUntil(() => held != null,
+            what: "the relay's welcome to the laptop's login");
+        final since = Stopwatch()..start();
+        cancel.cancel();
+        // A deadline, not a sleep.
+        final out = await laptop.timeout(const Duration(seconds: 2),
+            onTimeout: () => 'still running ${since.elapsed} after the stop');
+        final took = since.elapsed;
+        print('the laptop: ${out is PairingCancelled ? 'the stopped attempt '
+            'ended ${took.inMilliseconds} ms after the stop' : '$out'}');
+        expect(out, isA<PairingCancelled>(), reason: 'it stops');
+        expect(took, lessThan(const Duration(milliseconds: 500)),
+            reason: 'at once');
+        await waitUntil(() => gone.contains(held),
+            what: 'the welcomed connection closed by the laptop',
+            timeout: const Duration(seconds: 2));
+        // The same code again on the laptop, and the phone on it.
+        final again = RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: await PairingInitiatorV3.create(
+              code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final phone = await RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(phone, isA<DeviceCertificate>(),
+            reason: 'the phone links on the code');
+        expect(await again, isA<PairingResult>(),
+            reason: 'and the laptop with it');
+      } finally {
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // The relay's challenge to the existing device's first login held until
+    // the stop: given up, the connection answers it with nothing, so the
+    // relay never logs it in. Until 2026-11-01 it answered after the stop,
+    // and then opened its other two connections, logging in as the code's
+    // mailboxes once it had stopped — where a login closes the one before
+    // it, that of an attempt on the code started behind it.
+    test('an existing device stopped before its first connection is '
+        'challenged answers no challenge after the stop', () async {
+      final code = PairingCode.generate();
+      final release = Completer<void>();
+      var challenged = false;
+      var stopped = false;
+      final answeredAfter = <int>[];
+      final gone = <int>{};
+      final watch = await front(url, (frame) => [frame],
+          holdDown: (frame, connection) {
+            if (connection != 0 || !isFrameOf(frame, 'challenge')) return null;
+            challenged = true;
+            return release.future;
+          },
+          seenUp: (frame, connection) {
+            if (stopped && isFrameOf(frame, 'auth')) {
+              answeredAfter.add(connection);
+            }
+          },
+          clientDone: gone.add);
+      try {
+        final cancel = PairingCancel();
+        final phone = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          code: code,
+          me: await AccountIdentity.generate(),
+          contacts: const [],
+          confirm: (s) async => true,
+          timeout: const Duration(seconds: 10),
+          cancel: cancel,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        await waitUntil(() => challenged,
+            what: "the relay's challenge to the phone's first login");
+        final since = Stopwatch()..start();
+        stopped = true;
+        cancel.cancel();
+        release.complete();
+        // A deadline, not a sleep.
+        final out = await phone.timeout(const Duration(seconds: 2),
+            onTimeout: () => 'still running ${since.elapsed} after the stop');
+        final took = since.elapsed;
+        print('challenged: ${out is PairingCancelled ? 'the stopped attempt '
+            'ended ${took.inMilliseconds} ms after the stop' : '$out'}');
+        expect(out, isA<PairingCancelled>(), reason: 'it stops');
+        expect(took, lessThan(const Duration(milliseconds: 500)),
+            reason: 'at once');
+        // A negative check over a window: for a second after the stop, the
+        // challenge handed on, nothing answers it, nor any other.
+        await Future<void>.delayed(const Duration(seconds: 1));
+        expect(answeredAfter, isEmpty,
+            reason: 'no challenge answered after the stop');
+        expect(gone, contains(0), reason: 'and the connection closed');
+      } finally {
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('a v3 host that hears an older device leaves nothing of it',
         () async {
       for (final version in [2, 1]) {
@@ -1494,7 +1715,12 @@ void main() {
 /// client its answer as if the relay had sent it. [holdUp], when it answers
 /// a frame from the client with a future, keeps that frame from the relay —
 /// as one still going up — until the future completes, then passes it on if
-/// the connection is still there. The Host header passes through, so the
+/// the connection is still there. [holdDown], when it answers a frame from
+/// the relay with a future, keeps that frame, and every frame after it on
+/// the connection, from the client until the future completes; it is told
+/// which connection, counting from 0 in the order they came. [seenUp] is
+/// told each frame from the client as it comes, and [clientDone] when the
+/// client has closed a connection. The Host header passes through, so the
 /// relay checks each authentication against the address the client
 /// dialled, and the relay's own close code passes on to the client — 4002
 /// above all, its word that another connection logged in as this one's
@@ -1506,9 +1732,14 @@ Future<HttpServer> front(
     bool Function(String frame)? cutUp,
     String? Function(String frame)? refuseUp,
     Future<void>? Function(String frame)? holdUp,
+    Future<void>? Function(String frame, int connection)? holdDown,
+    void Function(String frame, int connection)? seenUp,
+    void Function(int connection)? clientDone,
     void Function(int? code)? closedBy}) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  var connections = 0;
   server.listen((req) async {
+    final connection = connections++;
     final client = await WebSocketTransformer.upgrade(req);
     final relay = await WebSocket.connect(relayUrl,
         headers: {'host': req.headers.value('host') ?? ''});
@@ -1517,6 +1748,7 @@ Future<HttpServer> front(
     var relayClosed = false;
     int? relayCode;
     client.listen((d) {
+      seenUp?.call(d as String, connection);
       if (gone) return;
       if (cutUp != null && cutUp(d as String)) {
         gone = true;
@@ -1538,11 +1770,13 @@ Future<HttpServer> front(
       }
       relay.add(d);
     }, onDone: () {
+      clientDone?.call(connection);
       // The client's side has closed: a close the relay made is told now,
       // the client having taken it, its code read.
       if (relayClosed) closedBy?.call(relayCode);
       relay.close();
     }, onError: (Object _) => relay.close());
+    var handed = Future<void>.value();
     relay.listen((d) {
       if (gone) return;
       if (cut != null && cut(d as String)) {
@@ -1551,9 +1785,21 @@ Future<HttpServer> front(
         relay.close();
         return;
       }
-      for (final f in down(d as String)) {
-        client.add(f);
+      void hand() {
+        if (gone || client.readyState != WebSocket.open) return;
+        for (final f in down(d as String)) {
+          client.add(f);
+        }
       }
+
+      if (holdDown == null) {
+        hand();
+        return;
+      }
+      final held = holdDown(d as String, connection);
+      handed = handed
+          .then((_) => held ?? Future<void>.value())
+          .then((_) => hand());
     }, onDone: () {
       final c = relay.closeCode;
       relayClosed = true;
@@ -1585,6 +1831,17 @@ String? readyFor(String frame) {
         : null;
   } catch (_) {
     return null;
+  }
+}
+
+/// Whether [frame] is a frame of type [t] — and, given [id], for that
+/// routing id: the relay's `ready` welcoming a login as it.
+bool isFrameOf(String frame, String t, {String? id}) {
+  try {
+    final f = jsonDecode(frame);
+    return f is Map && f['t'] == t && (id == null || f['id'] == id);
+  } catch (_) {
+    return false;
   }
 }
 

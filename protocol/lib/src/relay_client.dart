@@ -92,6 +92,10 @@ class RelayClient {
   /// stream.
   bool _closing = false;
 
+  /// Set once [connect]'s `abandon` has completed: no challenge is answered
+  /// after that, so the relay never logs this connection in.
+  bool _abandoned = false;
+
   RelayClient._(this._ws, this._identity, this._onClosed, this._authority,
       {this.anonymous = false}) {
     // dart:io WebSockets are single-subscription: this is the ONE listener,
@@ -151,21 +155,90 @@ class RelayClient {
     }
   }
 
+  /// Connects to [url] and logs in as [identity], within [timeout] for the
+  /// socket and [timeout] again for the relay's welcome.
+  ///
+  /// [abandon], when it completes before the welcome, gives the connection
+  /// up, and this throws [RelayAbandoned] at once. A socket still opening is
+  /// closed as soon as it opens, and nothing is read from it; one that is
+  /// open is closed at once, and a challenge the relay has sent is not
+  /// answered after that, so the connection is not logged in after
+  /// [abandon] — one whose answer had already gone may be, by a relay that
+  /// welcomes it before it sees the close. [abandon] coming once the
+  /// connection is ready changes nothing.
   static Future<RelayClient> connect(
     String url,
     ZIdentity identity, {
     Duration timeout = const Duration(seconds: 15),
     void Function()? onClosed,
+    Future<void>? abandon,
   }) async {
-    final ws = await WebSocket.connect(url).timeout(timeout);
-    final client = RelayClient._(ws, identity, onClosed, relayAuthority(url));
+    if (abandon == null) {
+      final ws = await WebSocket.connect(url).timeout(timeout);
+      final client =
+          RelayClient._(ws, identity, onClosed, relayAuthority(url));
+      try {
+        await client._ready.future.timeout(timeout);
+        return client;
+      } catch (_) {
+        await client.close();
+        rethrow;
+      }
+    }
+    final given = Completer<void>();
+    RelayClient? made;
+    unawaited(abandon.then((_) {
+      final c = made;
+      if (c != null && !c._ready.isCompleted) c._abandoned = true;
+      if (!given.isCompleted) given.complete();
+    }, onError: (Object _) {}));
+    final socket = WebSocket.connect(url);
+    final WebSocket opened;
     try {
-      await client._ready.future.timeout(timeout);
+      opened = await _within(socket, timeout, given.future);
+    } catch (_) {
+      // Given up, or out of time: a socket that opens later is closed as
+      // it does, read from by nothing.
+      unawaited(socket.then((ws) => ws.close(), onError: (Object _) {}));
+      rethrow;
+    }
+    final client =
+        RelayClient._(opened, identity, onClosed, relayAuthority(url));
+    made = client;
+    try {
+      await _within(client._ready.future, timeout, given.future);
       return client;
     } catch (_) {
+      client._abandoned = given.isCompleted;
       await client.close();
       rethrow;
     }
+  }
+
+  /// What [f] comes to, a [TimeoutException] once [timeout] has passed, or
+  /// [RelayAbandoned] once [given] completes, whichever is first; the timer
+  /// is cancelled as soon as one is, so that a connection given up leaves
+  /// none running.
+  static Future<T> _within<T>(
+      Future<T> f, Duration timeout, Future<void> given) {
+    final out = Completer<T>();
+    final timer = Timer(timeout, () {
+      if (!out.isCompleted) {
+        out.completeError(TimeoutException('Future not completed', timeout));
+      }
+    });
+    f.then((v) {
+      timer.cancel();
+      if (!out.isCompleted) out.complete(v);
+    }, onError: (Object e, StackTrace st) {
+      timer.cancel();
+      if (!out.isCompleted) out.completeError(e, st);
+    });
+    given.then((_) {
+      timer.cancel();
+      if (!out.isCompleted) out.completeError(const RelayAbandoned());
+    });
+    return out.future;
   }
 
   /// A connection that never authenticates: usable for [send] of sealed
@@ -193,6 +266,8 @@ class RelayClient {
   Future<void> _handleAuth(Map<String, Object?> frame) async {
     switch (frame['t']) {
       case 'challenge':
+        // Given up ([connect]'s abandon) or closing: not answered.
+        if (_abandoned || _closing) return;
         // `ik:1`: this relay keeps introduction keys (§12.7). Any other value,
         // or none, is a relay that does not.
         relayKeepsIntroKeys = frame['ik'] == 1;
@@ -233,6 +308,8 @@ class RelayClient {
           return;
         }
         final sig = await _identity.signAuthChallengeV2(nonce, _authority);
+        // Given up while it signed: the relay is not answered.
+        if (_abandoned || _closing) return;
         _ws.add(jsonEncode({
           't': 'auth',
           'v': 2,
@@ -705,6 +782,16 @@ class RelayException implements Exception {
   RelayException(this.message, {this.code});
   @override
   String toString() => 'RelayException: $message';
+}
+
+/// What [RelayClient.connect] throws when its `abandon` completes before the
+/// relay has welcomed the connection: the connection was given up, and is
+/// closed, or will be as soon as its socket opens.
+class RelayAbandoned implements Exception {
+  const RelayAbandoned();
+  @override
+  String toString() =>
+      'RelayAbandoned: the connection was given up before the relay welcomed it';
 }
 
 /// The relay's `pow_required` (§21.6): a send to an introduction mailbox did
