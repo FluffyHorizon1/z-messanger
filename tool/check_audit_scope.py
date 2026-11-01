@@ -115,8 +115,8 @@ UNCITED_OK = {
         "unlock_error_test's is — and leaves the screen and the vault as they "
         "were: the text still in the composer, nothing of a refused group "
         "behind, through a write of the groups list made while it was being "
-        "made as well, a message's action sheet that scrolls. Screen and "
-        "storage properties, not a security claim",
+        "made as well, a message's action sheet and a failed message's menu "
+        "that scroll. Screen and storage properties, not a security claim",
     "app/test/destructive_confirm_test.dart":
         "that resetting a secure session and removing a group member ask "
         "before they act, as every other destructive action does, and that "

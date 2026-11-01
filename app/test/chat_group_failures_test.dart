@@ -53,7 +53,12 @@
 //      write's change is; the group made, both are kept. Until 2026-11-01
 //      such a write sealed the list with the group in it while the group's
 //      own transaction was still to come, and wrote it after that
-//      transaction had been refused.
+//      transaction had been refused;
+//  12. a failed message's menu scrolls: at 360×640, text at twice its size
+//      and at three times, nothing overflows and both its items can be
+//      reached, the one at its foot pressed. Until 2026-11-01 it was a
+//      column that did not: at three times it overflowed, and in Spanish
+//      Delete for me could not be reached.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1065,4 +1070,78 @@ void main() {
           'Chorus (as memory holds it); after a restart: Book club, Chorus',
     ]);
   });
+
+  testWidgets(
+      '12. a failed message\'s menu scrolls: at 360×640 with text at twice '
+      'and at three times its size nothing overflows, and both its items can '
+      'be reached', (t) async {
+    await t.binding.setSurfaceSize(const Size(360, 640));
+    addTearDown(() => t.binding.setSurfaceSize(null));
+    final seen = <String>[];
+    for (final scale in const [2.0, 3.0]) {
+      for (final lang in const ['en', 'es']) {
+        final locale = Locale(lang);
+        final l = lookupAppLocalizations(locale);
+        final svc = await person(t, 'failed$lang${scale.toInt()}');
+        late String rid;
+        await t.runAsync(() async {
+          rid = await contact(svc, 'Pat');
+          await svc.sendText(rid, 'Hello');
+          // Held as a text the relay refused for good is: failed, with
+          // nothing of it left to send.
+          final m = svc.messagesByChat[rid]!
+              .singleWhere((m) => m.body == 'Hello');
+          m.status = -1;
+          await svc.vault.db.update('messages', {'status': -1},
+              where: 'mid = ?', whereArgs: [m.mid]);
+          await svc.vault.db.delete('outbox');
+        });
+        await openChat(t, svc, rid, locale, textScale: scale);
+        final overflowBefore = t.takeException();
+        final hello = find.text('Hello');
+        await t.ensureVisible(hello);
+        await t.pump();
+        final foot = find.text(l.chatDeleteForMe);
+        await t.tap(hello.hitTestable());
+        await _settleUntil(t, () => foot.evaluate().isNotEmpty,
+            what: 'its menu');
+        // Up, and still: its rise is a few frames.
+        for (var i = 0; i < 20; i++) {
+          await t.pump(const Duration(milliseconds: 50));
+        }
+        final unreached = <String>[];
+        for (final label in [l.chatRetrySend, l.chatDeleteForMe]) {
+          final item = find.text(label);
+          if (item.evaluate().isNotEmpty) await t.ensureVisible(item);
+          await t.pump();
+          if (item.hitTestable().evaluate().isEmpty) unreached.add(label);
+        }
+        // The one at its foot, pressed: the message goes.
+        var pressed = 'could not be pressed';
+        if (foot.hitTestable().evaluate().isNotEmpty) {
+          await t.tap(foot.hitTestable());
+          await _settleUntil(
+              t,
+              () => !(svc.messagesByChat[rid] ?? const [])
+                  .any((m) => m.body == 'Hello'),
+              what: 'the message deleted');
+          pressed = 'deletes it';
+        }
+        final overflow = t.takeException();
+        final reach = unreached.isEmpty ? 'nothing' : unreached.join(', ');
+        seen.add('text at $scale, $lang: overflow: '
+            '${overflowBefore == null && overflow == null ? 'none' : 'some'}; '
+            'out of reach: $reach; ${l.chatDeleteForMe}: $pressed');
+        await t.pumpWidget(const SizedBox());
+      }
+    }
+
+    expect(seen, [
+      for (final scale in const [2.0, 3.0])
+        for (final lang in const ['en', 'es'])
+          'text at $scale, $lang: overflow: none; out of reach: nothing; '
+              '${lookupAppLocalizations(Locale(lang)).chatDeleteForMe}: '
+              'deletes it',
+    ]);
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

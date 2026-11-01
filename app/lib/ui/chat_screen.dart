@@ -1362,32 +1362,38 @@ class _MessageRow extends StatelessWidget {
     final l = AppLocalizations.of(context);
     showModalBottomSheet<void>(
       context: context,
+      // A list that scrolls when the sheet is shorter than its items, as the
+      // message's own sheet is ([_showActions]). Until 2026-11-01 it was a
+      // column that did not: at 360×640 with text at three times its size
+      // it overflowed, and in Spanish Delete for me could not be reached.
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (msg.kind == 'text')
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (msg.kind == 'text')
+                ListTile(
+                  leading: Icon(Icons.refresh, color: context.z.accent),
+                  title: Text(l.chatRetrySend),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final ok = await chat.retryFailedSend(msg.rid, msg.mid);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(l.chatRetryFailed)));
+                    }
+                  },
+                ),
               ListTile(
-                leading: Icon(Icons.refresh, color: context.z.accent),
-                title: Text(l.chatRetrySend),
-                onTap: () async {
+                leading: Icon(Icons.delete_outline, color: context.z.danger),
+                title: Text(l.chatDeleteForMe),
+                onTap: () {
                   Navigator.pop(ctx);
-                  final ok = await chat.retryFailedSend(msg.rid, msg.mid);
-                  if (!ok && context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text(l.chatRetryFailed)));
-                  }
+                  chat.deleteMessage(msg.rid, msg.mid);
                 },
               ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: context.z.danger),
-              title: Text(l.chatDeleteForMe),
-              onTap: () {
-                Navigator.pop(ctx);
-                chat.deleteMessage(msg.rid, msg.mid);
-              },
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
