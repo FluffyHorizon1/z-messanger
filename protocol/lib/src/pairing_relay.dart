@@ -85,8 +85,9 @@ class PairingResult {
 /// two waits. One is for a connection whose answer to the relay's challenge
 /// had gone up by the stop: the relay logs a connection in once that answer
 /// reaches it, so the attempt waits for the welcome, and closes the
-/// connection then, or for the connection to fail, within its time for the
-/// welcome — given up at once, it could be logged in after an attempt on
+/// connection then, or for its time for the welcome to run out, which a
+/// connection that fails meanwhile waits out too — given up at once, it
+/// could be logged in after an attempt on
 /// the code started behind it, and close that one. The other is for the
 /// relay's word on the existing device's reply, once that is on its way,
 /// and that for at most [RelayPairing.stoppedReplyWait] from the stop:
@@ -1154,8 +1155,9 @@ class _Mailbox {
   /// ([RelayClient.connect]'s abandon): a socket still opening is closed as
   /// it opens, and no challenge is answered after the stop, both at once;
   /// one whose answer had gone up before the stop is closed once the relay
-  /// welcomes it, or fails, within its time for the welcome, since the
-  /// relay logs it in once it has that answer. So it is never left logged
+  /// welcomes it, or once its time for the welcome has run out, which one
+  /// that fails meanwhile waits out too, since the relay logs it in once it
+  /// has that answer. So it is never left logged
   /// in as the mailbox, and an attempt on the same code started once this
   /// one is over is not closed by a login of this one's that comes later —
   /// unless that answer is held on its way past its time for the welcome.

@@ -169,8 +169,10 @@ class RelayClient {
   /// closed at once, and a challenge the relay sends is not answered after
   /// that. Both end at once. A connection whose answer to the challenge had
   /// already gone up is waited for instead, until the relay welcomes it —
-  /// it is then closed at once — or it fails, or its time for the welcome
-  /// runs out: the relay logs a connection in once that answer reaches it,
+  /// it is then closed at once — or its time for the welcome runs out; one
+  /// that fails meanwhile is waited for to the end of that time too, its
+  /// failure not ending the wait: the relay logs a connection in once that
+  /// answer reaches it,
   /// and closed at once, its answer still on the way, it could be logged in
   /// after a connection its caller went on to make as the same identity,
   /// and the relay would close that one. So when this throws, the

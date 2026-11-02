@@ -2289,8 +2289,11 @@ logged in after an attempt on the code started behind it had logged in, and
 the relay would close that attempt's connection for it, which that attempt
 takes for someone else's login: a stop and a retry said as a takeover on both
 devices, and the code spent. So the stopped attempt waits for the relay to
-welcome that connection, and closes it then, or for the connection to fail,
-within the fifteen seconds it has for the welcome. The attempt is never left
+welcome that connection, and closes it then, within the fifteen seconds it
+has for the welcome; a connection that fails in that time is waited for to
+the end of the fifteen seconds too, the reference client's failure not
+ending the wait, so that a stop followed by a dropped connection holds an
+attempt on the code started behind it for what is left of them. The attempt is never left
 logged in as the code's mailbox, and no login of its own comes after that of
 an attempt on the code started behind it, and closes that one, unless its
 answer is held on its way past those fifteen seconds. Until 4.9.2 the opening
@@ -4327,7 +4330,15 @@ once per contact per list version.
 A receiver MUST:
 
 * check that `acct` is the account key it holds for that contact;
-* refuse a `ver` lower than one it has already accepted;
+* refuse a `ver` lower than one it has already accepted. The reference
+  client holds the highest `ver` it has stored, verified or not, and from
+  4.9.2 takes a claim as met by it: so a device on the contact's own list —
+  one stolen, or their own app changed — can send a signature with a `ver`
+  above any their account has signed, and from then on every genuine one is
+  refused as lower, their list stays classical here, and nothing is
+  reported, revoking that device undoing none of it. That needs one of
+  their own devices, which can speak for them already; holding a claim to
+  the highest *verified* version instead is for the release after 4.9.2;
 * **store it even when it cannot yet be verified.** The contact's account
   ML‑DSA key arrives on its own independent schedule (§18.2) and may not be
   here yet. Discarding an early signature would make the two schedules depend
