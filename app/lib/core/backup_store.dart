@@ -116,13 +116,17 @@ class BackupStore {
   /// its `.partial` behind.
   ///
   /// Writes to one folder go one at a time, each waiting for the one before
-  /// it, and each under a stamp no archive there has yet: one that comes in
-  /// the second an archive already has takes the next free second. Until
+  /// it, and each under a stamp after the newest archive there: one whose
+  /// time is in the newest's second, or before it, takes the second after
+  /// the newest, so that the pruning that follows the write keeps it. Until
   /// 2026-11-01 two writes in one second — a backup made in the second the
   /// schedule ran at start-up — shared the temporary file: both wrote into
   /// it, the first to finish renamed it and returned it, the other went on
   /// writing into it and then failed, and what the first returned opened
-  /// with the other's code, not its own.
+  /// with the other's code, not its own. From then until 2026-11-02 a write
+  /// took the next second no archive had, which could be one an archive
+  /// had been pruned from: sorted after the two kept, it was pruned by its
+  /// own write, which then failed.
   Future<StoredBackup> write({
     required RecoveryCode code,
     DateTime? now,
@@ -155,10 +159,18 @@ class BackupStore {
         '${t.second.toString().padLeft(2, '0')}';
     File targetAt(DateTime t) => File(
         '${dir.path}${Platform.pathSeparator}$_prefix${stampAt(t)}$_ext');
-    // No archive is renamed over another: a second one already has moves
-    // this one on to the next.
-    while (await targetAt(at).exists()) {
-      at = at.add(const Duration(seconds: 1));
+    // After the newest archive there, in the order [list] gives and
+    // [_prune] keeps: a time in the newest's second, or before it — taken
+    // before this write waited for the one ahead of it, or on a clock set
+    // back — moves on to the second after the newest. So no archive is
+    // renamed over another, and the prune that follows keeps this one. The
+    // stamps are compared, and the second added, as the names count them.
+    final all = await list();
+    if (all.isNotEmpty) {
+      final t = all.first.takenAt;
+      if (stampAt(at).compareTo(stampAt(t)) <= 0) {
+        at = DateTime(t.year, t.month, t.day, t.hour, t.minute, t.second + 1);
+      }
     }
     final stamp = stampAt(at);
     final partial = File('${dir.path}${Platform.pathSeparator}'

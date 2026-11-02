@@ -487,7 +487,7 @@ void main() {
       final a = results[0] as StoredBackup, b = results[1] as StoredBackup;
       expect([a.name, b.name],
           ['z-backup-20260101-120000.zbk', 'z-backup-20260101-120001.zbk'],
-          reason: 'one after the other, the second at the next free second');
+          reason: 'one after the other, the second a second after the first');
       for (final (backup, code) in [(a, codeA), (b, codeB)]) {
         final fresh =
             await Vault.open(rootOverride: await tempDir('samesecond_in'));
@@ -505,6 +505,49 @@ void main() {
       expect(left, [a.name, b.name],
           reason: 'no .partial left, and ${older.name} pruned as after two '
               'backups one after the other');
+      await vault.db.close();
+    });
+
+    // Backups at 12:00:00, :01 and :02 leave :01 and :02, the first pruned;
+    // a fourth then comes with the time 12:00:00 — taken before it waited
+    // for the writes ahead of it, as the schedule's is, or on a clock set
+    // back. Taking the next second no archive had, as it did from
+    // 2026-11-01 to 2026-11-02, it took 12:00:00 again, sorted after the
+    // two kept, and its own prune deleted it: the write failed once it had
+    // made the archive.
+    test(
+        'a backup whose time is before the newest archive\'s is stamped the '
+        'second after it, whole and opened by its own code, and kept by its '
+        'own prune', () async {
+      final vault = await seededVault('pruned', messages: 2);
+      final store = await BackupStore.open(vault);
+      for (var i = 0; i < 3; i++) {
+        await store.write(
+            code: await RecoveryCode.generate(),
+            now: DateTime(2026, 1, 1, 12, 0, i));
+      }
+      final code = await RecoveryCode.generate();
+      final late = await store
+          .write(code: code, now: DateTime(2026, 1, 1, 12, 0, 0))
+          .then<Object>((b) => b, onError: (Object e) => e);
+      expect(late, isA<StoredBackup>(), reason: 'the write succeeds');
+      final b = late as StoredBackup;
+      expect(b.name, 'z-backup-20260101-120003.zbk',
+          reason: 'the second after the newest');
+      expect(b.takenAt, DateTime(2026, 1, 1, 12, 0, 3));
+      final fresh = await Vault.open(rootOverride: await tempDir('pruned_in'));
+      expect(
+          (await BackupArchive.import(vault: fresh, file: b.file, code: code))
+              .messages,
+          2,
+          reason: 'whole, and opens with its own code');
+      await fresh.db.close();
+      final left = [
+        await for (final e in store.dir.list()) e.uri.pathSegments.last
+      ]..sort();
+      expect(left, ['z-backup-20260101-120002.zbk', b.name],
+          reason: 'its own prune kept it, and the newest before it');
+      expect((await store.latest())?.name, b.name);
       await vault.db.close();
     });
 

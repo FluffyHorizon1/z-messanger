@@ -503,9 +503,11 @@ differently and only the first has to succeed for the history to be safe.
    error nothing caught, and the write then waited for ever, the screen still
    at its progress line; a write that failed part-way left its `.partial`
    behind. Two backups started at once — one made in the second the schedule
-   runs at start-up — are written one after the other, each under a stamp of
-   its own, the second taking the next free second, so that neither is renamed
-   over the other. Until 4.9.2 they shared the temporary file: one failed, and
+   runs at start-up — are written one after the other, each under a stamp
+   after the newest archive in the folder: one whose time is in the newest's
+   second, or before it, takes the second after it, so that no archive is
+   renamed over another and the pruning that follows the write keeps it. Until
+   4.9.2 they shared the temporary file: one failed, and
    the one that finished first returned an archive that opened with the
    other's code, not its own.
 2. **Hand over.** The finished file is copied wherever the user chooses,
