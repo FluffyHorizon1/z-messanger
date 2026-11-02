@@ -1447,31 +1447,28 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 2)));
 
-    // A stop while a connection is opening: the front holds the relay's
-    // welcome to one of the existing device's three logins for good. Until
-    // 2026-11-01 the opening ran to its end first — up to fifteen seconds
-    // for the welcome — before the stop was seen, and an attempt on the
-    // same code waited behind it.
+    // A stop while a connection is opening, before its answer to the
+    // relay's challenge can go: the front holds the challenge to one of the
+    // existing device's three logins — they come in turn, v3, v2, v1 — for
+    // good. Until 2026-11-01 the opening ran to its end first, up to fifteen
+    // seconds for the welcome, before the stop was seen, and an attempt on
+    // the same code waited behind it.
     test('an existing device stopped while each of its three connections '
-        'opens stops at once, closes that connection, acknowledges nothing, '
-        'and the code then links', () async {
+        'waits for the challenge stops at once, closes that connection, '
+        'acknowledges nothing, and the code then links', () async {
       const timeout = Duration(seconds: 10), margin = Duration(seconds: 2);
       final me = await AccountIdentity.generate();
-      for (final which in ['v3', 'v2', 'v1']) {
+      for (final (which, nth) in [('v3', 0), ('v2', 1), ('v1', 2)]) {
         final code = PairingCode.generate();
-        final rid = await (await switch (which) {
-          'v3' => RelayPairing.relayIdentityV3(code, 'r'),
-          'v2' => RelayPairing.relayIdentityV2(code, 'r'),
-          _ => RelayPairing.relayIdentity(code, 'r'),
-        })
-            .routingId();
         final desktop = await PairingInitiatorV3.create(
             code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
         int? held;
         final gone = <int>{};
         final watch = await front(url, (frame) => [frame],
             holdDown: (frame, connection) {
-              if (!isFrameOf(frame, 'ready', id: rid)) return null;
+              if (connection != nth || !isFrameOf(frame, 'challenge')) {
+                return null;
+              }
               held = connection;
               return Completer<void>().future;
             },
@@ -1498,7 +1495,7 @@ void main() {
             cancel: cancel,
           ).then<Object?>((r) => r, onError: (Object e) => e);
           await waitUntil(() => held != null,
-              what: "the relay's welcome to the phone's $which login");
+              what: "the relay's challenge to the phone's $which login");
           final since = Stopwatch()..start();
           cancel.cancel();
           // A deadline, not a sleep.
@@ -1511,7 +1508,7 @@ void main() {
           expect(took, lessThan(const Duration(milliseconds: 500)),
               reason: '$which: at once');
           await waitUntil(() => gone.contains(held),
-              what: '$which: the welcomed connection closed by the phone',
+              what: '$which: that connection closed by the phone',
               timeout: const Duration(seconds: 2));
           // The code again, nothing held: the laptop's commitment was left
           // for it, unacknowledged.
@@ -1535,17 +1532,16 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 3)));
 
-    test('a new device stopped while its connection opens stops at once, '
-        'closes that connection, and the code then links', () async {
+    test('a new device stopped while its connection waits for the challenge '
+        'stops at once, closes that connection, and the code then links',
+        () async {
       const timeout = Duration(seconds: 10), margin = Duration(seconds: 2);
       final code = PairingCode.generate();
-      final rid =
-          await (await RelayPairing.relayIdentityV3(code, 'i')).routingId();
       int? held;
       final gone = <int>{};
       final watch = await front(url, (frame) => [frame],
           holdDown: (frame, connection) {
-            if (!isFrameOf(frame, 'ready', id: rid)) return null;
+            if (!isFrameOf(frame, 'challenge')) return null;
             held = connection;
             return Completer<void>().future;
           },
@@ -1562,7 +1558,7 @@ void main() {
           cancel: cancel,
         ).then<Object?>((r) => r, onError: (Object e) => e);
         await waitUntil(() => held != null,
-            what: "the relay's welcome to the laptop's login");
+            what: "the relay's challenge to the laptop's login");
         final since = Stopwatch()..start();
         cancel.cancel();
         // A deadline, not a sleep.
@@ -1575,7 +1571,7 @@ void main() {
         expect(took, lessThan(const Duration(milliseconds: 500)),
             reason: 'at once');
         await waitUntil(() => gone.contains(held),
-            what: 'the welcomed connection closed by the laptop',
+            what: 'that connection closed by the laptop',
             timeout: const Duration(seconds: 2));
         // The same code again on the laptop, and the phone on it.
         final again = RelayPairing.runNewDeviceV3(
@@ -1663,6 +1659,98 @@ void main() {
         expect(answeredAfter, isEmpty,
             reason: 'no challenge answered after the stop');
         expect(gone, contains(0), reason: 'and the connection closed');
+      } finally {
+        await watch.close(force: true);
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    // The existing device's first login has answered the relay's challenge,
+    // and the relay's welcome is held until well after the stop. The relay
+    // logs a connection in once it has the answer, so the stopped attempt
+    // waits for the welcome and closes the connection then: given up at
+    // once, as it was from 2026-11-01 to 2026-11-02, a connection whose
+    // answer was late on its way could be logged in after an attempt on the
+    // code started behind it, and close that one.
+    test('an existing device stopped once its first connection has answered '
+        "the challenge waits for the relay's welcome, closes the connection "
+        'then, and the code then links', () async {
+      const timeout = Duration(seconds: 10), margin = Duration(seconds: 2);
+      final code = PairingCode.generate();
+      final rid =
+          await (await RelayPairing.relayIdentityV3(code, 'r')).routingId();
+      final desktop = await PairingInitiatorV3.create(
+          code: code, sealKey: pqKeyPairFromSeed(randomBytes(64)).$1);
+      final release = Completer<void>();
+      int? held;
+      final gone = <int>{};
+      final watch = await front(url, (frame) => [frame],
+          holdDown: (frame, connection) {
+            if (!isFrameOf(frame, 'ready', id: rid)) return null;
+            held = connection;
+            return release.future;
+          },
+          clientDone: gone.add);
+      try {
+        final laptop = RelayPairing.runNewDeviceV3(
+          relayUrl: url,
+          n: desktop,
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        final me = await AccountIdentity.generate();
+        final cancel = PairingCancel();
+        var ended = false;
+        final phone = RelayPairing.runExistingDeviceV3(
+          relayUrl: 'ws://127.0.0.1:${watch.port}',
+          code: code,
+          me: me,
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+          cancel: cancel,
+        ).then<Object?>((r) => r, onError: (Object e) => e)
+          ..whenComplete(() => ended = true);
+        await waitUntil(() => held != null,
+            what: "the relay's welcome to the phone's v3 login");
+        cancel.cancel();
+        // A negative check over a window: for a second after the stop, the
+        // welcome held, the attempt has not ended.
+        await Future<void>.delayed(const Duration(seconds: 1));
+        expect(ended, isFalse,
+            reason: 'it waits for the welcome to a connection that answered');
+        final since = Stopwatch()..start();
+        release.complete();
+        // A deadline, not a sleep.
+        final out = await phone.timeout(const Duration(seconds: 2),
+            onTimeout: () =>
+                'still running ${since.elapsed} after the welcome');
+        final took = since.elapsed;
+        print('answered: ${out is PairingCancelled ? 'the stopped attempt '
+            'ended ${took.inMilliseconds} ms after the welcome' : '$out'}');
+        expect(out, isA<PairingCancelled>(), reason: 'and then stops');
+        expect(took, lessThan(const Duration(milliseconds: 500)),
+            reason: 'once the welcome has come');
+        await waitUntil(() => gone.contains(held),
+            what: 'the welcomed connection closed by the phone',
+            timeout: const Duration(seconds: 2));
+        // The code again, nothing held: the laptop's commitment was left
+        // for it, unacknowledged.
+        final again = await RelayPairing.runExistingDeviceV3(
+          relayUrl: url,
+          code: code,
+          me: me,
+          contacts: const [],
+          attest: (s) async => randomBytes(3309),
+          confirm: (s) async => true,
+          timeout: timeout,
+          margin: margin,
+        ).then<Object?>((r) => r, onError: (Object e) => e);
+        expect(again, isA<DeviceCertificate>(),
+            reason: 'the code entered again links');
+        expect(await laptop, isA<PairingResult>());
       } finally {
         await watch.close(force: true);
       }

@@ -93,8 +93,13 @@ class RelayClient {
   bool _closing = false;
 
   /// Set once [connect]'s `abandon` has completed: no challenge is answered
-  /// after that, so the relay never logs this connection in.
+  /// after that, so the relay does not log this connection in unless its
+  /// answer had gone before ([_answered]).
   bool _abandoned = false;
+
+  /// Set once this connection has sent its answer to the relay's challenge:
+  /// the relay may log it in from then on, whatever this side does next.
+  bool _answered = false;
 
   RelayClient._(this._ws, this._identity, this._onClosed, this._authority,
       {this.anonymous = false}) {
@@ -159,13 +164,19 @@ class RelayClient {
   /// socket and [timeout] again for the relay's welcome.
   ///
   /// [abandon], when it completes before the welcome, gives the connection
-  /// up, and this throws [RelayAbandoned] at once. A socket still opening is
-  /// closed as soon as it opens, and nothing is read from it; one that is
-  /// open is closed at once, and a challenge the relay has sent is not
-  /// answered after that, so the connection is not logged in after
-  /// [abandon] — one whose answer had already gone may be, by a relay that
-  /// welcomes it before it sees the close. [abandon] coming once the
-  /// connection is ready changes nothing.
+  /// up, and this throws [RelayAbandoned]. A socket still opening is closed
+  /// as soon as it opens, and nothing is read from it; one that is open is
+  /// closed at once, and a challenge the relay sends is not answered after
+  /// that. Both end at once. A connection whose answer to the challenge had
+  /// already gone up is waited for instead, until the relay welcomes it —
+  /// it is then closed at once — or it fails, or its time for the welcome
+  /// runs out: the relay logs a connection in once that answer reaches it,
+  /// and closed at once, its answer still on the way, it could be logged in
+  /// after a connection its caller went on to make as the same identity,
+  /// and the relay would close that one. So when this throws, the
+  /// connection is not logged in, and is logged in later only by an answer
+  /// held on its way past its time for the welcome. [abandon] coming once
+  /// the connection is ready changes nothing.
   static Future<RelayClient> connect(
     String url,
     ZIdentity identity, {
@@ -206,21 +217,28 @@ class RelayClient {
         RelayClient._(opened, identity, onClosed, relayAuthority(url));
     made = client;
     try {
-      await _within(client._ready.future, timeout, given.future);
+      // Given up after its answer went, the welcome is still waited for.
+      await _within(client._ready.future, timeout, given.future,
+          holdOn: () => client._answered);
+      // Welcomed after it was given up: closed at once, below.
+      if (given.isCompleted) throw const RelayAbandoned();
       return client;
     } catch (_) {
       client._abandoned = given.isCompleted;
       await client.close();
+      if (given.isCompleted) throw const RelayAbandoned();
       rethrow;
     }
   }
 
   /// What [f] comes to, a [TimeoutException] once [timeout] has passed, or
-  /// [RelayAbandoned] once [given] completes, whichever is first; the timer
-  /// is cancelled as soon as one is, so that a connection given up leaves
-  /// none running.
+  /// [RelayAbandoned] once [given] completes, whichever is first — but
+  /// [given] is passed over when [holdOn] says so as it completes, and then
+  /// [f] or the time decides. The timer is cancelled as soon as one is, so
+  /// that a connection given up leaves none running.
   static Future<T> _within<T>(
-      Future<T> f, Duration timeout, Future<void> given) {
+      Future<T> f, Duration timeout, Future<void> given,
+      {bool Function()? holdOn}) {
     final out = Completer<T>();
     final timer = Timer(timeout, () {
       if (!out.isCompleted) {
@@ -235,8 +253,9 @@ class RelayClient {
       if (!out.isCompleted) out.completeError(e, st);
     });
     given.then((_) {
+      if (out.isCompleted || (holdOn?.call() ?? false)) return;
       timer.cancel();
-      if (!out.isCompleted) out.completeError(const RelayAbandoned());
+      out.completeError(const RelayAbandoned());
     });
     return out.future;
   }
@@ -316,6 +335,7 @@ class RelayClient {
           'pub': b64(_identity.edPub),
           'sig': b64(sig),
         }));
+        _answered = true;
         break;
       case 'ready':
         routingId = frame['id'] as String;

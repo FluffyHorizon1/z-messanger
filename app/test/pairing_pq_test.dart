@@ -150,9 +150,15 @@
 //      rendezvous id under a key of its own, and logging in as the code's
 //      mailbox for neither;
 //  31. a link stopped on the phone while its connection to the code's
-//      mailbox opens — the relay's welcome held — ends at once, the phone
-//      closing that connection and keeping, spending and acknowledging
-//      nothing, and the code entered again links the laptop (4.9.2).
+//      mailbox opens — the relay's challenge held, so the phone has not
+//      answered it — ends at once, the phone closing that connection, never
+//      logged in, and keeping, spending and acknowledging nothing, and the
+//      code entered again links the laptop (4.9.2);
+//  32. a link stopped once the phone has answered the relay's challenge,
+//      the answer late on its way, and the code entered again at once: the
+//      stopped link waits for the relay to welcome that connection, and
+//      closes it, before the code is tried again, which links the laptop
+//      with no takeover said on either device and nothing spent (4.9.2).
 @Tags(['integration'])
 @Timeout(Duration(minutes: 5))
 library;
@@ -200,30 +206,42 @@ typedef Person = ({
 /// for a frame from the client, which never reaches the relay. [holdUp],
 /// when it answers a frame from the client with a future, keeps that frame
 /// from the relay — as one still going up — until the future completes,
-/// then passes it on if the connection is still there. [holdDown] does the
-/// same for a frame from the relay, keeping it, and every frame after it on
-/// that connection, from the client. [welcomed] keeps the
-/// routing id of every login the relay welcomes through it, and [left] that
-/// of every such connection once the client's side of it has closed —
-/// whichever end closed it, the client has taken the close by then.
+/// then passes it on if the connection is still there — or, with
+/// [passOnAfterLeaving], once the client has gone too, as TCP delivers what
+/// a client sent before it closed, the relay seeing the connection go only
+/// after that. [holdDown] does the same for a frame from the relay, keeping
+/// it, and every frame after it on that connection, from the client; it is
+/// told which connection, counting from 0 in the order they came
+/// ([connections] so far). [welcomed] keeps the routing id of every login
+/// the relay welcomes through it, and [left] that of every such connection
+/// once the client's side of it has closed — whichever end closed it, the
+/// client has taken the close by then; [closed] keeps the number of every
+/// connection whose client side has closed, welcomed or not.
 class Recorder {
   final HttpServer _server;
   final frames = <String, List<String>>{};
   final welcomed = <String>[];
   final left = <String>[];
+  final closed = <int>{};
+  var _connections = 0;
   Recorder._(this._server);
 
   String get url => 'ws://127.0.0.1:${_server.port}';
+
+  /// How many connections have come through so far.
+  int get connections => _connections;
 
   static Future<Recorder> start(String relayUrl,
       {List<String> Function(String frame)? hand,
       bool Function(String frame)? cut,
       bool Function(String frame)? cutUp,
       Future<void>? Function(String frame)? holdUp,
-      Future<void>? Function(String frame)? holdDown}) async {
+      bool passOnAfterLeaving = false,
+      Future<void>? Function(String frame, int connection)? holdDown}) async {
     final r =
         Recorder._(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
     r._server.listen((req) async {
+      final connection = r._connections++;
       final down = await WebSocketTransformer.upgrade(req);
       // The Host header passes through, so the relay checks each
       // authentication against the address the client dialled.
@@ -238,6 +256,8 @@ class Recorder {
         r.left.add(rid!);
       }
 
+      var pending = 0;
+      var downDone = false;
       down.listen((d) {
         if (gone) return;
         if (cutUp != null && d is String && cutUp(d)) {
@@ -249,14 +269,20 @@ class Recorder {
         r._note(d, 'send');
         final held = d is String ? holdUp?.call(d) : null;
         if (held != null) {
+          pending++;
           held.then((_) {
+            pending--;
             if (!gone && up.readyState == WebSocket.open) up.add(d);
+            if (downDone && pending == 0) up.close();
           });
           return;
         }
         up.add(d);
       }, onDone: () {
         leave();
+        r.closed.add(connection);
+        downDone = true;
+        if (passOnAfterLeaving && pending > 0) return;
         up.close();
       }, onError: (Object _) => up.close());
       var handed = Future<void>.value();
@@ -286,7 +312,7 @@ class Recorder {
         }
         // Held, and every frame after it on this connection behind it,
         // passed on if the client is still there.
-        final held = d is String ? holdDown(d) : null;
+        final held = d is String ? holdDown(d, connection) : null;
         handed = handed.then((_) => held ?? Future<void>.value()).then((_) {
           if (!gone && down.readyState == WebSocket.open) pass();
         });
@@ -2853,17 +2879,20 @@ void main() {
       '31. a link stopped while the phone opens its connection to the code\'s '
       'mailbox ends at once, keeps nothing, and the code entered again links',
       () async {
-    // The relay's welcome to the phone's login as the code's mailbox is
-    // held for good, as on a connection that stalls while it opens. Until
-    // 2026-11-01 the stop was seen only once the opening had run to its end,
-    // up to fifteen seconds for the welcome.
+    // The relay's challenge to the phone's login as the code's mailbox — the
+    // first connection after Alice's own — is held for good, as on a
+    // connection that stalls while it opens: the phone has nothing to
+    // answer. Until 2026-11-01 the stop was seen only once the opening had
+    // run to its end, up to fifteen seconds for the welcome.
     String? box;
-    var holding = true;
-    final rec = await Recorder.start(relayUrl(), holdDown: (frame) {
-      if (!holding || box == null) return null;
+    int? link;
+    var challenged = false;
+    final rec = await Recorder.start(relayUrl(), holdDown: (frame, at) {
+      if (at != link) return null;
       try {
         final f = jsonDecode(frame);
-        if (f is Map && f['t'] == 'ready' && f['id'] == box) {
+        if (f is Map && f['t'] == 'challenge') {
+          challenged = true;
           return Completer<void>().future;
         }
       } catch (_) {}
@@ -2895,18 +2924,19 @@ void main() {
         )
         .then<Object?>((r) => r, onError: (Object e) => e);
     final stop = PairingCancel();
+    link = rec.connections;
     final first = alice.svc
         .hostDeviceLink(code, confirmSas: (_) async => true, cancel: stop)
         .then<Object?>((r) => r, onError: (Object e) => e);
-    await waitUntil(() => rec.welcomed.contains(box),
-        what: "the relay welcoming the phone's login as the code's mailbox");
+    await waitUntil(() => challenged,
+        what: "the relay's challenge to the phone's login as the code's "
+            'mailbox');
     final since = Stopwatch()..start();
     stop.cancel();
     // A deadline, not a sleep.
     final out = await first.timeout(const Duration(seconds: 2),
         onTimeout: () => 'still running ${since.elapsed} after the stop');
     final took = since.elapsed;
-    holding = false;
     // ignore: avoid_print
     print('a link stopped while its connection opened: '
         '${out is PairingCancelled ? 'ended ${took.inMilliseconds} ms after '
@@ -2914,9 +2944,11 @@ void main() {
     expect(out, isA<PairingCancelled>(), reason: 'the link stops');
     expect(took, lessThan(const Duration(milliseconds: 500)),
         reason: 'at once');
-    await waitUntil(() => rec.left.contains(box),
-        what: 'the welcomed connection closed by the phone',
+    await waitUntil(() => rec.closed.contains(link),
+        what: 'that connection closed by the phone',
         timeout: const Duration(seconds: 2));
+    expect(rec.welcomed, isNot(contains(box)),
+        reason: 'never logged in as the code\'s mailbox');
     for (final key in [
       'link_answered_codes',
       'link_spent_codes',
@@ -2933,6 +2965,108 @@ void main() {
     expect(again, isTrue, reason: 'the code entered again links');
     expect(await laptop, isA<PairingResult>());
     expect(await alice.svc.linkedDevices(), hasLength(1));
+    await vault.db.close();
+  });
+
+  test(
+      '32. a link stopped once the phone has answered the relay\'s challenge '
+      'waits for the relay to welcome it, and the code entered again links '
+      'with no takeover said and nothing spent', () async {
+    // The phone's answer to the relay's challenge for its login as the
+    // code's mailbox has gone up when the link is stopped, and reaches the
+    // relay 1.5 s later — held on its way, and passed on even once the
+    // phone has left, as TCP would. The code is entered again at once, and
+    // that attempt's reply is held 3 s on its way up. Ending at once, as it
+    // did from 2026-11-01 to 2026-11-02, the stopped link's late answer
+    // logged it in after the code's next attempt had, and the relay closed
+    // that attempt's connection for it: a takeover said on both devices,
+    // the code spent. 4.9.1, which ran the opening to its end, linked.
+    var holding = true;
+    String? pub;
+    var answered = false;
+    final rec = await Recorder.start(relayUrl(), passOnAfterLeaving: true,
+        holdUp: (frame) {
+      try {
+        final f = jsonDecode(frame);
+        if (holding && f is Map && f['t'] == 'auth' && f['pub'] == pub) {
+          answered = true;
+          return Future<void>.delayed(const Duration(milliseconds: 1500));
+        }
+      } catch (_) {}
+      if (Recorder.sendOf(frame, 'z-pair-reply')) {
+        return Future<void>.delayed(const Duration(seconds: 3));
+      }
+      return null;
+    });
+    addTearDown(rec.close);
+    final alice = await person('Alice32', url: rec.url);
+    await connected([alice]);
+    const timeout = Duration(seconds: 15), margin = Duration(seconds: 2);
+    alice.svc.linkTimeout = timeout;
+    alice.svc.linkMargin = margin;
+    final n = await NewDeviceLink.create();
+    final code = n.code;
+    final mailbox =
+        await RelayPairing.relayIdentityV3(PairingCode.parse(code), 'r');
+    pub = b64(mailbox.edPub);
+    final box = await mailbox.routingId();
+    final dir = await tempDir('laptop32');
+    final vault = await Vault.open(rootOverride: dir);
+    final laptop = n
+        .run(
+          relayUrl: relayUrl(),
+          confirm: (_) async => true,
+          timeout: timeout,
+          margin: margin,
+          install: (r) async {
+            await setRelayUrl(vault, relayUrl(), acceptedInsecure: true);
+            await installEnrollment(vault, r, sealingKey: n.sealingKey);
+          },
+        )
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final stop = PairingCancel();
+    final since = Stopwatch();
+    int? firstEnded, welcomedThen;
+    final first = alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true, cancel: stop)
+        .then<Object?>((r) => r, onError: (Object e) => e)
+        .then((r) {
+      firstEnded = since.elapsedMilliseconds;
+      welcomedThen = rec.welcomed.where((id) => id == box).length;
+      holding = false;
+      return r;
+    });
+    await waitUntil(() => answered,
+        what: "the phone's answer to the relay's challenge going up");
+    since.start();
+    stop.cancel();
+    final again = await alice.svc
+        .hostDeviceLink(code, confirmSas: (_) async => true)
+        .then<Object?>((r) => r, onError: (Object e) => e);
+    final out = await first;
+    final lap = await laptop;
+    // ignore: avoid_print
+    print('a link stopped once it had answered: ended $firstEnded ms after '
+        "the stop, the code's mailbox welcomed $welcomedThen time(s) by "
+        'then; the code entered again: '
+        '${again is bool ? 'linked=$again' : phoneScreen(again)}, '
+        '${since.elapsedMilliseconds} ms after the stop; the laptop: '
+        '${lap is PairingResult ? 'linked' : laptopScreen(lap)}');
+    expect(out, isA<PairingCancelled>(), reason: 'the stopped link stops');
+    expect(again, isTrue,
+        reason: 'the code entered again links, and is not taken over');
+    expect(lap, isA<PairingResult>(),
+        reason: 'the laptop links, and says no takeover');
+    expect(await alice.vault.kvGet('link_spent_codes'), isNull,
+        reason: 'nothing spent');
+    expect(await alice.svc.linkedDevices(), hasLength(1));
+    expect(welcomedThen, 1,
+        reason: 'the stopped link ended once the relay had welcomed its '
+            'late login, and not before');
+    expect(firstEnded, lessThan(3000),
+        reason: 'as the welcome came, not at the end of its time for it');
+    // The stopped link's late login, and the next attempt's.
+    expect(rec.welcomed.where((id) => id == box), hasLength(2));
     await vault.db.close();
   });
 }

@@ -2278,17 +2278,26 @@ client now hosts one link per code: an attempt on a code it is already
 hosting first stops the earlier one, and starts once it is over, and
 leaving the link screen stops the attempt it started. A stopped attempt
 ends at once in any wait — for a frame, for the relay, for its user's answer —
-but one. A connection it is still opening to the relay (the existing device
+but two. A connection it is still opening to the relay (the existing device
 opens three, one after another, the new device one) is given up at the stop: a
-socket still opening is closed as soon as it opens, no challenge is answered
-after the stop, and a connection the relay has already welcomed is closed at
-once. So the attempt is never left logged in as the code's mailbox, and no
-login of its own comes after that of an attempt on the code started behind it,
-and closes that one, unless its answer to the relay's challenge had gone up
-before the stop. Until 4.9.2 the opening ran to its end first, up to fifteen
-seconds to connect and fifteen for the relay's welcome, and an attempt on the
-code started behind it waited for that. The one wait a stopped attempt keeps
-to is for the relay's word on its reply, once that is on its way (`sent`) —
+socket still opening is closed as soon as it opens, and no challenge is
+answered after the stop, both at once. The first wait is for a connection
+whose answer to the relay's challenge had gone up by the stop. The relay logs
+a connection in once that answer reaches it, whatever the client has done
+since; given up at once, its answer still on the way, the connection could be
+logged in after an attempt on the code started behind it had logged in, and
+the relay would close that attempt's connection for it, which that attempt
+takes for someone else's login: a stop and a retry said as a takeover on both
+devices, and the code spent. So the stopped attempt waits for the relay to
+welcome that connection, and closes it then, or for the connection to fail,
+within the fifteen seconds it has for the welcome. The attempt is never left
+logged in as the code's mailbox, and no login of its own comes after that of
+an attempt on the code started behind it, and closes that one, unless its
+answer is held on its way past those fifteen seconds. Until 4.9.2 the opening
+ran to its end first, whatever the stop came during, up to fifteen seconds to
+connect and fifteen for the relay's welcome, and an attempt on the code
+started behind it waited for that. The other wait is for the relay's word on
+its reply, once that is on its way (`sent`) —
 for five seconds from the stop at most, and less when its
 connection fails, or the twenty seconds a send has run out, first — since
 whether the new device can hold that reply is what the code is left with
