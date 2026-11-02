@@ -539,4 +539,84 @@ void main() {
     expect(await alice.vault.kvGet('pql_alert_${ben.myRid}'), isNull,
         reason: 'and not kept');
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a relay that drops every envelope of the 16 384 bucket on its way to '
+      "someone who scanned the contact's code, so that neither their key nor "
+      'their list signature arrives, is reported, and the banner outlives a '
+      'restart', () async {
+    // THREAT_MODEL R3. Two inner messages ride in the 16 384 bucket: the
+    // `pqid` that brings an account's post-quantum key (about 7.2 KB) and the
+    // `dlpq` that brings its list signature (about 4.7 KB); everything else
+    // a conversation sends fits the 4 096 one. A relay dropping that bucket
+    // to Alice keeps the key Ben's code committed to from ever being
+    // established here, and his signature from ever arriving. The first
+    // 4.9.2 change held the banner back until the key was established, so
+    // this went unreported; 4.9.1 reported it.
+    var alice = await start('d16a');
+    final ben = await start('d16b');
+    final dropped = <String>{};
+    bool relay(String path, String from, DecryptResult dec) {
+      // Too large for the 4 096 bucket: it rode in the 16 384 one.
+      if (path == 'sync' || dec.plaintext.length <= 4096) return false;
+      try {
+        dropped.add(InnerMessage.fromBytes(dec.plaintext).kind);
+      } catch (_) {
+        dropped.add('?');
+      }
+      return true;
+    }
+
+    alice.debugOnDecrypted = relay;
+    await waitUntil(
+        () => alice.transport.isConnected && ben.transport.isConnected,
+        what: 'connected');
+    await alice.addContactFromCode(await ben.myContactCode());
+    await ben.addContactFromCode(await alice.myContactCode());
+    await alice.sendText(ben.myRid, 'hi');
+    await ben.sendText(alice.myRid, 'hi back');
+    await linkLaptop(ben);
+    var pinging = true;
+    final pings = () async {
+      for (var i = 0; pinging && i < 80; i++) {
+        try {
+          await ben.sendText(alice.myRid, 'ping $i');
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+    }();
+    try {
+      await waitUntil(() => alice.pqListAlerts[ben.myRid] != null,
+          timeout: const Duration(seconds: 40),
+          what: 'alice is told the signature never arrives');
+    } finally {
+      pinging = false;
+      await pings;
+    }
+    final c = alice.contacts[ben.myRid]!;
+    expect(c.pqCommit, isNotNull,
+        reason: "the premise: Ben's code committed to his key");
+    expect(c.pqPub, isNull, reason: 'and the key it committed to never came');
+    expect(dropped, unorderedEquals(<String>['pqid', 'dlpq']),
+        reason: 'what rode in that bucket: his key and his signature, and '
+            'nothing else');
+    expect(await alice.vault.kvGet('cdev_${ben.myRid}'), isNotNull,
+        reason: 'his list did come, in the 4 096 bucket');
+    expect(alice.pqListRequestsSent(ben.myRid), 3,
+        reason: 'asked for three times first');
+    expect(alice.pqListAlerts[ben.myRid],
+        devlistAlertBody(DevlistAlertKind.pqSignatureMissing));
+    expect(alice.deviceAssuranceWith(ben.myRid), DeviceAssurance.classical,
+        reason: 'and nothing accepted on the strength of the claim');
+
+    // A code committed to the key, so the start keeps the banner; the relay
+    // still drops that bucket.
+    alice = await restart(alice);
+    alice.debugOnDecrypted = relay;
+    expect(alice.pqListAlerts[ben.myRid],
+        devlistAlertBody(DevlistAlertKind.pqSignatureMissing),
+        reason: 'shown again after the restart');
+    expect(await alice.vault.kvGet('pql_alert_${ben.myRid}'),
+        devlistAlertBody(DevlistAlertKind.pqSignatureMissing),
+        reason: 'and still kept');
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

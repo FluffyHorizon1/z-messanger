@@ -15254,6 +15254,13 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   final Map<String, DateTime> _pqMissingSince = {};
   static const int _maxPqListRequests = 3;
 
+  /// §18.9 (4.9.2): no post-quantum key of [c]'s is established here, and
+  /// no code of theirs has committed to one — signed ([Contact.pqCommit]) or
+  /// not ([Contact.pqcHint], ADR 0027). A signature of theirs could be
+  /// checked against nothing here, so one missing is not reported yet.
+  static bool _nothingCommitsToPqKey(Contact c) =>
+      c.pqPub == null && c.pqCommit == null && c.pqcHint == null;
+
   /// A contact's claim that it has sent us its list signature (§18.9).
   ///
   /// Three outcomes, and telling them apart is the whole job:
@@ -15263,8 +15270,9 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   ///     can be checked here (4.9.2, below).
   ///   * claim, and we do not — it was lost or removed. Ask first, because
   ///     most losses are a dropped connection; alarm only if asking does not
-  ///     help within the grace period, and only once their key is
-  ///     established, the key the signature would be checked against.
+  ///     help within the grace period, and only once something here commits
+  ///     to their key, the key the signature would be checked against
+  ///     ([_nothingCommitsToPqKey]).
   Future<void> _observePqListClaim(Contact contact, int claimed) async {
     final rid = contact.rid;
     // No list of theirs held, nothing to judge: the claim is about a list
@@ -15324,11 +15332,19 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       return;
     }
     if (DateTime.now().difference(since) < devlistGrace) return;
-    // 4.9.2: and the banner waits for their key. Until it is established no
-    // signature of theirs verifies here, arrived or not, so one missing
-    // takes nothing away yet; once it is, the next claim still missing its
-    // signature raises it at once — the asking done, the grace long past.
-    if (contact.pqPub == null) return;
+    // 4.9.2: and the banner waits while nothing here commits to their key —
+    // a contact added by accepting their request, say, until the number is
+    // compared. No signature of theirs could be checked here then, arrived
+    // or not, so one missing takes nothing away yet. Where a code of theirs
+    // committed to the key, nothing waits: a key that never comes and a
+    // signature that never comes are what a relay dropping the 16 384
+    // bucket looks like, the `pqid` and the `dlpq` being the only inner
+    // messages that ride in it (THREAT_MODEL R3). Once something commits to
+    // the key, the next claim still missing its signature raises it — in the
+    // same run at once, the asking done and the grace past; after a restart
+    // once it has been asked for three times again and the grace has passed
+    // again.
+    if (_nothingCommitsToPqKey(contact)) return;
     if (pqListAlerts.containsKey(rid)) return;
     // A kind, not the sentence. The sentence named the contact, and this
     // value is written unsealed next to a routing id that says whose name it
@@ -17127,21 +17143,23 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
   // 7.7a device-list transparency (gossip). See docs/adr/0001-key-transparency.md.
   // ------------------------------------------------------------------
 
-  /// 4.9.2 (§18.9): whether the vault shows that a stored banner saying
-  /// [rid]'s post-quantum list signature never arrived could not have been
-  /// evidence of that. Builds before 4.9.2 raised it whenever the list was
-  /// not hybrid ([_observePqListClaim]), so it says nothing where their key
-  /// is not established here — this build raises none there — or where a
-  /// signature is held at the highest version of their list any device of
-  /// theirs has claimed (`mx` in `cdl_claims_`, §7.7a): the message that
-  /// says a signature was sent (`pql`) claims the sender's own list with it,
-  /// at that version or a later one, so no such message can have named a
-  /// version above that. One that could have been real stays, and the next
-  /// claim judges it.
-  Future<bool> _pqListAlertDisproved(
+  /// 4.9.2 (§18.9): whether a stored banner saying [rid]'s post-quantum
+  /// list signature never arrived is one this build would not raise.
+  /// Builds before 4.9.2 raised it whenever the list was not hybrid
+  /// ([_observePqListClaim]); this one raises none while nothing here
+  /// commits to their key ([_nothingCommitsToPqKey]), and none where a
+  /// signature is held at or above the highest version of their list any
+  /// device of theirs has claimed (`mx` in `cdl_claims_`, §7.7a): the
+  /// message that says a signature was sent (`pql`) claims the sender's own
+  /// list with it, at that version or a later one, so no such message can
+  /// have named a version above that. The first can be a banner an earlier
+  /// build raised over a signature really withheld: this build reports that
+  /// once something commits to their key, if the signature is still
+  /// missing then. Every other banner stays, and the next claim judges it.
+  Future<bool> _wouldNotRaisePqListAlert(
       String rid, Future<String?> Function(String key) get) async {
     final c = contacts[rid];
-    if (c == null || c.pqPub == null) return true;
+    if (c == null || _nothingCommitsToPqKey(c)) return true;
     final held = int.tryParse(await get('cdev_pq_ver_$rid') ?? '') ?? 0;
     final stored = await get('cdl_claims_$rid');
     if (held <= 0 || stored == null) return false;
@@ -17205,12 +17223,12 @@ class ChatService extends ChangeNotifier implements KtHost, HandleHost {
       // not hold: a list's signature covers that list, so with none of
       // theirs held here it covers nothing this device could be missing —
       // what builds before it raised for a contact still at list version 1
-      // ([_observePqListClaim]). Since 4.9.2, also one the vault shows could
-      // not have been evidence ([_pqListAlertDisproved]).
+      // ([_observePqListClaim]). Since 4.9.2, also one this build would not
+      // raise ([_wouldNotRaisePqListAlert]).
       if (a != null &&
           isDevlistAlertBody(a) &&
           await get('cdev_$rid') != null &&
-          !await _pqListAlertDisproved(rid, get)) {
+          !await _wouldNotRaisePqListAlert(rid, get)) {
         pqListAlerts[rid] = a;
       } else if (a != null) {
         await vault.kvDelete('pql_alert_$rid');

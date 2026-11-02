@@ -430,14 +430,20 @@ that it has sent you that signature. If the signature it says it sent does
 not come, Z asks their app for it, three times, and if it has still not come
 a few seconds later Z shows this banner for them: their device list is still
 verified classically, and something on the network may be removing the
-signature. It shows only once you hold their post-quantum key as theirs — it
-matched their code, or you compared the number — since until then no
-signature of theirs could be checked anyway. A signature that has come is
-never reported missing, even when Z cannot check it yet: their list reads as
-verified classically until it can be, as it does for someone whose request
-you accepted until you compare the number, and for a moment while their
-newest device list is on its way. Through 4.9.1 those showed this banner by
-mistake; this version removes such a banner the first time it starts.
+signature. It shows once Z holds their post-quantum key as theirs — it
+matched their code, or you compared the post-quantum number — or once you
+have scanned a code of theirs that commits to that key, even if the key has
+not come either: both missing is what something removing the largest
+messages on the way would look like. For someone whose key nothing commits
+to yet, such as someone whose request you accepted, it waits until you
+compare the number, since until then no signature of theirs could be
+checked anyway. A signature that has come is never reported missing, even
+when Z cannot check it yet: their list reads as verified classically until
+it can be, as it does for someone whose request you accepted until you
+compare the number, and for a moment while their newest device list is on
+its way. Through 4.9.1 those showed this banner by mistake. When this
+version starts, it removes any banner of this kind that it would not show
+itself.
 
 **Two labels you may see beside the number.** Which number Z shows depends on
 what each of you has of the other, and Z will not move your number until it
