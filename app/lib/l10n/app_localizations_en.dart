@@ -1069,7 +1069,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String ciPqKeyChangedBody(String name) {
-    return '$name\'s app now signs with a different post-quantum key from the one this device holds for them. Restoring a backup made before version 2.2.4, or a .zid backup, does that; so would an app that is not theirs. Nothing signed with that key can be checked here, so the device you added them from stays linked classically, and a post-quantum signature for their device list can read as never arrived. Speak to them another way. If they restored such a backup, deleting them and adding them again from their code takes their new key, and deletes your chat with them on this device.';
+    return '$name\'s app now signs with a different post-quantum key from the one this device holds for them. Restoring a backup made before version 2.2.4, or a .zid backup, does that; so would an app that is not theirs. Nothing signed with that key can be checked here, so the device you added them from stays linked classically, and their device list stays verified classically. Speak to them another way. If they restored such a backup, deleting them and adding them again from their code takes their new key, and deletes your chat with them on this device.';
   }
 
   @override

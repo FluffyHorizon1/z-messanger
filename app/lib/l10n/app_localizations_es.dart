@@ -1078,7 +1078,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String ciPqKeyChangedBody(String name) {
-    return 'La app de $name firma ahora con una clave poscuántica distinta de la que este dispositivo tiene de su cuenta. Restaurar una copia de seguridad hecha antes de la versión 2.2.4, o una copia .zid, hace eso; también lo haría una app que no es suya. Nada firmado con esa clave se puede verificar aquí, así que el dispositivo desde el que lo añadiste sigue vinculado de forma clásica, y una firma poscuántica de su lista de dispositivos puede figurar como que nunca llegó. Habla con esa persona por otra vía. Si restauró una copia así, borrarlo y volver a añadirlo desde su código toma su clave nueva, y borra tu chat con esa persona en este dispositivo.';
+    return 'La app de $name firma ahora con una clave poscuántica distinta de la que este dispositivo tiene de su cuenta. Restaurar una copia de seguridad hecha antes de la versión 2.2.4, o una copia .zid, hace eso; también lo haría una app que no es suya. Nada firmado con esa clave se puede verificar aquí, así que el dispositivo desde el que lo añadiste sigue vinculado de forma clásica, y su lista de dispositivos sigue verificada de forma clásica. Habla con esa persona por otra vía. Si restauró una copia así, borrarlo y volver a añadirlo desde su código toma su clave nueva, y borra tu chat con esa persona en este dispositivo.';
   }
 
   @override
