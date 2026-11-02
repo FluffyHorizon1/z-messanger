@@ -516,8 +516,8 @@ differently and only the first has to succeed for the history to be safe.
 
 A backup that was taken but not yet exported is still a backup: it survives an
 app update, though not a lost phone. The UI says which of the two you have.
-Only the two newest archives are kept, plus the previous one as a spare, so an
-automatic schedule cannot fill the device.
+Only the two newest archives are kept, the newest and the one before it as a
+spare, so an automatic schedule cannot fill the device.
 
 ### 8.2 Who writes the file
 
