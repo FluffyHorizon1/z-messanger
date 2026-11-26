@@ -36,4 +36,4 @@ services:
       - key: KT_MIN_FREE_BYTES
         value: "67108864"
       - key: KT_CLIENT_IP_HEADER
-        value: ""               # cf-connecting-ip once it is reachable only through Cloudflare
+        value: "cf-connecting-ip"               # cf-connecting-ip once it is reachable only through Cloudflare
