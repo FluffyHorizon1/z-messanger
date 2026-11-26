@@ -446,6 +446,20 @@ void main() {
       'list at a version it holds is not adopted', () async {
     final phone = await start('phone-linked');
     final laptop = await enroll(phone, 'laptop-linked');
+    // The laptop keeps its proof of possession to itself (ADR 0022), as a
+    // build from before it did. Otherwise, learning version 2, it hands the
+    // proof to its root, and a root whose version 2 the log has already
+    // acknowledged moves the list to version 3 to carry it there
+    // ([_applyDevicePop]) — on its own, seconds later, with every outbox
+    // already empty, so `quiet` below cannot wait for it. Until 2026-11-26
+    // this test passed only because its assertion usually ran before
+    // version 3 arrived; on a slower runner it arrived between the snapshot
+    // and the check, and the laptop's version read 3 against a record still
+    // at 2 (run 45829777361; with a four-second pause after the snapshot it
+    // happens every time). That hand-over is device_pop_test's subject, not
+    // this one's: here the laptop must hold one version, still, while a
+    // second list for it arrives.
+    laptop.svc.debugNoDevicePop = true;
     await waitUntil(() => linked(phone) && linked(laptop.svc),
         what: 'phone and laptop connected');
     await phone.addMyDevice(laptop.cert); // version 2, self-synced
