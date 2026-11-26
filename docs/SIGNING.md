@@ -35,6 +35,54 @@ This path is exercised in this repo: a throwaway keystore produces an APK and an
 AAB whose signer is the release cert, and with no `key.properties` the build
 falls back to the debug cert — both confirmed before this landed.
 
+### Google Play (automatic releases)
+
+`.github/workflows/play-release.yml` builds a signed `.aab` and uploads it to
+the **internal testing** track of `com.zmessenger.www` through the Play
+Developer API, on a pushed `v*` tag or a manual run. It needs the four Android
+secrets above (it refuses to run without them: no debug-key fallback) plus one
+more:
+
+| Secret | Value |
+|--------|-------|
+| `PLAY_SERVICE_ACCOUNT_JSON` | the whole downloaded JSON key of a Google Cloud service account that has Release manager in Play Console |
+
+One-time setup:
+
+1. **Google Cloud:** in the project linked to the Play developer account
+   (Play Console -> Setup -> API access shows it), enable the *Google Play
+   Android Developer API*, then IAM & Admin -> Service accounts -> Create
+   service account (no roles needed) -> Keys -> Add key -> Create new key ->
+   JSON. Note the service account's email address.
+2. **Play Console:** Users and permissions -> Invite new users -> paste that
+   email -> App permissions: add Z -> grant **Release manager** (or the
+   individual Releases permissions) -> Invite. It can take a few minutes, and
+   sometimes longer, to take effect.
+3. **GitHub:** repo Settings -> Secrets and variables -> Actions -> New
+   repository secret, once per name in the tables above. Paste the *contents*
+   of the JSON file as `PLAY_SERVICE_ACCOUNT_JSON`, then delete the file.
+4. Optional, recommended: Settings -> Environments -> New environment
+   `play-production` -> Required reviewers -> yourself. The production
+   promotion job then waits for your click.
+
+Releasing:
+
+1. Bump `version:` in `app/pubspec.yaml` (name **and** `+code`; Play rejects a
+   versionCode it has seen) in the release commit, as for every release.
+2. Tag it `vX.Y.Z` (the name must match pubspec) and push the tag. `build.yml`
+   publishes the GitHub Release as before; `play-release` uploads the bundle to
+   internal testing.
+3. To go to production, run `play-release` manually on that tag with
+   *promote_to_production* ticked. The default is a 10% staged rollout
+   (`production_rollout` 0.1); finish or halt it in Play Console.
+
+The first upload through the API must happen after at least one release has
+been made by hand in Play Console (true for this app). Play App Signing
+re-signs what Play serves, so the fingerprint for `ANDROID_CERT_SHA256` on the
+relay is still the *App signing key* one, not the upload key this workflow
+signs with. The workflow's signing check prints the upload key's SHA-256 so it
+can be compared with Play Console -> Setup -> App integrity.
+
 ## Windows (wired, needs a certificate to activate)
 
 Needs an Authenticode code-signing certificate (`.pfx`) from a CA (e.g.

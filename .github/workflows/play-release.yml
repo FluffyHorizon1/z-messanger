@@ -1,0 +1,268 @@
+name: play-release
+
+# Builds a signed Android App Bundle and uploads it to the Google Play
+# INTERNAL TESTING track through the Play Developer API.
+#
+#   * Tag:    pushing a `v*` tag (e.g. v4.9.3) builds that tag and uploads it.
+#   * Manual: Actions -> play-release -> Run workflow. Run it on a v* tag or on
+#             `main`; any other ref is refused so a stray branch cannot reach
+#             Play. Tick "promote_to_production" to ALSO promote the same
+#             release from internal testing to production (default: staged
+#             10% rollout) after the internal upload succeeds.
+#
+# Nothing here bumps the version. The version is the `version:` line of
+# app/pubspec.yaml (name+code, e.g. 4.9.2+222), exactly as for every other
+# release, and a tag must match its name. Play refuses a versionCode it has
+# already seen, so bump the code in the release commit before tagging.
+#
+# Secrets (repository secrets - see docs/SIGNING.md, "Google Play"):
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+#   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD   - the Play UPLOAD key
+#   PLAY_SERVICE_ACCOUNT_JSON                 - Google Cloud service account key
+# Each secret is only ever passed through `env:`, never interpolated into a
+# script and never printed. The keystore only exists in the `build` job; the
+# Play credential only exists in the jobs that talk to Play.
+#
+# This workflow does not rerun the test suite: build.yml does that on the same
+# push/tag. It only ever reaches the internal track on its own - production
+# needs the manual input (and, if you configure it, the `play-production`
+# environment's required reviewers).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      promote_to_production:
+        description: 'After the internal upload, promote this release to production'
+        type: boolean
+        default: false
+      production_rollout:
+        description: 'Production rollout fraction, 0.01-1 (1 = full release). Used only when promoting.'
+        type: string
+        default: '0.1'
+
+# Read-only by default; no job here writes to the repository.
+permissions:
+  contents: read
+
+# One Play release at a time; never cancel one half-way through an upload.
+concurrency:
+  group: play-release
+  cancel-in-progress: false
+
+env:
+  # Keep in step with build.yml: the same SDK builds the same bytes.
+  FLUTTER_VERSION: '3.44.7'
+  PACKAGE_NAME: 'com.zmessenger.www'
+
+jobs:
+  build:
+    name: Build signed AAB
+    runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+    steps:
+      - name: Only tags and main may release
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/tags/v*|refs/heads/main) ;;
+            *)
+              echo "Refusing to release from $REF - run this on a v* tag or on main." >&2
+              exit 1
+              ;;
+          esac
+      # Checked out to `z`, the same absolute path build.yml's android job and
+      # the reproducibility slots build at, so libapp.so (which embeds its
+      # build directory) comes out the same as the release the checksums cover.
+      - uses: actions/checkout@v4
+        with:
+          path: z
+      - name: Read the version from pubspec.yaml (and check a tag matches it)
+        id: version
+        working-directory: z/app
+        env:
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          line=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -1 | tr -d '[:space:]')
+          name="${line%%+*}"
+          code="${line##*+}"
+          if ! printf '%s' "$line" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?\+[0-9]+$'; then
+            echo "pubspec.yaml version '$line' is not name+code (e.g. 4.9.2+222)." >&2
+            exit 1
+          fi
+          if [ "$REF_TYPE" = "tag" ] && [ "${REF#refs/tags/v}" != "$name" ]; then
+            echo "Tag ${REF#refs/tags/} does not match pubspec.yaml version name $name." >&2
+            echo "Bump pubspec.yaml (name and +code) in the release commit, then tag it." >&2
+            exit 1
+          fi
+          echo "version_name=$name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$code" >> "$GITHUB_OUTPUT"
+          echo "Building $name ($code)"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      # Unlike build.yml, there is no debug-key fallback: an AAB Play would
+      # reject (or, worse, a wrongly signed one) must fail here, by name.
+      - name: Configure release signing (required)
+        working-directory: z/app/android
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$KEYSTORE_B64" ]   || missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -n "$STORE_PASSWORD" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -n "$KEY_ALIAS" ]      || missing="$missing ANDROID_KEY_ALIAS"
+          [ -n "$KEY_PASSWORD" ]   || missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "Missing repository secret(s):$missing" >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 -d > app/upload-keystore.jks
+          {
+            printf 'storeFile=%s\n' 'upload-keystore.jks'
+            printf 'storePassword=%s\n' "$STORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+          } > key.properties
+          echo "Release signing configured (upload key)."
+      # Same pin check as build.yml's android job: nothing is fetched inside
+      # the Gradle build, and a runner image that drops the CMake fails here.
+      - name: The pinned CMake is on this runner
+        working-directory: z/app
+        run: |
+          v=$(sed -n 's/^val pinnedCmakeVersion = "\([0-9.]*\)"$/\1/p' android/build.gradle.kts)
+          if [ -z "$v" ]; then
+            echo "could not read pinnedCmakeVersion from android/build.gradle.kts" >&2
+            exit 1
+          fi
+          cmake="$ANDROID_HOME/cmake/$v/bin/cmake"
+          if [ ! -x "$cmake" ]; then
+            echo "CMake $v is not in this runner image's Android SDK; it has:" >&2
+            ls "$ANDROID_HOME/cmake" >&2 || true
+            exit 1
+          fi
+          "$cmake" --version | head -1
+      - name: Build the App Bundle
+        working-directory: z/app
+        run: |
+          flutter pub get
+          flutter build appbundle --release
+      - name: 16 KB page-size alignment (Play requirement for Android 15+ targets)
+        working-directory: z/app
+        run: tool/check_16k.sh build/app/outputs/bundle/release/app-release.aab
+      # Prints only the signer's public certificate fingerprint - compare it
+      # with "Upload key certificate" in Play Console -> Setup -> App
+      # integrity. Fails if the bundle is debug-signed or unsigned.
+      - name: Check the bundle is signed with the upload key
+        working-directory: z/app
+        run: |
+          out=$(keytool -printcert -jarfile build/app/outputs/bundle/release/app-release.aab 2>&1) || {
+            echo "The bundle is not signed (keytool could not read a signature)." >&2
+            exit 1
+          }
+          if printf '%s' "$out" | grep -qi 'CN=Android Debug'; then
+            echo "The bundle is signed with the DEBUG key - the signing secrets did not take effect." >&2
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -m1 'SHA256:' || true
+      - name: Remove signing material
+        if: always()
+        working-directory: z/app/android
+        run: rm -f app/upload-keystore.jks key.properties
+      - uses: actions/upload-artifact@v4
+        with:
+          name: play-aab
+          path: z/app/build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 14
+
+  internal:
+    name: Upload to Play internal testing
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: play-aab
+          path: dist
+      - name: Upload to the internal testing track
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.PACKAGE_NAME }}
+          releaseFiles: dist/app-release.aab
+          releaseName: ${{ needs.build.outputs.version_name }} (${{ needs.build.outputs.version_code }})
+          track: internal
+          status: completed
+
+  # Optional: only when the manual run asked for it. Uses fastlane supply's
+  # promote (internal -> production) so Play moves the release that is
+  # already uploaded; nothing is rebuilt or re-uploaded. Attach required
+  # reviewers to the `play-production` environment (Settings -> Environments)
+  # to make this wait for a click.
+  production:
+    name: Promote internal -> production
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.promote_to_production }}
+    needs: [build, internal]
+    runs-on: ubuntu-latest
+    environment: play-production
+    steps:
+      - name: Check the rollout fraction
+        env:
+          ROLLOUT: ${{ inputs.production_rollout }}
+        run: |
+          if ! printf '%s' "$ROLLOUT" | grep -Eq '^(1(\.0+)?|0?\.[0-9]+)$' \
+             || ! awk -v r="$ROLLOUT" 'BEGIN { exit !(r >= 0.01 && r <= 1) }'; then
+            echo "production_rollout must be a number from 0.01 to 1." >&2
+            exit 1
+          fi
+      - name: Install fastlane
+        run: gem install fastlane --version 2.242.0 --no-document
+      - name: Promote the release to production
+        env:
+          PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          ROLLOUT: ${{ inputs.production_rollout }}
+          VERSION_CODE: ${{ needs.build.outputs.version_code }}
+        run: |
+          if [ -z "$PLAY_JSON" ]; then
+            echo "Missing repository secret: PLAY_SERVICE_ACCOUNT_JSON" >&2
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/play-key.json"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$PLAY_JSON" > "$key"
+          if awk -v r="$ROLLOUT" 'BEGIN { exit !(r >= 1) }'; then
+            status=completed
+          else
+            status=inProgress
+          fi
+          fastlane supply \
+            --json_key "$key" \
+            --package_name "$PACKAGE_NAME" \
+            --track internal \
+            --track_promote_to production \
+            --track_promote_release_status "$status" \
+            --rollout "$ROLLOUT" \
+            --version_code "$VERSION_CODE" \
+            --skip_upload_apk true \
+            --skip_upload_aab true \
+            --skip_upload_metadata true \
+            --skip_upload_changelogs true \
+            --skip_upload_images true \
+            --skip_upload_screenshots true
