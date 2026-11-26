@@ -51,15 +51,17 @@ Get-FileHash z-windows-x64.zip -Algorithm SHA256
 Platform code-signatures, when a release is signed (see `docs/SIGNING.md`):
 
 - **Android** — `apksigner verify --print-certs app-release.apk` shows the
-  signing certificate. No fingerprint is published to compare it with yet, so
-  that line proves less than it looks: rely on the attestation below and the
-  content digest in `SHA256SUMS.txt` (`docs/REPRODUCIBLE_BUILDS.md`), and know
-  that once one release is installed, Android refuses an update signed by any
-  other certificate. A certificate reading `CN=Android Debug` is not a release
-  key: the build falls back to the debug key without failing when the release
-  key is missing. The copy on Google Play is re-signed by Google (Play App
-  Signing), so its certificate differs from the APK on the releases page, and
-  neither installs over the other.
+  signing certificate. Compare it with the fingerprint in [Release signing
+  certificate](#release-signing-certificate-android) below, once that
+  placeholder has been filled in. Until then, rely on the attestation below
+  and the content digest in `SHA256SUMS.txt` (`docs/REPRODUCIBLE_BUILDS.md`).
+  Once one release is installed, Android refuses an update signed by any
+  other certificate. A certificate reading `CN=Android Debug` is not a
+  release key: everyday CI and local `--release` builds still fall back to
+  the debug key when the release keystore is absent; a tagged (`v*`) release
+  build fails instead of shipping one. The copy on Google Play is re-signed
+  by Google (Play App Signing), so its certificate differs from the APK on
+  the releases page, and neither installs over the other.
 - **macOS** — `codesign --verify --deep --strict Z.app` and
   `spctl -a -vv Z.app` (Gatekeeper) should both pass on a notarized build.
 - **Windows** — right-click `zapp.exe` → Properties → Digital Signatures, or
@@ -68,7 +70,28 @@ Platform code-signatures, when a release is signed (see `docs/SIGNING.md`):
 An unsigned build still works; it just triggers the OS "unknown developer"
 warnings. The checksum is your integrity check either way.
 
+## Release signing certificate (Android)
+
+The SHA-256 fingerprint of the certificate that signs the GitHub release
+APK and AAB — the release / upload key, not the certificate Google uses
+for Play App Signing.
+
+Compare it with the `SHA-256 digest` line from:
+
+```
+apksigner verify --print-certs app-release.apk
+```
+
+```
+TODO(Finnian): paste fingerprint from release keystore
+```
+
+The Play Store copy is re-signed by Google, so its certificate will not
+match this one, and neither install will replace the other. See
+`docs/SIGNING.md`.
+
 ### Where the bytes came from
+
 
 A checksum only proves two files match. If the download page and the checksum
 come from the same place, checking one against the other proves that place was
