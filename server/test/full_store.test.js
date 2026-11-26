@@ -40,6 +40,15 @@ process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'z-test-metrics-token';
 //     platform — and so it cannot see this; a send is answered `internal`,
 //     and `z_send_internal_error_total` counts it, which is the signal an
 //     alarm can see. Before, nothing moved at all: no counter, a 200 health.
+//  8. and a store "full" of nothing but its scripts' garbage heals too. From
+//     Redis 7.4 (8.x on ubuntu-latest since 2026-11) the Lua heap counts
+//     against maxmemory, and garbage left by scripts that have returned is
+//     collected only as later scripts run — but a full store refuses a push
+//     before its script runs, so a quiet store could refuse every retry for
+//     ever with no envelope held at all. A refused push has the store collect
+//     it, and the retry lands (z_store_script_gc_total counts that). On a
+//     store whose Lua heap is outside the limit (Redis 7.0) nothing is
+//     refused in the first place, and the test says so rather than skipping.
 //
 // Skips itself where `redis-server` or `ioredis` is missing, as ha.test.js does.
 
@@ -410,4 +419,71 @@ test('7. a store that cannot be reached: /health stays up, and a send is answere
     'the send the store could not take is counted where an alarm can see it'
   );
   anon.close();
+});
+
+test('8. a store full only of its scripts\' garbage: a refused push has it collected, and the retry lands', { skip: SKIP && 'redis-server/ioredis unavailable' }, async (t) => {
+  const redisPort = await freePort();
+  const redis = spawn(
+    'redis-server',
+    ['--port', String(redisPort), '--save', '', '--appendonly', 'no', '--bind', '127.0.0.1', '--maxmemory', '4mb', '--maxmemory-policy', 'noeviction'],
+    { stdio: 'ignore' }
+  );
+  await sleep(700);
+  const url = `redis://127.0.0.1:${redisPort}`;
+  const IORedis = require('ioredis');
+  const raw = new IORedis(url);
+  const coord = new RedisCoordinator(url, 'inst');
+  const srv = createServer({ coordinator: coord, pushSender: null });
+  const port = await freePort();
+  await new Promise((r) => srv.httpServer.listen(port, '127.0.0.1', r));
+  t.after(async () => {
+    for (const ws of srv.wss.clients) ws.terminate();
+    try {
+      srv.httpServer.close();
+    } catch {}
+    await coord.close();
+    try {
+      await raw.quit();
+    } catch {}
+    redis.kill('SIGKILL');
+  });
+
+  const alice = makeIdentity();
+  const bob = makeIdentity();
+  const b0 = new Client(port, bob); // owned, as every real recipient is (see above)
+  assert.strictEqual((await b0.auth()).t, 'ready');
+  b0.close();
+  const a = new Client(port, alice);
+  assert.strictEqual((await a.auth()).t, 'ready');
+
+  // What a drained store looks like after a backlog went through its scripts:
+  // no envelope held, and the Lua heap holding strings no script references
+  // any more. Forty 100 KB strings, unreachable once the script returns.
+  await raw.eval("local t = {} for i = 1, 40 do t[i] = string.rep('z', 100000) .. i end return #t", 0);
+  const mem = await raw.info('memory');
+  const used = Number(/^used_memory:(\d+)/m.exec(mem)[1]);
+  const max = Number(/^maxmemory:(\d+)/m.exec(mem)[1]);
+  assert.deepStrictEqual(await raw.keys('q:*'), [], 'nothing is queued anywhere');
+  const gcBefore = metric(await get(port, '/metrics'), 'z_store_script_gc_total');
+  assert.strictEqual(typeof gcBefore, 'number', 'the counter is exported');
+
+  const first = await a.deliver('g0', bob.rid, BIG);
+  if (used <= max) {
+    // Redis before 7.4: the Lua heap is not the store's to count.
+    t.diagnostic(`Lua heap outside maxmemory on this store (used ${used} of ${max}); nothing to heal`);
+    assert.strictEqual(first.t, 'sent');
+    return;
+  }
+  assert.deepStrictEqual(first, { t: 'error', code: 'store_full', id: 'g0' }, 'the garbage alone fills the store');
+  assert.strictEqual(metric(await get(port, '/metrics'), 'z_store_script_gc_total'), gcBefore + 1, 'the refusal had the store collect');
+  // The client's outbox retries on its own timer (PROTOCOL §12.4); a moment
+  // later, the same envelope.
+  let retry = null;
+  for (let i = 0; i < 20 && (!retry || retry.t !== 'sent'); i++) {
+    await sleep(100);
+    retry = await a.deliver('g0', bob.rid, BIG);
+  }
+  assert.strictEqual(retry.t, 'sent', `the retry lands once the garbage is collected: ${JSON.stringify(retry)}`);
+  assert.strictEqual(await raw.llen(`q:${bob.rid}`), 1);
+  a.close();
 });

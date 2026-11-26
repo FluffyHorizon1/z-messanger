@@ -524,6 +524,13 @@ short), so the mailboxes that filled it can be drained and it heals by
 itself; `/metrics` shows `z_presence_stale` while it lasts and counts
 `z_store_full_total`. This relies on Redis 7 script flags: run
 Redis 7 or newer, or Valkey (the compose file and the Blueprint do).
+On Redis 7.4 or newer (8.x included) the store's Lua heap counts towards
+`maxmemory`, and the envelopes the relay's scripts handled leave garbage
+there until a later script collects it; a drained store could otherwise stay
+"full" of that garbage while the only thing anyone tries is a refused push.
+So a push refused for room also has the store collect it (at most once a
+second per instance, counted as `z_store_script_gc_total`); the next retry
+finds the room.
 
 That healing has a precondition worth stating, because until 2026‑09‑14 it
 was assumed rather than held: healing means the owner of a full mailbox
