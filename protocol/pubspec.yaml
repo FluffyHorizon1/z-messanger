@@ -16,11 +16,12 @@ dependencies:
   # Dart, zero dependencies, MIT. Cross-checked byte-for-byte against kyber-py
   # and PQClean on seeded vectors (docs/vectors/v2/mlkem768.json).
   #
-  # Pinned EXACTLY, to the version app/pubspec.lock ships. This package has no
-  # lockfile of its own (pubspec.lock is not committed here), so a caret range
+  # Pinned EXACTLY, to the version app/pubspec.lock ships. A caret range once
   # let CI resolve whatever 0.4.x was newest and test that instead of what
-  # ships — 0.4.2 when this was written, whose lib/ happens to be identical to
-  # 0.4.1's. The next one need not be. Move this and the app's lock together.
+  # ships — 0.4.2 when that was noticed, whose lib/ happens to be identical to
+  # 0.4.1's. The next one need not be. protocol/pubspec.lock is committed so
+  # the pin cannot drift in CI; Dependabot is told not to bump this package.
+  # Move this pin and both lockfiles together.
   pqcrypto: 0.4.1
 
 dev_dependencies:

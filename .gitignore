@@ -16,13 +16,12 @@ app/.flutter-plugins*
 **/doc/api/
 .pub-cache/
 .pub/
-# Lockfiles: an application's is committed, a library's is not. app/'s is
-# tracked. protocol/'s is deliberately untracked — CI resolves it afresh, so
-# its versions are pinned in protocol/pubspec.yaml — and so it is ignored too.
-# (This used to be one line with the comment after the pattern; gitignore has
-# no trailing comments, so that line matched nothing at all.)
+# Lockfiles: an application's is committed, and so is protocol/'s, so CI
+# tests the same versions the app ships. (gitignore has no trailing comments
+# on a pattern line.)
 pubspec.lock
 !app/pubspec.lock
+!protocol/pubspec.lock
 
 # IDE
 .idea/
