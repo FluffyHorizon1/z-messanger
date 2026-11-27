@@ -78,7 +78,7 @@ jobs:
       # Checked out to `z`, the same absolute path build.yml's android job and
       # the reproducibility slots build at, so libapp.so (which embeds its
       # build directory) comes out the same as the release the checksums cover.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: z
       - name: Read the version from pubspec.yaml (and check a tag matches it)
