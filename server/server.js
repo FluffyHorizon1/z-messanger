@@ -799,6 +799,7 @@ const METRICS = {
   // store at maxmemory with noeviction): the sender is told store_full and
   // retries later; the store heals as recipients drain their mailboxes.
   storeFullTotal: 0,
+  storeScriptGcTotal: 0,
   // Sends to an introduction mailbox (phase 37) refused for want of a proof
   // of work its owner's difficulty asked for: none, a malformed one, or one
   // made for another recipient, payload or day, or with too few bits. Refused
@@ -1071,6 +1072,8 @@ function renderMetrics(stats, meta = {}) {
   L.push(`z_refused_total ${METRICS.refusedTotal}`);
   L.push('# TYPE z_store_full_total counter');
   L.push(`z_store_full_total ${METRICS.storeFullTotal}`);
+  L.push('# TYPE z_store_script_gc_total counter');
+  L.push(`z_store_script_gc_total ${METRICS.storeScriptGcTotal}`);
   L.push('# TYPE z_unowned_refused_total counter');
   L.push(`z_unowned_refused_total ${METRICS.unownedRefusedTotal}`);
   L.push('# TYPE z_intro_pow_refused_total counter');
@@ -2374,6 +2377,29 @@ if n <= 0 then return 0 end
 redis.call('HSET', KEYS[1], 'n', n - 1)
 return 1`;
 
+// Collects the store's Lua garbage. From Redis 7.4 (redis#13133, shipped in
+// 8.0) the Lua VM allocates through jemalloc and its heap counts towards
+// `used_memory`, and so towards maxmemory; before that it was libc memory the
+// limit never saw. Every envelope this relay stores or acknowledges passes
+// through a script as a Lua string — the push's ARGV, the ack's HGET and its
+// cjson.decode — and those strings are garbage the moment the script returns,
+// collected only as later scripts run (Redis steps the collector every 50
+// calls). A store that refused for want of room and has since been drained
+// can therefore still be "full" of nothing but that garbage: and the next
+// thing anyone sends is a push, which a full store refuses BEFORE its script
+// runs, so no script runs, nothing is collected, and every retry is refused
+// for as long as the store stays quiet. That is what app/test/store_full_test
+// hit when ubuntu-latest moved from Redis 7.0 to 8.0 (2026-11-26): the
+// mailbox drained to nothing, the Lua heap held 1.4 MB of a 3 MB store, and
+// no retry ever landed. Run by the relay when a push is refused for room (at
+// most once a second per instance — see collectScriptGarbage): `allow-oom`
+// because it only frees, `no-writes` because it touches no key. Redis 7 or
+// Valkey: on a store whose Lua heap is outside the limit it frees nothing
+// that mattered and costs a round trip.
+const REDIS_LUA_GC_LUA = `#!lua flags=allow-oom,no-writes
+collectgarbage('collect')
+return 1`;
+
 // Flags a routing id as an introduction mailbox (phase 37, PROTOCOL §21.6).
 // KEYS = owned:{rid}, intro:{rid}, push:{rid}; ARGV = the difficulty, the
 // ownership TTL in ms, and whether the client address has used its minute of
@@ -2596,6 +2622,8 @@ class RedisCoordinator {
     this.sweeping = false;
     this.beating = false;
     this.reflushing = false;
+    /** When this instance last asked the store to collect its Lua garbage (ms). */
+    this.lastScriptGc = 0;
     /** rid -> mailbox length at the last re-flush check, for the pass below. */
     this.lastMailboxLen = new Map();
     // Per instance, like the rate limiter beside it — the gate by default, and
@@ -2643,8 +2671,25 @@ class RedisCoordinator {
     this.cmd.defineCommand('zQueueAckLegacy', { numberOfKeys: 3, lua: REDIS_ACK_LEGACY_LUA });
     this.cmd.defineCommand('zNewMailboxTake', { numberOfKeys: 2, lua: REDIS_NEWMAILBOX_LUA });
     this.cmd.defineCommand('zNewMailboxRefund', { numberOfKeys: 1, lua: REDIS_NEWMAILBOX_REFUND_LUA });
+    this.cmd.defineCommand('zLuaGc', { numberOfKeys: 0, lua: REDIS_LUA_GC_LUA });
     this.sub.subscribe(this.chan).catch(() => {});
     this.sub.on('message', (_ch, msg) => this._onPub(msg));
+  }
+
+  /**
+   * Asks the store to collect its Lua garbage (REDIS_LUA_GC_LUA says why), at
+   * most once a second per instance, and never waits for it: the push that
+   * prompted it is answered `store_full` either way, and the client's retry
+   * (PROTOCOL §12.4) is what finds the room this makes. A failure is
+   * ignored — the store being unreachable is counted where it matters.
+   */
+  collectScriptGarbage(now = Date.now()) {
+    if (now - this.lastScriptGc < 1000) return;
+    this.lastScriptGc = now;
+    METRICS.storeScriptGcTotal += 1;
+    Promise.resolve()
+      .then(() => this.cmd.zLuaGc())
+      .catch(() => {});
   }
 
   get name() {
@@ -3015,7 +3060,10 @@ class RedisCoordinator {
     } catch (e) {
       if (localSpent) this.newMailbox.refund();
       if (sharedWindow !== null) await this._refundShared(sharedWindow);
-      if (isStoreFull(e)) throw new StoreFull();
+      if (isStoreFull(e)) {
+        this.collectScriptGarbage();
+        throw new StoreFull();
+      }
       throw e;
     }
     const code = Array.isArray(r) ? Number(r[0]) : Number(r);

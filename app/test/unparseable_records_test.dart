@@ -76,6 +76,9 @@ void main() {
   // after — is kept, and fails the test that was running.
   final stopped = <ChatService>{};
   final strays = <String>[];
+  // The zone each service runs in, so that what [carry] hands it runs there
+  // too, as the relay's deliveries do.
+  final zones = <ChatService, Zone>{};
   tearDown(() {
     final found = [...strays];
     strays.clear();
@@ -112,6 +115,7 @@ void main() {
             displayName: name,
             transport: Transport(identity: me, serverUrl: 'ws://127.0.0.1:1'));
         made = svc;
+        zones[svc] = Zone.current;
         services.add(svc);
         ready.complete(svc);
       } catch (e, st) {
@@ -143,12 +147,26 @@ void main() {
         where: 'rid = ?', whereArgs: [to.myRid], orderBy: 'seq');
     await from.vault.db
         .delete('outbox', where: 'rid = ?', whereArgs: [to.myRid]);
+    // Handed over inside [to]'s own zone. An inbound envelope can start work
+    // that outlives it — an unawaited log publish among it — and work
+    // started from the test's zone raised its errors there, where the filter
+    // above does not reach: a delivery carried just before [stop] closed
+    // the receiver's database failed test 2 with that database closed under
+    // a publish still in flight (run 45829777361). In the service's zone
+    // that one expected error is dropped and any other is still a stray. The
+    // delivery's own result comes back through a completer of the test's,
+    // so an error from it fails the test as before.
     for (final r in rows) {
-      await to.debugInbound(RelayInbound(
+      final inbound = RelayInbound(
           id: r['id'] as String,
           from: '',
           payload: r['payload'] as String,
-          serverTs: DateTime.now().millisecondsSinceEpoch));
+          serverTs: DateTime.now().millisecondsSinceEpoch);
+      final done = Completer<void>();
+      (zones[to] ?? Zone.current).run(() => to.debugInbound(inbound).then(
+          (_) => done.complete(),
+          onError: (Object e, StackTrace st) => done.completeError(e, st)));
+      await done.future;
     }
     return rows.length;
   }
