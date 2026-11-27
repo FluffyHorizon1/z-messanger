@@ -32,6 +32,35 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zapp/core/app_lock.dart';
 import 'package:zapp/core/vault.dart';
 
+/// Makes [f] impossible to remove for this process, or says why it cannot.
+/// Returns null when it is pinned.
+String? _pin(File f, Directory dir) {
+  try {
+    final r = Process.runSync('chattr', ['+i', f.path]);
+    if (r.exitCode == 0) return null;
+  } on ProcessException {
+    // No chattr here; fall through to the directory permission below.
+  }
+  final id = Process.runSync('id', ['-u']);
+  if (id.exitCode == 0 && id.stdout.toString().trim() != '0') {
+    final c = Process.runSync('chmod', ['500', dir.path]);
+    if (c.exitCode == 0) return null;
+  }
+  return 'neither chattr +i nor a read-only directory can pin a file here '
+      '(no chattr, or running as root)';
+}
+
+void _unpin(File f, Directory dir) {
+  try {
+    Process.runSync('chattr', ['-i', f.path]);
+  } on ProcessException {
+    // Nothing was set.
+  }
+  try {
+    Process.runSync('chmod', ['700', dir.path]);
+  } catch (_) {}
+}
+
 void main() {
   final temps = <Directory>[];
   tearDown(() {
@@ -96,19 +125,26 @@ void main() {
     final root = v.root;
     await v.kvPut('dev_mode', '1', sensitive: false);
 
-    // A file the process may not remove. `chmod` is not enough — CI and this
-    // sandbox both run as root, and root ignores it — so the immutable
-    // attribute, which even root is refused.
+    // A file the process may not remove. As root `chmod` is not enough — root
+    // ignores it — so the immutable attribute, which even root is refused.
+    // Where there is no `chattr` (a minimal image raises ProcessException
+    // rather than returning a non-zero exit) and the user is not root, a
+    // directory it cannot write to does the same job: the file inside can be
+    // overwritten but not unlinked, which is the situation the wipe has to
+    // report.
     final stuck = File('${root.path}/files/immutable.bin')
       ..createSync(recursive: true)
       ..writeAsBytesSync([1, 2, 3]);
-    final marked = Process.runSync('chattr', ['+i', stuck.path]);
-    addTearDown(() => Process.runSync('chattr', ['-i', stuck.path]));
+    final dir = stuck.parent;
+    final String? why = _pin(stuck, dir);
+    addTearDown(() {
+      _unpin(stuck, dir);
+    });
 
-    if (marked.exitCode != 0) {
+    if (why != null) {
       // Nothing to prove the assertion against on this filesystem; say so
       // rather than passing a test that exercised nothing.
-      markTestSkipped('chattr +i unavailable: ${marked.stderr}');
+      markTestSkipped(why);
       return;
     }
 
