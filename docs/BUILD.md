@@ -76,6 +76,10 @@ cd server   && npm test    # relay: auth, RAM queueing, no-disk-writes, spoofing
 cd protocol && dart test   # crypto + a REAL conversation through the Node relay
 ```
 
+CI also attaches line-coverage reports for those suites, the app, and the
+transparency log. See [`COVERAGE.md`](COVERAGE.md) for how to read them and
+how to produce the same files locally.
+
 The protocol suite includes `test/relay_integration_test.dart`, which launches
 the actual relay process, connects two real clients, and verifies the full
 handshake / ratchet / offline‑queue / attachment / receipt flow end‑to‑end —

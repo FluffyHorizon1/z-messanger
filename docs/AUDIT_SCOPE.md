@@ -327,6 +327,10 @@ cd app && flutter test
 cd protocol && dart run tool/gen_vectors.dart
 ```
 
+CI attaches line-coverage reports for the four suites to the workflow run
+(`z-coverage`). How to read them, and that a percentage is not a substitute
+for the claims in §3, is in `COVERAGE.md`.
+
 `docs/vectors/README.md` explains the vector conventions; every random draw
 the reference implementation made is recorded next to the output it produced,
 so a third implementation can be checked without any of our code.
