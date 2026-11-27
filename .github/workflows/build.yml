@@ -208,7 +208,7 @@ jobs:
           # that means something.
           flutter test --concurrency=1 --coverage
       - name: Theme screenshots (light + dark, rendered by screenshots_test.dart)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z-screenshots
           path: app/build/screenshots/*.png
@@ -227,7 +227,7 @@ jobs:
           python3 tool/coverage_summary.py --dir coverage-out --allow-missing | tee coverage-out/summary.txt
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: z-coverage
           path: coverage-out
@@ -346,7 +346,7 @@ jobs:
         if: always()
         working-directory: z/app/android
         run: rm -f app/upload-keystore.jks key.properties
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: z-android
           path: |
@@ -383,7 +383,7 @@ jobs:
       - name: Package tarball
         working-directory: app/build/linux/x64/release
         run: tar czf z-linux-x64.tar.gz -C bundle .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: z-linux-x64
           path: app/build/linux/x64/release/z-linux-x64.tar.gz
@@ -428,7 +428,7 @@ jobs:
         working-directory: app/build/windows/x64/runner/Release
         shell: pwsh
         run: Compress-Archive -Path * -DestinationPath z-windows-x64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: z-windows-x64
           path: app/build/windows/x64/runner/Release/z-windows-x64.zip
@@ -482,7 +482,7 @@ jobs:
             echo "No APPLE_CERT_BASE64 secret — shipping unsigned (Gatekeeper will warn)."
             ditto -c -k --sequesterRsrc --keepParent "$APP" z-macos.zip
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: z-macos
           path: app/build/macos/Build/Products/Release/z-macos.zip
@@ -625,7 +625,7 @@ jobs:
           mkdir -p out
           cp "${{ matrix.dir }}/app/build/app/outputs/flutter-apk/app-release.apk" out/
           cp "fingerprint-${{ matrix.slot }}.txt" out/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: repro-${{ matrix.slot }}
           path: out/

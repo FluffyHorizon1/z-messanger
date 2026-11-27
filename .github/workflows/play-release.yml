@@ -184,7 +184,7 @@ jobs:
         if: always()
         working-directory: z/app/android
         run: rm -f app/upload-keystore.jks key.properties
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: play-aab
           path: z/app/build/app/outputs/bundle/release/app-release.aab
