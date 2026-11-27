@@ -643,13 +643,13 @@ jobs:
     # fail the build.
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: repro-a, path: repro-a }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: repro-b, path: repro-b }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: repro-c, path: repro-c }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: repro-d, path: repro-d }
 
       - name: Fingerprints side by side
@@ -767,18 +767,18 @@ jobs:
       # one artifact rename away from not being harmless.
       # tool/check_workflow.py now refuses an unnamed download in a job that
       # publishes.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: z-android, path: dist/z-android }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: z-linux-x64, path: dist/z-linux-x64 }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: z-windows-x64, path: dist/z-windows-x64 }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: z-macos, path: dist/z-macos }
       # The reproducibility slot built at the same path, debug-signed. Kept
       # OUTSIDE dist/ so it can never become a release asset; it is here to
       # be compared against, nothing else.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: repro-a, path: repro-a }
       - name: Collect artifacts and compute SHA-256 sums
         run: |
