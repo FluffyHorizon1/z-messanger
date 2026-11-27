@@ -53,7 +53,7 @@ dependencies:
   # notes take through just_audio's own loopback server, so the vault invariant
   # (no plaintext on disk) holds. Inline on Android for now; elsewhere the file
   # card + Save stays. ADR 0018.
-  video_player: ^2.14.0
+  video_player: ^2.14.1
 
   # Voice messages (7.4): capture + inline playback. `record`'s Linux impl is
   # pure Dart. just_audio has native backends on Android, iOS and macOS; on
