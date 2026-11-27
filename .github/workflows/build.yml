@@ -968,7 +968,7 @@ jobs:
       - name: Publish release — checksums and desktop bundles (draft)
         id: publish_meta
         continue-on-error: true
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           generate_release_notes: true
@@ -981,7 +981,7 @@ jobs:
             release/z-windows-x64.zip
       - name: Publish release — checksums and desktop bundles, second attempt (draft)
         if: steps.publish_meta.outcome == 'failure'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           generate_release_notes: true
@@ -995,7 +995,7 @@ jobs:
       - name: Publish release — split APKs (draft)
         id: publish_split
         continue-on-error: true
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           fail_on_unmatched_files: true
@@ -1006,7 +1006,7 @@ jobs:
             release/app-x86_64-release.apk
       - name: Publish release — split APKs, second attempt (draft)
         if: steps.publish_split.outcome == 'failure'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           fail_on_unmatched_files: true
@@ -1018,7 +1018,7 @@ jobs:
       - name: Publish release — universal APK and bundle (draft)
         id: publish_big
         continue-on-error: true
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           fail_on_unmatched_files: true
@@ -1028,7 +1028,7 @@ jobs:
             release/app-release.aab
       - name: Publish release — universal APK and bundle, second attempt (draft)
         if: steps.publish_big.outcome == 'failure'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           fail_on_unmatched_files: true
