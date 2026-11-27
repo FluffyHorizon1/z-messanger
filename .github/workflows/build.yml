@@ -908,7 +908,7 @@ jobs:
       # the log means we cannot quietly issue a different answer to one person
       # than to everybody else.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'release/*'
       # Three uploads instead of one, a draft until the last has landed, one
