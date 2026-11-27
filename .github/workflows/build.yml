@@ -53,7 +53,14 @@ jobs:
         working-directory: server
         run: |
           npm install
-          npm test
+          # Same suite as `npm test`, with line coverage for the z-coverage
+          # artifact (docs/COVERAGE.md). A percentage is not a pass/fail gate.
+          mkdir -p coverage
+          node --test --experimental-test-coverage \
+            --test-reporter=spec --test-reporter=lcov \
+            --test-reporter-destination=stdout \
+            --test-reporter-destination=coverage/lcov.info \
+            test/*.test.js
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
@@ -66,7 +73,10 @@ jobs:
         working-directory: protocol
         run: |
           dart pub get
-          dart test
+          dart test --coverage=coverage
+          dart pub global activate coverage
+          dart pub global run coverage:format_coverage --lcov \
+            --in=coverage --out=coverage/lcov.info --report-on=lib --package=.
       - name: ML-KEM vectors vs kyber-py (independent FIPS 203 implementation)
         run: |
           python3 -m pip install --quiet kyber-py==1.2.0
@@ -80,7 +90,13 @@ jobs:
       # written from the spec with no shared code.
       - name: Transparency log tests
         working-directory: kt
-        run: npm test
+        run: |
+          mkdir -p coverage
+          node --test --experimental-test-coverage \
+            --test-reporter=spec --test-reporter=lcov \
+            --test-reporter-destination=stdout \
+            --test-reporter-destination=coverage/lcov.info \
+            test/*.test.js
       - name: Transparency log vectors vs an independent implementation
         run: |
           python3 -m pip install --quiet cryptography
@@ -188,13 +204,34 @@ jobs:
           # what made unrelated tests time out on a loaded machine while
           # passing alone. Serialising costs wall time and buys a signal
           # that means something.
-          flutter test --concurrency=1
+          flutter test --concurrency=1 --coverage
       - name: Theme screenshots (light + dark, rendered by screenshots_test.dart)
         uses: actions/upload-artifact@v4
         with:
           name: z-screenshots
           path: app/build/screenshots/*.png
           if-no-files-found: warn
+      - name: Collect coverage reports
+        if: always()
+        run: |
+          # Each suite writes its own lcov.info when it gets that far. A red
+          # job may be missing one; the summary says so, and the require step
+          # below only runs when the rest of the job has succeeded.
+          mkdir -p coverage-out/protocol coverage-out/app coverage-out/server coverage-out/kt
+          cp -f protocol/coverage/lcov.info coverage-out/protocol/lcov.info 2>/dev/null || true
+          cp -f app/coverage/lcov.info coverage-out/app/lcov.info 2>/dev/null || true
+          cp -f server/coverage/lcov.info coverage-out/server/lcov.info 2>/dev/null || true
+          cp -f kt/coverage/lcov.info coverage-out/kt/lcov.info 2>/dev/null || true
+          python3 tool/coverage_summary.py --dir coverage-out --allow-missing | tee coverage-out/summary.txt
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-coverage
+          path: coverage-out
+          if-no-files-found: warn
+      - name: Coverage reports are complete
+        run: python3 tool/coverage_summary.py --dir coverage-out --require protocol,app,server,kt
 
   android:
     name: Android APK + AAB

@@ -49,3 +49,6 @@ app/android/key.properties
 # Python bytecode from the vector verifiers (protocol/tool/verify_*.py)
 __pycache__/
 *.pyc
+
+# Coverage output (see docs/COVERAGE.md). Reports are CI artifacts.
+coverage/
