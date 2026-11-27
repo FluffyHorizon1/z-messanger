@@ -35,7 +35,7 @@ jobs:
     name: Tests (relay + protocol + integration)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -245,7 +245,7 @@ jobs:
       # build directory, so a release built anywhere else can never match a
       # slot's content digest, and the release job below could only argue
       # that the two agree rather than measure it. Now it measures it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: z
       - uses: actions/setup-java@v4
@@ -358,7 +358,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Linux build deps
         run: |
           # Same as the redis step: the runner image's third-party Chrome repo
@@ -393,7 +393,7 @@ jobs:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
@@ -438,7 +438,7 @@ jobs:
     needs: test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
@@ -532,7 +532,7 @@ jobs:
             tz: Australia/Eucla
             locale: fr_FR.UTF-8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ${{ matrix.dir }}
       - uses: actions/setup-java@v4
@@ -642,7 +642,7 @@ jobs:
     # variable; the path is. So a failure here is news again, and news should
     # fail the build.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with: { name: repro-a, path: repro-a }
       - uses: actions/download-artifact@v4
@@ -724,7 +724,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build relay image
         working-directory: server
         run: docker build -t z-relay:${{ github.sha }} .
@@ -751,7 +751,7 @@ jobs:
       # file". Checkout must come BEFORE download-artifact: it cleans the
       # workspace before writing, so the other order deletes dist/.
       # Only tool/ is needed, so only tool/ is fetched.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: tool
       # Download BY NAME, exactly the four things a release consists of.
