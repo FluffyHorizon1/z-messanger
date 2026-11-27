@@ -369,12 +369,16 @@ void main() {
     );
   }
 
+  // The waits below time out on a Stopwatch, not on the wall clock: the
+  // Stopwatch is monotonic, so a machine that is paused or has its clock
+  // stepped (a VM freeze, an NTP step) does not turn a 45-second wait into an
+  // instant timeout while nothing in the test has actually been slow.
   Future<void> waitUntil(bool Function() cond,
       {Duration timeout = const Duration(seconds: 45),
       required String what}) async {
-    final deadline = DateTime.now().add(timeout);
+    final clock = Stopwatch()..start();
     while (!cond()) {
-      if (DateTime.now().isAfter(deadline)) {
+      if (clock.elapsed > timeout) {
         throw TimeoutException('timed out waiting for: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 30));
@@ -384,9 +388,9 @@ void main() {
   Future<void> waitFor(Future<bool> Function() cond,
       {Duration timeout = const Duration(seconds: 45),
       required String what}) async {
-    final deadline = DateTime.now().add(timeout);
+    final clock = Stopwatch()..start();
     while (!await cond()) {
-      if (DateTime.now().isAfter(deadline)) {
+      if (clock.elapsed > timeout) {
         throw TimeoutException('timed out waiting for: $what');
       }
       await Future<void>.delayed(const Duration(milliseconds: 40));
@@ -404,7 +408,7 @@ void main() {
   /// Each side holds the other's post-quantum key (the exchange ran), then
   /// nothing is left to send — the wait `replies_test.dart` explains.
   Future<void> settled(List<ChatService> group) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 45));
+    final clock = Stopwatch()..start();
     while (true) {
       final waiting = <String>[];
       for (final s in group) {
@@ -431,7 +435,7 @@ void main() {
         if (s.pqSendPending) waiting.add('${s.displayName} is sending a key');
       }
       if (waiting.isEmpty) return;
-      if (DateTime.now().isAfter(deadline)) {
+      if (clock.elapsed > const Duration(seconds: 45)) {
         throw TimeoutException('the group never settled: ${waiting.join('; ')}');
       }
       await Future<void>.delayed(const Duration(milliseconds: 30));
