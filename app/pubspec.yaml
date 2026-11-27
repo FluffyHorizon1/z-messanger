@@ -79,7 +79,7 @@ dependencies:
   # did ("1.0.0 for eighteen releases").
   package_info_plus: ^8.3.0
 
-  intl: ^0.20.2
+  intl: ^0.20.3
   firebase_core: ^4.13.0
   firebase_messaging: ^16.5.0
   flutter_local_notifications: ^22.3.0
