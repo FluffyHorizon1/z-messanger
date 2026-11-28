@@ -74,6 +74,26 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# flutter_secure_storage_linux bundles an old nlohmann/json.hpp whose
+# `_json` and `_json_pointer` user-defined literals are diagnosed as
+# -Wdeprecated-literal-operator. APPLY_STANDARD_SETTINGS passes -Werror
+# to plugins, so the Linux bundle fails on current ubuntu-latest
+# compilers (the Linux job installs clang). Keep -Werror; silence only
+# that warning, and only on this plugin. Guard the flag so an older
+# compiler that does not know it is not broken by it.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-Wno-deprecated-literal-operator"
+  HAS_WNO_DEPRECATED_LITERAL_OPERATOR)
+if(TARGET flutter_secure_storage_linux_plugin AND HAS_WNO_DEPRECATED_LITERAL_OPERATOR)
+  set(_fss_linux_opts -Wno-deprecated-literal-operator)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    list(APPEND _fss_linux_opts -Wno-unknown-warning-option)
+  endif()
+  target_compile_options(flutter_secure_storage_linux_plugin PRIVATE
+    ${_fss_linux_opts})
+  unset(_fss_linux_opts)
+endif()
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
